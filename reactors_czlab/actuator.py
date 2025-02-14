@@ -2,10 +2,21 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, NamedTuple
+import logging
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from reactors_czlab import Sensor
+
+logger = logging.getLogger(__name__)
+logger.addHandler(logging.StreamHandler())
+logging.basicConfig(
+    filename="record.log",
+    encoding="utf-8",
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s: %(message)s",
+)
 
 valid_control_modes = ["manual", "timer", "on_boundaries", "pid"]
 
@@ -19,16 +30,27 @@ class Actuator:
         self.channel = channel
         self.set_control_method(control_dict)
 
-    def _set_reference_sensor(self, ref_sensor: Sensor) -> None:
-        self._reference_sensor = ref_sensor
+    def set_reference_sensor(self, ref_sensor: Sensor) -> None:
+        """Set reference sensor."""
+        self.reference_sensor = ref_sensor
 
     def write_output(self) -> None:
-        """Function to write the actuator values."""
+        """Write the actuator values."""
         control_method = self.control_method
         match control_method:
             case _ManualControl() as control:
                 self._write(control.value)
-            case _
+            case _TimerControl() as control:
+                self._write(control.get_value())
+            case _OnBoundariesControl() as control:
+                variable = self.reference_sensor.value
+                self._write(control.get_value(variable))
+            case _PidControl() as control:
+                variable = self.reference_sensor.value
+                self._write(control.get_value(variable))
+
+    def _write(self, value: int) -> None:
+        print(value)
 
     def set_control_method(self, control_dict: dict) -> None:
         """Change the current configuration of the actuator outputs.
@@ -49,9 +71,14 @@ class Actuator:
         current_method = self.control_method
         match control_dict:
             case {"method": "manual", "value": value}:
-                new_method = _ManualControl(value)
-                if new_method != current_method:
-                    self.control_method = new_method
+                try:
+                    new_method = _ManualControl(value)
+                except TypeError as e:
+                    logger.warning(e)
+                    logger.warning(control_dict)
+                else:
+                    if new_method != current_method:
+                        self.control_method = new_method
 
             case {
                 "method": "timer",
@@ -59,14 +86,24 @@ class Actuator:
                 "time_on": time_on,
                 "time_off": time_off,
             }:
-                new_method = _TimerControl(time_on, time_off, value)
-                if new_method != current_method:
-                    self.control_method = new_method
+                try:
+                    new_method = _TimerControl(time_on, time_off, value)
+                except TypeError as e:
+                    logger.warning(e)
+                    logger.warning(control_dict)
+                else:
+                    if new_method != current_method:
+                        self.control_method = new_method
 
             case {"method": "pid", "setpoint": setpoint}:
-                new_method = _PidControl(setpoint)
-                if new_method != current_method:
-                    self.control_method = new_method
+                try:
+                    new_method = _PidControl(setpoint)
+                except TypeError as e:
+                    logger.warning(e)
+                    logger.warning(control_dict)
+                else:
+                    if new_method != current_method:
+                        self.control_method = new_method
 
             case {
                 "method": "on_boundaries",
@@ -74,46 +111,248 @@ class Actuator:
                 "upper_bound": ub,
                 "value": value,
             }:
-                new_method = _OnBoundariesControl(lb, ub, value)
-                if new_method != current_method:
-                    self.control_method = new_method
+                try:
+                    new_method = _OnBoundariesControl(lb, ub, value)
+                except TypeError as e:
+                    logger.warning(e)
+                    logger.warning(control_dict)
+                else:
+                    if new_method != current_method:
+                        self.control_method = new_method
 
             case _:
-                print(f"{current_method}")
+                logger.warning(control_dict)
 
 
+class _ManualControl:
+    def __init__(self, value: int) -> None:
+        self.type = valid_control_modes[0]
+        self.value = value
 
-class _ManualControl(NamedTuple):
-    type = valid_control_modes[0]
-    value: int
+    @property
+    def value(self) -> int:
+        return self._value
 
-    def get_args(self) -> None:
-        return [self.control_type, *self]
+    @value.setter
+    def value(self, value: int) -> None:
+        if not isinstance(value, int):
+            raise TypeError
+        self._value = value
 
-
-class _TimerControl(NamedTuple):
-    type = valid_control_modes[1]
-    time_on: int
-    time_off: int
-    value: int
-
-    def get_args(self) -> None:
-        return [self.control_type, *self]
-
-
-class _OnBoundariesControl(NamedTuple):
-    type = valid_control_modes[2]
-    lower_bound: float
-    upper_bound: float
-    value: int
-
-    def get_args(self) -> None:
-        return [self.control_type, *self]
+    def __eq__(self, other: None) -> bool:
+        this = [self.type, self.value]
+        return this == other
 
 
-class _PidControl(NamedTuple):
-    type = valid_control_modes[3]
-    setpoint: float
+class _TimerControl(_ManualControl):
+    def __init__(self, time_on: float, time_off: float, value: int) -> None:
+        super().__init__(value)
+        self.type = valid_control_modes[1]
+        self.time_on = time_on
+        self.time_off = time_off
 
-    def get_args(self) -> None:
-        return [self.control_type, *self]
+        self._current_timer = 0
+        self._is_on = True
+        self._last_time = datetime.now(tz=timezone.utc)
+
+    @property
+    def time_on(self) -> float:
+        return self._time_on
+
+    @time_on.setter
+    def time_on(self, time_on: float) -> None:
+        if not isinstance(time_on, float | int):
+            raise TypeError
+        self._time_on = time_on
+
+    @property
+    def time_off(self) -> float:
+        return self._time_off
+
+    @time_off.setter
+    def time_off(self, time_off: float) -> None:
+        if not isinstance(time_off, float | int):
+            raise TypeError
+        self._time_off = time_off
+
+    def __eq__(self, other: None) -> bool:
+        this = [self.type, self.time_on, self.time_off, self.value]
+        return this == other
+
+    def get_value(self) -> int:
+        delta_time = datetime.now(tz=timezone.utc) - self._last_time
+        if delta_time.total_seconds() > self._current_timer:
+            self._last_time = datetime.now(tz=timezone.utc)
+            if self._is_on:
+                self._current_timer = self.time_off
+                self._is_on = False
+            else:
+                self._current_timer = self.time_on
+                self._is_on = True
+
+        if self._is_on:
+            return self.value
+        else:
+            return 0
+
+
+class _OnBoundariesControl(_ManualControl):
+    def __init__(
+        self, lower_bound: int, upper_bound: int, value: int, backwards: bool = False
+    ) -> None:
+        super().__init__(value)
+        self.type = valid_control_modes[2]
+        self.lower_bound = lower_bound
+        self.upper_bound = upper_bound
+        self.backwards = backwards
+        if backwards:
+            self._active_value = 150
+        else:
+            self._active_value = 0
+
+    @property
+    def lower_bound(self) -> float:
+        return self._lower_bound
+
+    @lower_bound.setter
+    def lower_bound(self, lower_bound: float) -> None:
+        if not isinstance(lower_bound, float | int):
+            raise TypeError
+        self._lower_bound = lower_bound
+
+    @property
+    def upper_bound(self) -> float:
+        return self._upper_bound
+
+    @upper_bound.setter
+    def upper_bound(self, upper_bound: float) -> None:
+        if not isinstance(upper_bound, float | int):
+            raise TypeError
+        self._upper_bound = upper_bound
+
+    def __eq__(self, other: None) -> bool:
+        this = [self.type, self.lower_bound, self.upper_bound, self.backwards]
+        return this == other
+
+    def get_value(self, variable: float) -> int:
+        if variable < self.lower_bound:
+            if self.backwards:
+                self._active_value = 0
+            else:
+                self._active_value = self.value
+        elif variable > self.upper_bound:
+            if self.backwards:
+                self._active_value = self.value
+            else:
+                self._active_value = 0
+        return self._active_value
+
+
+class _PidControl:
+    def __init__(
+        self,
+        setpoint: float,
+        gains: set[float] = (100, 0.01, 0),
+        limits: set[int] = (0, 255),
+    ) -> None:
+        self.type = valid_control_modes[3]
+        self.setpoint = setpoint
+        self.set_gains(gains)
+        self.set_limits(limits)
+
+        self._last_time = datetime.now(tz=timezone.utc)
+        self._last_error = 0
+        self._integral_sum = 0
+
+    @property
+    def setpoint(self) -> float:
+        return self._setpoint
+
+    @setpoint.setter
+    def setpoint(self, setpoint: float) -> None:
+        if not isinstance(setpoint, float | int):
+            raise TypeError
+        self._setpoint = setpoint
+
+    @property
+    def kp(self) -> float:
+        return self._kp
+
+    @kp.setter
+    def kp(self, kp: float) -> float:
+        if not isinstance(kp, float | int):
+            raise TypeError
+        self._kp = kp
+
+    @property
+    def ki(self) -> float:
+        return self._ki
+
+    @ki.setter
+    def ki(self, ki: float) -> None:
+        if not isinstance(ki, float | int):
+            raise TypeError
+        self._ki = ki
+
+    @property
+    def kd(self) -> float:
+        return self._kd
+
+    @kd.setter
+    def kd(self, kd: float) -> None:
+        if not isinstance(kd, float | int):
+            raise TypeError
+        self._kd = kd
+
+    def set_gains(self, gains: set[float]) -> None:
+        self.kp = gains[0]
+        self.ki = gains[1]
+        self.kd = gains[2]
+
+    @property
+    def max_val(self) -> int:
+        return self._max_val
+
+    @max_val.setter
+    def max_val(self, max_val: int) -> None:
+        if not isinstance(max_val, int):
+            raise TypeError
+        self._max_val = max_val
+
+    @property
+    def min_val(self) -> int:
+        return self._min_val
+
+    @min_val.setter
+    def min_val(self, min_val: int) -> None:
+        if not isinstance(min_val, int):
+            raise TypeError
+        self._min_val = min_val
+
+    def set_limits(self, limits: set[float]) -> None:
+        self.min_val = limits[0]
+        self.max_val = limits[1]
+
+    def __eq__(self, other: None) -> bool:
+        this = [self.setpoint]
+        return this == other
+
+    def get_value(self, variable: float) -> int:
+        now = datetime.now(tz=timezone.utc)
+        time_delta = now - self._last_time
+        dt = time_delta.total_seconds()
+        error = self.setpoint - variable
+        d_error = error - self._last_error
+
+        p_term = self.kp * error
+        i_term = self.ki * error * dt
+        d_term = self.kd * d_error / dt
+
+        self._integral_sum += i_term
+        self._integral_sum = max(self.min_val, min(self._integral_sum, self.max_val))
+        self.value = int(p_term + self._integral_sum + d_term)
+
+        self._last_error = error
+        self._last_time = now
+
+        return max(self.min_val, min(self.value, self.max_val))
