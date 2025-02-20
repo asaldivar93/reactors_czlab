@@ -15,7 +15,7 @@ logging.basicConfig(
     filename="record.log",
     encoding="utf-8",
     level=logging.INFO,
-    format="%(asctime)s %(levelname)s: %(message)s",
+    format="%(asctime)s %(levelname)s: %(id)s - %(message)s",
 )
 
 valid_control_modes = ["manual", "timer", "on_boundaries", "pid"]
@@ -24,12 +24,19 @@ valid_control_modes = ["manual", "timer", "on_boundaries", "pid"]
 class Actuator:
     """Actuator class."""
 
-    def __init__(self, identifier: str, channel: str, control_dict: dict) -> None:
-        """Instance the actuator class."""
+    def __init__(self, identifier: str, channel: str, control_config: dict) -> None:
+        """Instance the actuator class.
+
+        Inputs:
+        -------
+        -identifier: a unique identifier for the actuator
+        -channel: the gpio pin of the RaspberryPi
+        -control_config: the type of control method and settings
+        """
         self.id = identifier
         self.channel = channel
         self.controller = _ManualControl(0)
-        self.set_controller(control_dict)
+        self.set_control_config(control_config)
 
     def set_reference_sensor(self, ref_sensor: Sensor) -> None:
         """Set reference sensor."""
@@ -37,43 +44,53 @@ class Actuator:
 
     def write_output(self) -> None:
         """Write the actuator values."""
+        try:
+            # Pattern matching against the controller class, each class
+            # has its own methods to calculate the output value
+            match self.controller:
+                case _ManualControl() as control:
+                    self._write(control.value)
 
-        match self.controller:
-            case _ManualControl() as control:
-                self._write(control.value)
+                case _TimerControl() as control:
+                    self._write(control.get_value())
 
-            case _TimerControl() as control:
-                self._write(control.get_value())
-
-            case _OnBoundariesControl() as control:
-                variable = self.reference_sensor.value
-                self._write(control.get_value(variable))
-            case _PidControl() as control:
-                variable = self.reference_sensor.value
-                self._write(control.get_value(variable))
+                case _OnBoundariesControl() as control:
+                    variable = self.reference_sensor.value
+                    self._write(control.get_value(variable))
+                case _PidControl() as control:
+                    variable = self.reference_sensor.value
+                    self._write(control.get_value(variable))
+        except AttributeError as e:
+            # Catch an exception when the user hasn't set a reference sensor
+            # before setting on_boundaries or pid control classes
+            logger.warning(e, extra={"id": self.id})
+            logger.warning("Setting output = 0", extra={"id": self.id})
+            self._write(0)
 
     def _write(self, value: int) -> int:
         return value
 
-    def set_controller(self, control_dict: dict) -> None:
+    def set_control_config(self, control_config: dict) -> None:
         """Change the current configuration of the actuator outputs.
 
         Inputs:
         -------
-            control_dict: a dictionary with the parameters of the new configuration
+        -control_config: a dictionary with the parameters of the new configuration
 
         Example:
         -------
-        {"method": "manual", "value": 255}
-        {"method": "timer", "value": 255, "time_on": 5, "time_off": 10}
-        {"method": "on_boundaries", "value": 255,
-         "lower_bound": 1.52, "upper_bound": 5.45}
-        {"method": "pid", "setpoint": 35}
+        -{"method": "manual", "value": 255}
+        -{"method": "timer", "value": 255, "time_on": 5, "time_off": 10}
+        -{"method": "on_boundaries", "value": 255,
+          "lower_bound": 1.52, "upper_bound": 5.45}
+        -{"method": "pid", "setpoint": 35}
 
         """
         current_method = self.controller
         try:
-            match control_dict:
+            # Pattern matching to the new control config and sets the new config
+            # only if it is different from the old config
+            match control_config:
                 case {"method": "manual", "value": value}:
                     new_method = _ManualControl(value)
                     if new_method != current_method:
@@ -88,7 +105,6 @@ class Actuator:
                     new_method = _TimerControl(time_on, time_off, value)
                     if new_method != current_method:
                         self.controller = new_method
-                        print("timer successful")
 
                 case {"method": "pid", "setpoint": setpoint}:
                     new_method = _PidControl(setpoint)
@@ -106,14 +122,18 @@ class Actuator:
                         self.controller = new_method
 
                 case _:
-                    logger.warning(control_dict)
+                    logger.warning(control_config)
 
         except TypeError as e:
+            # Each control class checks that the values passed are of the correct
+            # type, we want to avoid passing a string where we expect a float or int
             logger.warning(e)
-            logger.warning(control_dict)
+            logger.warning(control_config)
 
 
 class _ManualControl:
+    """ManualControl class sets the output value based on user input."""
+
     def __init__(self, value: int) -> None:
         self.type = valid_control_modes[0]
         self.value = value
@@ -124,6 +144,7 @@ class _ManualControl:
 
     @value.setter
     def value(self, value: int) -> None:
+        #Most controllers use pwm which can only take integer values
         if not isinstance(value, int):
             raise TypeError
         self._value = value
@@ -134,6 +155,8 @@ class _ManualControl:
 
 
 class _TimerControl:
+    """TimerControl class sets the output based on time intervals."""
+
     def __init__(self, time_on: float, time_off: float, value: int) -> None:
         self.type = valid_control_modes[1]
         self.time_on = time_on
@@ -180,6 +203,7 @@ class _TimerControl:
         return this == other
 
     def get_value(self) -> int:
+        # Change the datetime library with the time library
         this_time = datetime.now(tz=timezone.utc)
         self._delta_time = this_time - self._last_time
         if self._delta_time.total_seconds() > self._current_timer:
@@ -191,6 +215,7 @@ class _TimerControl:
                 self._current_timer = self.time_on
                 self._is_on = True
 
+        # Maybe we don't need this assignation every function evaluation?
         if self._is_on:
             self.value = self.value_on
         else:
@@ -200,9 +225,24 @@ class _TimerControl:
 
 
 class _OnBoundariesControl:
+    """OnBoundariesControl class.
+
+    Sets the output only when the reference variable crosses upper or lower thresholds.
+    """
+
     def __init__(
         self, lower_bound: int, upper_bound: int, value: int, backwards: bool = False
     ) -> None:
+        """Initialize the controller.
+
+        Inputs:
+        -------
+        -lower_bound: after the reference sensor crosses this threshold the ouput is on
+        -upper_bound: after the reference sensor crosses this threshold the ouput is off
+        -value: the value used in the on state
+        -backwards: if backwards=True the output is reversed, if the reference sensor
+        crosses the lower_bound the ouput is off and viceversa
+        """
         self.type = valid_control_modes[2]
         self.lower_bound = lower_bound
         self.upper_bound = upper_bound
@@ -262,6 +302,8 @@ class _OnBoundariesControl:
 
 
 class _PidControl:
+    """PidControl class uses the PID algorithm to calculate the output."""
+
     def __init__(
         self,
         setpoint: float,
@@ -351,9 +393,12 @@ class _PidControl:
         return this == other
 
     def get_value(self, variable: float) -> int:
+        # Get the elapsed time since last evaluation
         now = datetime.now(tz=timezone.utc)
         time_delta = now - self._last_time
         dt = time_delta.total_seconds()
+
+        # Get error
         error = self.setpoint - variable
         d_error = error - self._last_error
 
@@ -362,10 +407,14 @@ class _PidControl:
         d_term = self.kd * d_error / dt
 
         self._integral_sum += i_term
+        # Anti-windup
         self._integral_sum = max(self.min_val, min(self._integral_sum, self.max_val))
-        self.value = int(p_term + self._integral_sum + d_term)
+        # Sum all the PID terms
+        output = int(p_term + self._integral_sum + d_term)
+        # Constraint the output to the allowable range
+        self.value = max(self.min_val, min(output, self.max_val))
 
         self._last_error = error
         self._last_time = now
 
-        return max(self.min_val, min(self.value, self.max_val))
+        return self.value

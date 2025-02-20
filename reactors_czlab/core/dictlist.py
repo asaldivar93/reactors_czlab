@@ -1,7 +1,7 @@
 """Define the DictList class."""
 
 
-class Dictlist(list):
+class DictList(list):
     """Define a combined dict and list.
 
     This object behaves like a list, but has the O(1) speed
