@@ -11,14 +11,15 @@ async def main():
     uri = "http://czlab"
     idx = await server.register_namespace(uri)
 
-    objects = server.get_objects_node()
-    print(objects)
-    print(type(objects))
     reactor = await server.nodes.objects.add_object(idx, "Reactor_1")
-    print(reactor)
-    print(type(reactor))
+    myvar = await reactor.add_variable(idx, "Myvariable", 6.7)
+
+    print(myvar)
+    print(type(myvar))
     sensor = await reactor.add_object(idx, "Sensor_1")
     value = await sensor.add_variable(idx, "Temperature", 6.7)
+    print(value)
+    print(type(value))
 
     async with server:
         while True:

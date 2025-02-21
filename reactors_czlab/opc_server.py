@@ -24,14 +24,13 @@ async def main():
     uri = "http://czlab"
     idx = await server.register_namespace(uri)
 
-    objects = server.get_objects_node()
     reactor = ReactorOpc("Reactor_1", 5, sensors, actuators)
-    reactor.create_opc_nodes(objects, idx)
-
+    await reactor.add_opc_nodes(server, idx)
 
     async with server:
         try:
             while True:
+                await asyncio.sleep(1)
                 await reactor.update_sensors()
         except KeyboardInterrupt:
             await server.stop()

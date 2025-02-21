@@ -15,3 +15,4 @@ class Sensor:
 
     def read(self):
         self.value = random.gauss(35, 1)
+        return self.value

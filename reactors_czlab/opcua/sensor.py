@@ -11,28 +11,33 @@ if TYPE_CHECKING:
     from opcua.common.node import Node
     from reactors_czlab import Sensor
 
+
 class SensorOpc:
     """Sensor node."""
 
-    async def __init__(self, sensor: Sensor, parent_node: Node, idx: int) -> None:
+    def __init__(self, sensor: Sensor) -> None:
         """Initialize OPC sensor node."""
         self.sensor = sensor
-        self.node = await parent_node.add_object(idx, f"{sensor.id}")
-        self.value = self.node.add_variable(
-            idx, f"{sensor.id}", 0.0, ua.VariantType.Float
+
+    async def add_node(self, parent: Node, idx: int) -> None:
+        """Add node and variables for the sensor."""
+        sensor = self.sensor
+        self.node = await parent.add_object(idx, f"{sensor.id}")
+        print(f"Node added for sensor {sensor.id}")
+        self.value = await self.node.add_variable(
+            idx, "value", 0.0
         )
-        self.value.set_attribute(
-            ua.AttributeIds.InstrumentRange,
-            ua.Range(sensor.lb, sensor.ub)
-        )
-        self.value.set_attribute(
-            ua.AttributeIds.EURange,
-            ua.Range(sensor.EUlb, sensor.EUub)
-        )
-        self.value.set_attribute(
-            ua.AttributeIds.EngineeringUnits,
-            ua.EUInformation(sensor.unit_symbol, sensor.unit_description, "none")
-        )
+        await self.value.set_writable()
+        # self.value.write_attribute(
+        #     ua.AttributeIds.InstrumentRange, ua.Range(sensor.lb, sensor.ub)
+        # )
+        # self.value.write_attribute(
+        #     ua.AttributeIds.EURange, ua.Range(sensor.EUlb, sensor.EUub)
+        # )
+        # self.value.write_attribute(
+        #     ua.AttributeIds.EngineeringUnits,
+        #     ua.EUInformation(sensor.unit_symbol, sensor.unit_description, "none"),
+        # )
 
     async def update_value(self) -> None:
         """Get a new reading and update the server."""
