@@ -14,19 +14,28 @@ class Reactor:
     """Class representation of the reactors."""
 
     def __init__(
-        self, identifier: str, sensors: list[Sensor], actuators: list[Actuator]
+        self,
+        identifier: str,
+        volume: float,
+        sensors: list[Sensor],
+        actuators: list[Actuator],
     ) -> None:
         """Initialize the reactor.
 
         Inputs:
         -------
         -identifier: a unique identifier for the reactor.
+        -volume: the initial volume of the reactor.
         -sensors: a list containig the Sensor instances.
         -actuator: a list cotaining the Actuator instances.
         """
         self.id = identifier
         self.sensors = sensors
+        self.volume = volume
         self.actuators = actuators
+        # Pass the available sensors to the actuators
+        for actuator in self.actuators:
+            actuator.sensors = self.sensors
 
     @property
     def sensors(self) -> DictList:

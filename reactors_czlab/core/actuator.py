@@ -4,43 +4,71 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from reactors_czlab import Sensor
+from reactors_czlab.core.dictlist import DictList
+from reactors_czlab.core.sensor import Sensor
 
-logger = logging.getLogger(__name__)
-logger.addHandler(logging.StreamHandler())
-logging.basicConfig(
-    filename="record.log",
-    encoding="utf-8",
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s: %(id)s - %(message)s",
-)
+# # logger = logging.get# logger(__name__)
+# # logger.addHandler(logging.StreamHandler())
+# logging.basicConfig(
+#     filename="record.log",
+#     encoding="utf-8",
+#     level=logging.INFO,
+#     format="%(asctime)s %(levelname)s: %(id)s - %(message)s",
+# )
 
-valid_control_modes = ["manual", "timer", "on_boundaries", "pid"]
+valid_control_methods = ["manual", "timer", "on_boundaries", "pid"]
 
 
 class Actuator:
     """Actuator class."""
 
-    def __init__(self, identifier: str, channel: str, control_config: dict) -> None:
+    def __init__(self, identifier: str, control_config: dict) -> None:
         """Instance the actuator class.
 
         Inputs:
         -------
         -identifier: a unique identifier for the actuator
-        -channel: the gpio pin of the RaspberryPi
         -control_config: the type of control method and settings
         """
         self.id = identifier
-        self.channel = channel
         self.controller = _ManualControl(0)
         self.set_control_config(control_config)
 
-    def set_reference_sensor(self, ref_sensor: Sensor) -> None:
+    @property
+    def sensors(self) -> DictList:
+        """Return a DictList of Sensors."""
+        return self._sensors
+
+    @sensors.setter
+    def sensors(self, sensors: DictList) -> None:
+        """Set available sensors."""
+        if not isinstance(sensors, DictList):
+            raise TypeError
+
+        self._sensors = sensors
+
+    @property
+    def reference_sensor(self) -> Sensor:
+        """Sensor instance used as a reference."""
+        return self._reference_sensor
+
+    @reference_sensor.setter
+    def reference_sensor(self, sensor: Sensor) -> None:
         """Set reference sensor."""
-        self.reference_sensor = ref_sensor
+        if not isinstance(sensor, Sensor):
+            raise TypeError
+
+        self._reference_sensor = sensor
+
+    def set_reference_sensor(self, sensor: str|Sensor) -> None:
+        """Set reference sensor."""
+        if isinstance(sensor, Sensor):
+            self.reference_sensor = sensor
+        else:
+            reference = self.sensors.get_by_id(sensor)
+            self.reference_sensor = reference
+
 
     def write_output(self) -> None:
         """Write the actuator values."""
@@ -63,8 +91,8 @@ class Actuator:
         except AttributeError as e:
             # Catch an exception when the user hasn't set a reference sensor
             # before setting on_boundaries or pid control classes
-            logger.warning(e, extra={"id": self.id})
-            logger.warning("Setting output = 0", extra={"id": self.id})
+            # logger.warning(e, extra={"id": self.id})
+            # logger.warning("Setting output = 0", extra={"id": self.id})
             self._write(0)
 
     def _write(self, value: int) -> int:
@@ -122,20 +150,22 @@ class Actuator:
                         self.controller = new_method
 
                 case _:
-                    logger.warning(control_config)
+                    # logger.warning(control_config)
+                    print(control_config)
 
         except TypeError as e:
             # Each control class checks that the values passed are of the correct
             # type, we want to avoid passing a string where we expect a float or int
-            logger.warning(e)
-            logger.warning(control_config)
+            # logger.warning(e)
+            # logger.warning(control_config)
+            print(e)
 
 
 class _ManualControl:
     """ManualControl class sets the output value based on user input."""
 
     def __init__(self, value: int) -> None:
-        self.type = valid_control_modes[0]
+        self.method = valid_control_methods[0]
         self.value = value
 
     @property
@@ -150,7 +180,7 @@ class _ManualControl:
         self._value = value
 
     def __eq__(self, other: None) -> bool:
-        this = [self.type, self.value]
+        this = [self.method, self.value]
         return this == other
 
 
@@ -158,7 +188,7 @@ class _TimerControl:
     """TimerControl class sets the output based on time intervals."""
 
     def __init__(self, time_on: float, time_off: float, value: int) -> None:
-        self.type = valid_control_modes[1]
+        self.method = valid_control_methods[1]
         self.time_on = time_on
         self.time_off = time_off
         self.value = value
@@ -199,7 +229,7 @@ class _TimerControl:
         self._time_off = time_off
 
     def __eq__(self, other: None) -> bool:
-        this = [self.type, self.time_on, self.time_off, self.value]
+        this = [self.method, self.time_on, self.time_off, self.value]
         return this == other
 
     def get_value(self) -> int:
@@ -243,7 +273,7 @@ class _OnBoundariesControl:
         -backwards: if backwards=True the output is reversed, if the reference sensor
         crosses the lower_bound the ouput is off and viceversa
         """
-        self.type = valid_control_modes[2]
+        self.method = valid_control_methods[2]
         self.lower_bound = lower_bound
         self.upper_bound = upper_bound
         self.value_on = value
@@ -284,7 +314,7 @@ class _OnBoundariesControl:
         self._upper_bound = upper_bound
 
     def __eq__(self, other: None) -> bool:
-        this = [self.type, self.lower_bound, self.upper_bound, self.backwards]
+        this = [self.method, self.lower_bound, self.upper_bound, self.backwards]
         return this == other
 
     def get_value(self, variable: float) -> int:
@@ -310,7 +340,7 @@ class _PidControl:
         gains: set[float] = (100, 0.01, 0),
         limits: set[int] = (0, 255),
     ) -> None:
-        self.type = valid_control_modes[3]
+        self.method = valid_control_methods[3]
         self.setpoint = setpoint
         self.set_gains(gains)
         self.set_limits(limits)
