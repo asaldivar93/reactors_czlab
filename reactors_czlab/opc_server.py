@@ -1,9 +1,27 @@
+"""OPC server."""
+
 import asyncio
+import logging
 
-from asyncua import Server, ua
-
+from asyncua import Server
 from reactors_czlab import Actuator, Sensor
 from reactors_czlab.opcua import ReactorOpc
+
+_logger = logging.getLogger("server")
+_logger.setLevel(logging.DEBUG)
+
+_formatter = logging.Formatter("%(name)s: %(asctime)s %(levelname)s - %(message)s")
+
+_file_handler = logging.FileHandler("record.log")
+_file_handler.setFormatter(_formatter)
+_file_handler.setLevel(logging.DEBUG)
+
+_stream_handler = logging.StreamHandler()
+_stream_handler.setLevel(logging.WARNING)
+_stream_handler.setFormatter(_formatter)
+
+_logger.addHandler(_file_handler)
+_logger.addHandler(_stream_handler)
 
 control_config = {"method": "manual", "value": 150}
 
@@ -16,7 +34,8 @@ actuator_2 = Actuator("pump_2", control_config)
 sensors = [sensor_1, sensor_2]
 actuators = [actuator_1, actuator_2]
 
-async def main():
+async def main() -> None:
+    """Run the server."""
     server = Server()
     await server.init()
     server.set_endpoint("opc.tcp://localhost:4840/")
@@ -25,13 +44,15 @@ async def main():
     idx = await server.register_namespace(uri)
 
     reactor = ReactorOpc("Reactor_1", 5, sensors, actuators)
-    await reactor.add_opc_nodes(server, idx)
+    await reactor.init_node(server, idx)
 
+    _logger.info("Server Started")
     async with server:
         try:
             while True:
-                await asyncio.sleep(1)
                 await reactor.update_sensors()
+                reactor.update_actuators()
+                await asyncio.sleep(1)
         except KeyboardInterrupt:
             await server.stop()
 

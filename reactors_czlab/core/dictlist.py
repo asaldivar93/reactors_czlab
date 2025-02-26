@@ -25,4 +25,7 @@ class DictList(list):
 
     def get_by_id(self, identifier: str) -> None:
         """Find a member of DictList by the id."""
+        if not isinstance(identifier, str):
+            error_msg = "DictList.get_by_id expects type str"
+            raise TypeError(error_msg)
         return list.__getitem__(self, self._dict[identifier])

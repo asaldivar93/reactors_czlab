@@ -19,7 +19,7 @@ con11 = act._PidControl(35)
 con12 = act._PidControl(35)
 con13 = act._PidControl(40)
 
-act2 = Actuator("a2", "gpio2", control_dict)
+act2 = Actuator("a2", control_dict)
 sen1 = Sensor("s1")
 sen2 = Sensor("s2")
 
@@ -119,17 +119,17 @@ class TestGetValue:
 
 class TestActuator:
     def test1(self):
-        act1 = Actuator("a1", "gpio1", control_dict)
+        act1 = Actuator("a1", control_dict)
         assert isinstance(act1, Actuator)
 
     def test2(self):
-        act1 = Actuator("a1", "gpio1", control_dict)
+        act1 = Actuator("a1", control_dict)
         assert act1.controller.value == 150
 
     def test3(self):
-        act1 = Actuator("a1", "gpio1", control_dict)
+        act1 = Actuator("a1", control_dict)
         new_controller = {"method": "timer", "time_on": 1, "time_off": 5, "value": 135}
-        act1.set_controller(new_controller)
+        act1.set_control_config(new_controller)
         act1.write_output()
         time.sleep(3)
         act1.write_output()
@@ -137,9 +137,9 @@ class TestActuator:
         assert act1.controller.value == 0
 
     def test4(self):
-        act1 = Actuator("a1", "gpio1", control_dict)
+        act1 = Actuator("a1", control_dict)
         new_controller = {"method": "timer", "time_on": 5, "time_off": 1, "value": 135}
-        act1.set_controller(new_controller)
+        act1.set_control_config(new_controller)
         act1.write_output()
 
         assert act1.controller.value == 135
@@ -148,7 +148,7 @@ class TestActuator:
         new_controller = {"method": "on_boundaries", "value": 255,
                           "lower_bound": 1.1, "upper_bound": 2.1}
         act2.set_reference_sensor(sen1)
-        act2.set_controller(new_controller)
+        act2.set_control_config(new_controller)
         sen1.value = 1.5
         act2.write_output()
 
@@ -181,7 +181,7 @@ class TestActuator:
     def test10(self):
         new_controller = {"method": "pid", "setpoint": 35}
         act2.set_reference_sensor(sen2)
-        act2.set_controller(new_controller)
+        act2.set_control_config(new_controller)
         sen2.value = 35
         act2.write_output()
 

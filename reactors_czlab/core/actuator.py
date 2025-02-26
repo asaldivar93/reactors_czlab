@@ -8,14 +8,8 @@ from datetime import datetime, timezone
 from reactors_czlab.core.dictlist import DictList
 from reactors_czlab.core.sensor import Sensor
 
-# # logger = logging.get# logger(__name__)
-# # logger.addHandler(logging.StreamHandler())
-# logging.basicConfig(
-#     filename="record.log",
-#     encoding="utf-8",
-#     level=logging.INFO,
-#     format="%(asctime)s %(levelname)s: %(id)s - %(message)s",
-# )
+# We could find a better way to format and pass the debug statements
+_logger = logging.getLogger("server.actuator")
 
 valid_control_methods = ["manual", "timer", "on_boundaries", "pid"]
 
@@ -61,14 +55,13 @@ class Actuator:
 
         self._reference_sensor = sensor
 
-    def set_reference_sensor(self, sensor: str|Sensor) -> None:
+    def set_reference_sensor(self, sensor: str | Sensor) -> None:
         """Set reference sensor."""
         if isinstance(sensor, Sensor):
             self.reference_sensor = sensor
         else:
             reference = self.sensors.get_by_id(sensor)
             self.reference_sensor = reference
-
 
     def write_output(self) -> None:
         """Write the actuator values."""
@@ -88,11 +81,11 @@ class Actuator:
                 case _PidControl() as control:
                     variable = self.reference_sensor.value
                     self._write(control.get_value(variable))
-        except AttributeError as e:
+        except AttributeError:
             # Catch an exception when the user hasn't set a reference sensor
             # before setting on_boundaries or pid control classes
-            # logger.warning(e, extra={"id": self.id})
-            # logger.warning("Setting output = 0", extra={"id": self.id})
+            _logger.exception(f"reference sensor in {self.id} not set")
+            _logger.warning(f"Setting output in {self.id} = 0")
             self._write(0)
 
     def _write(self, value: int) -> int:
@@ -123,6 +116,7 @@ class Actuator:
                     new_method = _ManualControl(value)
                     if new_method != current_method:
                         self.controller = new_method
+                        _logger.info(f"Control config update - {self.id}:{new_method}")
 
                 case {
                     "method": "timer",
@@ -133,11 +127,13 @@ class Actuator:
                     new_method = _TimerControl(time_on, time_off, value)
                     if new_method != current_method:
                         self.controller = new_method
+                        _logger.info(f"Control config update - {self.id}:{new_method}")
 
                 case {"method": "pid", "setpoint": setpoint}:
                     new_method = _PidControl(setpoint)
                     if new_method != current_method:
                         self.controller = new_method
+                        _logger.info(f"Control config update - {self.id}:{new_method}")
 
                 case {
                     "method": "on_boundaries",
@@ -148,17 +144,17 @@ class Actuator:
                     new_method = _OnBoundariesControl(lb, ub, value)
                     if new_method != current_method:
                         self.controller = new_method
+                        _logger.info(f"Control config update - {self.id}:{new_method}")
 
                 case _:
-                    # logger.warning(control_config)
-                    print(control_config)
+                    _logger.error(
+                        f"Case not found for control_config - {self.id}:{new_method}"
+                    )
 
-        except TypeError as e:
+        except TypeError:
             # Each control class checks that the values passed are of the correct
             # type, we want to avoid passing a string where we expect a float or int
-            # logger.warning(e)
-            # logger.warning(control_config)
-            print(e)
+            _logger.exception(f"Wrong attributes passed in: {control_config}")
 
 
 class _ManualControl:
@@ -168,13 +164,16 @@ class _ManualControl:
         self.method = valid_control_methods[0]
         self.value = value
 
+    def __repr__(self) -> str:
+        return f"_ManualControl({self.value!r})"
+
     @property
     def value(self) -> int:
         return self._value
 
     @value.setter
     def value(self, value: int) -> None:
-        #Most controllers use pwm which can only take integer values
+        # Most controllers use pwm which can only take integer values
         if not isinstance(value, int):
             raise TypeError
         self._value = value
@@ -197,6 +196,9 @@ class _TimerControl:
         self._current_timer = time_on
         self._is_on = True
         self._last_time = datetime.now(tz=timezone.utc)
+
+    def __repr__(self) -> str:
+        return f"_TimerControl(on: {self.time_on!r}s, off: {self.time_off!r}s, {self.value!r})"
 
     @property
     def value(self) -> int:
@@ -236,14 +238,21 @@ class _TimerControl:
         # Change the datetime library with the time library
         this_time = datetime.now(tz=timezone.utc)
         self._delta_time = this_time - self._last_time
-        if self._delta_time.total_seconds() > self._current_timer:
+        dt = self._delta_time.total_seconds()
+        if dt > self._current_timer:
+            _logger.debug(f"Delta Time: {dt}")
+            _logger.debug(f"Current Timer: {self._current_timer}")
+            _logger.debug(f"Current is_on: {self._is_on}")
             self._last_time = this_time
+            # We could simply invert the values of _is_on
             if self._is_on:
                 self._current_timer = self.time_off
                 self._is_on = False
             else:
                 self._current_timer = self.time_on
                 self._is_on = True
+            _logger.debug(f"New Timer: {self._current_timer}")
+            _logger.debug(f"New is_on: {self._is_on}")
 
         # Maybe we don't need this assignation every function evaluation?
         if self._is_on:
@@ -283,6 +292,11 @@ class _OnBoundariesControl:
         else:
             self.value = 0
 
+    def __repr__(self) -> str:
+        return (
+            f"_OnBoundariesControl({self.lower_bound, self.upper_bound, self.value_on})"
+        )
+
     @property
     def value(self) -> int:
         return self._value
@@ -314,7 +328,7 @@ class _OnBoundariesControl:
         self._upper_bound = upper_bound
 
     def __eq__(self, other: None) -> bool:
-        this = [self.method, self.lower_bound, self.upper_bound, self.backwards]
+        this = [self.method, self.lower_bound, self.upper_bound, self.value]
         return this == other
 
     def get_value(self, variable: float) -> int:
@@ -328,6 +342,8 @@ class _OnBoundariesControl:
                 self.value = self.value_on
             else:
                 self.value = 0
+        _logger.debug(f"lb: {self.lower_bound}, ub: {self.upper_bound}, var: {variable}")
+        _logger.debug(f"value: {self.value}, reversed: {self.backwards}")
         return self.value
 
 
@@ -348,6 +364,9 @@ class _PidControl:
         self._last_time = datetime.now(tz=timezone.utc)
         self._last_error = 0
         self._integral_sum = 0
+
+    def __repr__(self) -> str:
+        return f"_PidControl(setpoint: {self.setpoint!r})"
 
     @property
     def setpoint(self) -> float:
@@ -427,11 +446,13 @@ class _PidControl:
         now = datetime.now(tz=timezone.utc)
         time_delta = now - self._last_time
         dt = time_delta.total_seconds()
-
+        _logger.debug(f"kp: {self.kp}, ki: {self.ki}, kd: {self.ki}")
+        _logger.debug(f"lb: {self.min_val}, ub: {self.max_val}")
         # Get error
         error = self.setpoint - variable
         d_error = error - self._last_error
 
+        # Get PID terms
         p_term = self.kp * error
         i_term = self.ki * error * dt
         d_term = self.kd * d_error / dt
@@ -443,6 +464,9 @@ class _PidControl:
         output = int(p_term + self._integral_sum + d_term)
         # Constraint the output to the allowable range
         self.value = max(self.min_val, min(output, self.max_val))
+        _logger.debug(
+            f"error: {error}, p_term: {p_term}, i_term: {i_term}, d_term: {d_term}, _integral_sum: {self._integral_sum}, value: {self.value}"
+        )
 
         self._last_error = error
         self._last_time = now

@@ -11,7 +11,7 @@ class Sensor:
         self.EUlb = 0
         self.EUub = 40
         self.unit_symbol = "oC"
-        self.unit_description = "degree celsius"
+        self.description = "degree celsius"
 
     def read(self):
         self.value = random.gauss(35, 1)

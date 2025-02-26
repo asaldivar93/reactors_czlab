@@ -7,12 +7,12 @@ control_dict = {"method": "manual", "value": 150}
 sensor_1 = Sensor("sen1")
 sensor_2 = Sensor("sen2")
 
-actuator_1 = Actuator("act1", "gpion", control_dict)
-actuator_2 = Actuator("act2", "gpiox", control_dict)
+actuator_1 = Actuator("act1", control_dict)
+actuator_2 = Actuator("act2", control_dict)
 
 sensors = [sensor_1, sensor_2]
 actuators = [actuator_1, actuator_2]
-reactor = Reactor("R1", sensors, actuators)
+reactor = Reactor("R1", 0, sensors, actuators)
 
 class TestReactor:
     def test1(self):
@@ -39,7 +39,7 @@ class TestReactor:
                           "lower_bound": 40, "upper_bound": 50}
         sen1 = reactor.sensors.get_by_id("sen1")
         self.act2.set_reference_sensor(sen1)
-        self.act2.set_controller(new_controller)
+        self.act2.set_control_config(new_controller)
         reactor.update_actuators()
 
         assert self.act2.controller.value == 255
