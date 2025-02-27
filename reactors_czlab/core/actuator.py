@@ -20,10 +20,12 @@ class Actuator:
     def __init__(self, identifier: str, control_config: dict) -> None:
         """Instance the actuator class.
 
-        Inputs:
+        Inputs
         -------
-        -identifier: a unique identifier for the actuator
-        -control_config: the type of control method and settings
+        identifier: str
+            A unique identifier for the actuator
+        control_config: dict
+            A dict with the type of control configuration
         """
         self.id = identifier
         self.controller = _ManualControl(0)
