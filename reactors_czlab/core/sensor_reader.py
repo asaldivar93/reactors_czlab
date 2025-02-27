@@ -137,6 +137,9 @@ class HamiltonSensor(Sensor):
             # and replace error print statements with _logger.error("")
             print(f"Error reading register {register} from unit {self.address}")
             return None
+
+        # I think its better if this function returns the result object itself
+        # and to make another function to convert the registers to float (hex_to_float?)
         raw = (result.registers[0] << 16) + result.registers[1]
         value = struct.unpack(">f", raw.to_bytes(4, byteorder="big"))[0]
         return value / scale
@@ -164,6 +167,7 @@ class HamiltonSensor(Sensor):
 
     def read_pm1(self, register):
         # If the read returns an error we need to catch the error and return 9999
+        # If there is no error then we would call (hex_to_float?)
         return self._read(register=register)
 
     def read_pm6(self, register):
