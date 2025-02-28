@@ -31,8 +31,17 @@ sensor_2 = Sensor("temperature_2")
 actuator_1 = Actuator("pump_1", control_config)
 actuator_2 = Actuator("pump_2", control_config)
 
-sensors = [sensor_1, sensor_2]
-actuators = [actuator_1, actuator_2]
+sensors_a = [sensor_1, sensor_2]
+actuators_a = [actuator_1, actuator_2]
+
+sensor_3 = Sensor("temperature_1")
+sensor_4 = Sensor("temperature_2")
+
+actuator_3 = Actuator("pump_1", control_config)
+actuator_4 = Actuator("pump_2", control_config)
+
+sensors_b = [sensor_3, sensor_4]
+actuators_b = [actuator_3, actuator_4]
 
 async def main() -> None:
     """Run the server."""
@@ -43,15 +52,20 @@ async def main() -> None:
     uri = "http://czlab"
     idx = await server.register_namespace(uri)
 
-    reactor = ReactorOpc("Reactor_1", 5, sensors, actuators)
-    await reactor.init_node(server, idx)
+    reactor_1 = ReactorOpc("Reactor_1", 5, sensors_a, actuators_b)
+    await reactor_1.init_node(server, idx)
+
+    reactor_2 = ReactorOpc("Reactor_2", 5, sensors_a, actuators_b)
+    await reactor_2.init_node(server, idx)
 
     _logger.info("Server Started")
     async with server:
         try:
             while True:
-                await reactor.update_sensors()
-                reactor.update_actuators()
+                await reactor_1.update_sensors()
+                await reactor_2.update_sensors()
+                reactor_1.update_actuators()
+                reactor_2.update_actuators()
                 await asyncio.sleep(1)
         except KeyboardInterrupt:
             await server.stop()

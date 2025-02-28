@@ -40,7 +40,7 @@ class ActuatorOpc:
     async def init_control_subscription(self, server: Server) -> None:
         """Create a subscription to the control parameters."""
         sub = await server.create_subscription(500, self)
-        on_config = await(self.control_method.get_variables())
+        on_config = await self.control_method.get_variables()
         await sub.subscribe_data_change(on_config)
 
     async def datachange_notification(self, node, val, data):
