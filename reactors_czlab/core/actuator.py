@@ -17,17 +17,17 @@ valid_control_methods = ["manual", "timer", "on_boundaries", "pid"]
 class Actuator:
     """Actuator class."""
 
-    def __init__(self, identifier: str, control_config: dict) -> None:
+    def __init__(self, identifier: str, address: str | int) -> None:
         """Instance the actuator class.
 
         Inputs:
         -------
         -identifier: a unique identifier for the actuator
-        -control_config: the type of control method and settings
+        -address: the Modbus address or the gpio pin
         """
         self.id = identifier
+        self.address = address
         self.controller = _ManualControl(0)
-        self.set_control_config(control_config)
 
     @property
     def sensors(self) -> DictList:
@@ -96,15 +96,16 @@ class Actuator:
 
         Inputs:
         -------
-        -control_config: a dictionary with the parameters of the new configuration
+        -control_config: dict
+            A dictionary with the parameters of the new configuration
 
         Example:
         -------
-        -{"method": "manual", "value": 255}
-        -{"method": "timer", "value": 255, "time_on": 5, "time_off": 10}
-        -{"method": "on_boundaries", "value": 255,
-          "lower_bound": 1.52, "upper_bound": 5.45}
-        -{"method": "pid", "setpoint": 35}
+        - {"method": "manual", "value": 255}
+        - {"method": "timer", "value": 255, "time_on": 5, "time_off": 10}
+        - {"method": "on_boundaries", "value": 255,
+           "lower_bound": 1.52, "upper_bound": 5.45}
+        - {"method": "pid", "setpoint": 35}
 
         """
         current_method = self.controller
