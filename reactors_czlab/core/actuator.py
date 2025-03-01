@@ -20,7 +20,7 @@ class Actuator:
     def __init__(self, identifier: str, address: str | int) -> None:
         """Instance the actuator class.
 
-        Inputs:
+        Inputs
         -------
         -identifier: a unique identifier for the actuator
         -address: the Modbus address or the gpio pin
