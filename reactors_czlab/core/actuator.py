@@ -15,6 +15,7 @@ if platform.machine().startswith("arm"):
 
 _logger = logging.getLogger("server.actuator")
 
+IN_RASPBERRYPI = platform.machine().startswith("arm")
 CONTROL_METHODS = ["manual", "timer", "on_boundaries", "pid"]
 
 # Missing a Modbus Actuator, to do after Modbus FIFO queue
@@ -132,11 +133,13 @@ class AnalogActuator(BaseActuator):
 
     def __init__(self, identifier: str, address: str | int) -> None:
         super().__init__(identifier, address)
-        rp.pin_mode(address, rp.OUTPUT)
-        rp.analog_write_set_frequency(address, 24)
+        if IN_RASPBERRYPI:
+            rp.pin_mode(address, rp.OUTPUT)
+            rp.analog_write_set_frequency(address, 24)
 
     def _write(self, value: float) -> float:
-        rp.analog_write(self.address, int(value))
+        if IN_RASPBERRYPI:
+            rp.analog_write(self.address, int(value))
         return value
 
 
