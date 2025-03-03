@@ -4,13 +4,17 @@ import asyncio
 import logging
 
 from asyncua import Server
+
 from reactors_czlab import Actuator, Sensor
+from reactors_czlab.core.sensor import DO_SENSORS, PH_SENSORS
 from reactors_czlab.opcua import ReactorOpc
 
 _logger = logging.getLogger("server")
 _logger.setLevel(logging.DEBUG)
 
-_formatter = logging.Formatter("%(name)s: %(asctime)s %(levelname)s - %(message)s")
+_formatter = logging.Formatter(
+    "%(name)s: %(asctime)s %(levelname)s - %(message)s",
+)
 
 _file_handler = logging.FileHandler("record.log")
 _file_handler.setFormatter(_formatter)
@@ -23,59 +27,6 @@ _stream_handler.setFormatter(_formatter)
 _logger.addHandler(_file_handler)
 _logger.addHandler(_stream_handler)
 
-ph_sensors_dict = {
-    "ph_0": {
-        "model": "ArcPh",
-        "address": 0x01,
-        "channels": [
-            {"register": 2090, "units": "pH", "description": "pH"},
-            {"register": 2410, "units": "oC", "description": "degree_celsius"},
-        ],
-    },
-    "ph_1": {
-        "model": "ArcPh",
-        "address": 0x02,
-        "channels": [
-            {"register": 2090, "units": "pH", "description": "pH"},
-            {"register": 2410, "units": "oC", "description": "degree_celsius"},
-        ],
-    },
-    "ph_2": {
-        "model": "ArcPh",
-        "address": 0x03,
-        "channels": [
-            {"register": 2090, "units": "pH", "description": "pH"},
-            {"register": 2410, "units": "oC", "description": "degree_celsius"},
-        ],
-    },
-}
-
-do_sensors_dict = {
-    "do_0": {
-        "model": "VisiFerm",
-        "address": 0x09,
-        "channels": [
-            {"register": 2090, "units": "ppm", "description": "dissolved_oxygen"},
-            {"register": 2410, "units": "oC", "description": "degree_celsius"},
-        ],
-    },
-    "do_1": {
-        "model": "VisiFerm",
-        "address": 0x10,
-        "channels": [
-            {"register": 2090, "units": "ppm", "description": "dissolved_oxygen"},
-            {"register": 2410, "units": "oC", "description": "degree_celsius"},
-        ],
-    },
-    "do_2": {
-        "model": "VisiFerm",
-        "address": 0x11,
-        "channels": [
-            {"register": 2090, "units": "ppm", "description": "dissolved_oxygen"},
-            {"register": 2410, "units": "oC", "description": "degree_celsius"},
-        ],
-    },
-}
 
 actuators_dict = {
     "pump_0": {"address": "gpio0"},
@@ -83,32 +34,25 @@ actuators_dict = {
     "pump_2": {"address": "gpio0"},
 }
 
-ph_sensors_list = []
-for k, val in ph_sensors_dict.items():
-    address = val["address"]
-    sensor = Sensor(k, address)
-    sensor.add_channels(val["channels"])
-    ph_sensors_list.extend(sensor)
+ph_sensors = []
+for k, config in PH_SENSORS.items():
+    sensor = Sensor(k, config)
+    ph_sensors.append(sensor)
 
-do_sensors_list = []
-for k, val in do_sensors_dict.items():
-    address = val["address"]
-    sensor = Sensor(k, address)
-    sensor.add_channels(val["channels"])
-    do_sensors_list.extend(sensor)
+do_sensors = []
+for k, config in DO_SENSORS.items():
+    sensor = Sensor(k, config)
+    do_sensors.append(sensor)
 
-actuators_list = []
-for k, val in actuators_list.items():
+actuators = []
+for k, val in actuators_dict.items():
     address = val["address"]
-    actuators_list.extend(Actuator(k, address))
+    actuators.append(Actuator(k, address))
 
-reactors = []
-for i in range(3):
-    reactors.extend(
-        ReactorOpc(
-            f"R_{i}", 5, [ph_sensors_list[0], do_sensors_list[0]], [actuators_list[0]],
-        )
-    )
+reactors = [
+    ReactorOpc(f"R_{i}", 5, [ph_sensors[i], do_sensors[i]], actuators[i])
+    for i in range(3)
+]
 
 
 async def main() -> None:

@@ -9,6 +9,16 @@ description = "Bioreactor control module"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [
-  {name = "Alexis Saldivar", email = "asaldivarg93@gmail.com"},
-  {name = "Bhavana Palapati", email = "bpalapati0099@sdsu.edu"}
+    { name = "Alexis Saldivar", email = "asaldivarg93@gmail.com" },
+    { name = "Bhavana Palapati", email = "bpalapati0099@sdsu.edu" },
+]
+dependencies = [
+    "asyncua>=1.1.5",
+    "opcua-client>=0.8.4",
+    "pymodbus>=3.8.6",
+]
+
+[project.optional-dependencies]
+opcua = [
+    "opcua-client>=0.8.4",
 ]
