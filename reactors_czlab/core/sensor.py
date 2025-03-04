@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import platform
 import random
 import struct
 from typing import TYPE_CHECKING
@@ -10,10 +11,13 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from typing import ClassVar
 
-from pymodbus.client import ModbusSerialClient
+if platform.machine().startswith("arm"):
+    from librpiplc import rpiplc as rp
+    from pymodbus.client import ModbusSerialClient
 
 _logger = logging.getLogger("server.sensors")
 
+IN_RASPBERRYPI = platform.machine().startswith("arm")
 # Hamilton sensors can have addresses from 1 to 32.
 # There are four types of hamilton sensors.
 # We'll divide the address space this way: 1-8: ph_sensors, 9-16: oxygen_sensors,
@@ -178,12 +182,12 @@ class HamiltonSensor(Sensor):
     def __init__(
         self,
         identifier,
-        address,
+        config,
         port="/dev/ttyUSB0",
         baudrate=19200,
         timeout=1,
     ):
-        supper().__init__(identifier, address)
+        super().__init__(identifier, config)
         self.client = ModbusSerialClient(
             method="rtu",
             port=port,
@@ -273,26 +277,27 @@ class HamiltonSensor(Sensor):
         self.client.close()
 
 
-# class AnalogSensor(Sensor):
-#     """Class for reading analog channels from the Raspberry."""
-#     def __init__(self, identifier: str, channel: str):
-#         super().__init__(identifier)
-#         self.channel = channel
-#         self.cal = None
-#         rpiplc.pin_mode(self.channel, rpiplc.INPUT)
-#
-#     def read(self):
-#         analog = rpiplc.analog_read(self.channel)
-#         if self.cal:
-#             self.value = self.get_value(analog)
-#         else:
-#             self.value = analog
-#
-#     def get_value(self, value: float) -> float:
-#         return self.cal[0] * value + self.cal[1]
-#
-#     def set_calibration(self, cal: list[float]) -> None:
-#         self.cal = cal
+class AnalogSensor(Sensor):
+    """Class for reading analog channels from the Raspberry."""
+    def __init__(self, identifier: str, config: str):
+        super().__init__(identifier, config)
+        self.cal = None
+        if IN_RASPBERRYPI:
+            rp.pin_mode(self.channel, rp.INPUT)
+
+    def read(self) -> None:
+        if IN_RASPBERRYPI:
+            analog = rp.analog_read(self.channel)
+            if self.cal:
+                self.value = self.get_value(analog)
+            else:
+                self.value = analog
+
+    def get_value(self, value: float) -> float:
+        return self.cal[0] * value + self.cal[1]
+
+    def set_calibration(self, cal: list[float, float]) -> None:
+        self.cal = cal
 
 if __name__ == "__main__":
     sensors = [

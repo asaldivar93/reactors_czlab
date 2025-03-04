@@ -343,8 +343,8 @@ class _OnBoundariesControl:
                 self.value = self.value_on
             else:
                 self.value = 0
-        _logger.debug(f"lb: {self.lower_bound}, ub: {self.upper_bound}, var: {variable}")
-        _logger.debug(f"value: {self.value}, reversed: {self.backwards}")
+        print(f"lb: {self.lower_bound}, ub: {self.upper_bound}, var: {variable}")
+        print(f"value: {self.value}, reversed: {self.backwards}")
         return self.value
 
 
