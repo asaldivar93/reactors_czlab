@@ -2,6 +2,7 @@
 import time
 
 import reactors_czlab.core.actuator as act
+from reactors_czlab.core.sensor import PH_SENSORS
 from reactors_czlab import Actuator, Sensor
 
 control_dict = {"method": "manual", "value": 150}
@@ -19,9 +20,9 @@ con11 = act._PidControl(35)
 con12 = act._PidControl(35)
 con13 = act._PidControl(40)
 
-act2 = Actuator("a2", control_dict)
-sen1 = Sensor("s1")
-sen2 = Sensor("s2")
+act2 = Actuator("a2", "address")
+sen1 = Sensor("s1", PH_SENSORS["ph_0"])
+sen2 = Sensor("s2", PH_SENSORS["ph_0"])
 
 class TestEq:
     def test1(self):
@@ -119,15 +120,15 @@ class TestGetValue:
 
 class TestActuator:
     def test1(self):
-        act1 = Actuator("a1", control_dict)
+        act1 = Actuator("a1", "address")
         assert isinstance(act1, Actuator)
 
     def test2(self):
-        act1 = Actuator("a1", control_dict)
-        assert act1.controller.value == 150
+        act1 = Actuator("a1", "address")
+        assert act1.controller.value == 0
 
     def test3(self):
-        act1 = Actuator("a1", control_dict)
+        act1 = Actuator("a1", "address")
         new_controller = {"method": "timer", "time_on": 1, "time_off": 5, "value": 135}
         act1.set_control_config(new_controller)
         act1.write_output()
@@ -137,7 +138,7 @@ class TestActuator:
         assert act1.controller.value == 0
 
     def test4(self):
-        act1 = Actuator("a1", control_dict)
+        act1 = Actuator("a1", "address")
         new_controller = {"method": "timer", "time_on": 5, "time_off": 1, "value": 135}
         act1.set_control_config(new_controller)
         act1.write_output()
@@ -149,31 +150,31 @@ class TestActuator:
                           "lower_bound": 1.1, "upper_bound": 2.1}
         act2.set_reference_sensor(sen1)
         act2.set_control_config(new_controller)
-        sen1.value = 1.5
+        sen1.channels[0]["value"] = 1.5
         act2.write_output()
 
         assert act2.controller.value == 0
 
     def test6(self):
-        sen1.value = 1.0
+        sen1.channels[0]["value"] = 1.0
         act2.write_output()
 
         assert act2.controller.value == 255
 
     def test7(self):
-        sen1.value = 1.5
+        sen1.channels[0]["value"] = 1.5
         act2.write_output()
 
         assert act2.controller.value == 255
 
     def test8(self):
-        sen1.value = 2.2
+        sen1.channels[0]["value"] = 2.2
         act2.write_output()
 
         assert act2.controller.value == 0
 
     def test9(self):
-        sen1.value = 1.5
+        sen1.channels[0]["value"] = 1.5
         act2.write_output()
 
         assert act2.controller.value == 0
@@ -182,13 +183,13 @@ class TestActuator:
         new_controller = {"method": "pid", "setpoint": 35}
         act2.set_reference_sensor(sen2)
         act2.set_control_config(new_controller)
-        sen2.value = 35
+        sen1.channels[0]["value"] = 35
         act2.write_output()
 
         assert act2.controller.value == 0
 
     def test11(self):
-        sen2.value = 20
+        sen1.channels[0]["value"] = 20
         act2.write_output()
 
         assert act2.controller.value >= 0

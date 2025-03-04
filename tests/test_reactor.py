@@ -1,16 +1,17 @@
 """Test functionality of Reactor class."""
 
 from reactors_czlab import Reactor, Sensor, Actuator, DictList
+from reactors_czlab.core.sensor import PH_SENSORS
 
 control_dict = {"method": "manual", "value": 150}
 
-sensor_1 = Sensor("sen1")
-sensor_2 = Sensor("sen2")
+sen1 = Sensor("s1", PH_SENSORS["ph_0"])
+sen2 = Sensor("s2", PH_SENSORS["ph_0"])
 
-actuator_1 = Actuator("act1", control_dict)
-actuator_2 = Actuator("act2", control_dict)
+actuator_1 = Actuator("act1", "address")
+actuator_2 = Actuator("act2", "address")
 
-sensors = [sensor_1, sensor_2]
+sensors = [sen1, sen2]
 actuators = [actuator_1, actuator_2]
 reactor = Reactor("R1", 0, sensors, actuators)
 
@@ -27,11 +28,11 @@ class TestReactor:
     def test4(self):
         reactor.update_sensors()
         sen1 = reactor.sensors.get_by_id("sen2")
-        assert sen1.value > 0
+        assert sen1.channels[0]["value"] > 0
 
     def test5(self):
         act = reactor.actuators.get_by_id("act1")
-        assert act.controller.value == 150
+        assert act.controller.value == 0
 
     def test6(self):
         self.act2 = reactor.actuators.get_by_id("act2")

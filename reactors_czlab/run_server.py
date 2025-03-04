@@ -50,7 +50,7 @@ for k, val in actuators_dict.items():
     actuators.append(Actuator(k, address))
 
 reactors = [
-    ReactorOpc(f"R_{i}", 5, [ph_sensors[i], do_sensors[i]], actuators[i])
+    ReactorOpc(f"R_{i}", 5, [ph_sensors[i], do_sensors[i]], [actuators[i]])
     for i in range(3)
 ]
 
