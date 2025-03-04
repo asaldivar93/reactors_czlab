@@ -1,12 +1,13 @@
 """Test functionality of Reactor class."""
 
-from reactors_czlab import Reactor, Sensor, Actuator, DictList
+from reactors_czlab import Reactor, Sensor, DictList
+from reactors_czlab.core.actuator import BaseActuator as Actuator
 from reactors_czlab.core.sensor import PH_SENSORS
 
 control_dict = {"method": "manual", "value": 150}
 
-sen1 = Sensor("s1", PH_SENSORS["ph_0"])
-sen2 = Sensor("s2", PH_SENSORS["ph_0"])
+sen1 = Sensor("sen1", PH_SENSORS["ph_0"])
+sen2 = Sensor("sen2", PH_SENSORS["ph_0"])
 
 actuator_1 = Actuator("act1", "address")
 actuator_2 = Actuator("act2", "address")

@@ -10,7 +10,7 @@ from asyncua import ua
 
 if TYPE_CHECKING:
     from opcua.common.node import Node
-    from reactors_czlab import Sensor
+    from reactors_czlab.core.sensor import Sensor
 
 _logger = logging.getLogger("server.opcsensor")
 

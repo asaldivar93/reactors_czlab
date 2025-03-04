@@ -2,8 +2,9 @@
 import time
 
 import reactors_czlab.core.actuator as act
+from reactors_czlab.core.actuator import BaseActuator as Actuator
 from reactors_czlab.core.sensor import PH_SENSORS
-from reactors_czlab import Actuator, Sensor
+from reactors_czlab import Sensor
 
 control_dict = {"method": "manual", "value": 150}
 

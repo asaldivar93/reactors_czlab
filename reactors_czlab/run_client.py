@@ -12,9 +12,7 @@ from reactors_czlab.opcua.client import ReactorOpcClient
 _logger = logging.getLogger("run")
 _logger.setLevel(logging.DEBUG)
 
-_formatter = logging.Formatter(
-    "%(name)s: %(asctime)s %(levelname)s - %(message)s"
-)
+_formatter = logging.Formatter("%(name)s: %(asctime)s %(levelname)s - %(message)s")
 
 _file_handler = logging.FileHandler("client.log")
 _file_handler.setFormatter(_formatter)
@@ -70,9 +68,7 @@ uri = "opc.tcp://localhost:4840"
 
 
 async def main():
-    reactor_nodes = [
-        ReactorOpcClient(f"Reactor_{i}") for i, v in enumerate(reactors)
-    ]
+    reactor_nodes = [ReactorOpcClient(f"Reactor_{i}") for i, v in enumerate(reactors)]
     client = Client(url=uri)
     async with client:
         for i, reactor in enumerate(reactor_nodes):

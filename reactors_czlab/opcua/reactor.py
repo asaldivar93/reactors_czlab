@@ -7,16 +7,19 @@ import logging
 from typing import TYPE_CHECKING
 
 from asyncua import ua
-from reactors_czlab import Actuator, Reactor, Sensor
+from reactors_czlab.core.reactor import Reactor
 from reactors_czlab.opcua.actuator import ActuatorOpc
 from reactors_czlab.opcua.sensor import SensorOpc
 
 if TYPE_CHECKING:
     from asyncua import Server
+    from reactors_czlab.core.actuator import BaseActuator
+    from reactors_czlab.core.sensor import Sensor
 
 _logger = logging.getLogger("server.opcactuator")
 
 reactor_status = {0: "off", 1: "on", 2: "experiment"}
+
 
 class ReactorOpc:
     """Reactor node."""
@@ -26,7 +29,7 @@ class ReactorOpc:
         identifier: str,
         volume: float,
         sensors: list[Sensor],
-        actuators: list[Actuator],
+        actuators: list[BaseActuator],
     ) -> None:
         """Initialize the OPC Reactor node."""
         self.id = identifier
@@ -44,7 +47,10 @@ class ReactorOpc:
 
         # Add variable to store the status from the reactor
         self.state = await self.node.add_variable(
-            idx, "state", 0, varianttype=ua.VariantType.UInt32,
+            idx,
+            "state",
+            0,
+            varianttype=ua.VariantType.UInt32,
         )
         await self.state.set_writable()
         enum_strings_variant = ua.Variant(

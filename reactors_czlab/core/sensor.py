@@ -279,6 +279,7 @@ class HamiltonSensor(Sensor):
 
 class AnalogSensor(Sensor):
     """Class for reading analog channels from the Raspberry."""
+
     def __init__(self, identifier: str, config: str):
         super().__init__(identifier, config)
         self.cal = None
@@ -298,6 +299,7 @@ class AnalogSensor(Sensor):
 
     def set_calibration(self, cal: list[float, float]) -> None:
         self.cal = cal
+
 
 if __name__ == "__main__":
     sensors = [

@@ -5,7 +5,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from reactors_czlab import Actuator, Sensor
+    from reactors_czlab.core.actuator import BaseActuator
+    from reactors_czlab.core.sensor import Sensor
 
 from reactors_czlab.core.dictlist import DictList
 
@@ -18,7 +19,7 @@ class Reactor:
         identifier: str,
         volume: float,
         sensors: list[Sensor],
-        actuators: list[Actuator],
+        actuators: list[BaseActuator],
     ) -> None:
         """Initialize the reactor.
 
@@ -53,7 +54,7 @@ class Reactor:
         return self._actuators
 
     @actuators.setter
-    def actuators(self, actuators: list[Actuator]) -> None:
+    def actuators(self, actuators: list[BaseActuator]) -> None:
         """Set the actuators as a DictList."""
         self._actuators = DictList(actuators)
 

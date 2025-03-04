@@ -36,6 +36,14 @@ class BaseActuator:
         self.id = identifier
         self.address = address
         self.controller = _ManualControl(0)
+        self.reference_sensor = Sensor(
+            "none",
+            {
+                "model": "none",
+                "address": "none",
+                "channels": [{"value": None}, {"value": None}],
+            }
+        )
 
     @property
     def sensors(self) -> DictList:
@@ -116,7 +124,7 @@ class BaseActuator:
             # sets the new config only if it is different from the old config
             if current_controller != new_controller:
                 self.controller = new_controller
-            _logger.info(f"Control config update - {self.id}:{new_method}")
+                _logger.info(f"Control config update - {self.id}:{new_controller}")
 
         except TypeError:
             # Each control class checks that the values
@@ -359,14 +367,9 @@ class _OnBoundariesControl(_Control):
                 self.value = self.value_on
             else:
                 self.value = 0
-<<<<<<< HEAD
         _logger.debug(f"lb: {self.lower_bound}, ub: {self.upper_bound}")
         _logger.debug(f"var: {variable}, value: {self.value}")
 
-=======
-        print(f"lb: {self.lower_bound}, ub: {self.upper_bound}, var: {variable}")
-        print(f"value: {self.value}, reversed: {self.backwards}")
->>>>>>> 82b19c7e097c9cc827bc38188174e0222ac51344
         return self.value
 
 
@@ -376,14 +379,22 @@ class _PidControl(_Control):
     def __init__(
         self,
         setpoint: float,
-        gains: tuple[float, float, float] = (100, 0.01, 0),
-        limits: tuple[float, float] = (0, 255),
+        gains: list[float, float, float] | None = None,
+        limits: list[float, float] | None = None,
     ) -> None:
         self.method = CONTROL_METHODS[3]
         self.setpoint = setpoint
-        self.set_gains(gains)
-        self.set_limits(limits)
+        if gains is None:
+            self.set_gains([100, 0.01, 0])
+        else:
+            self.set_gains(gains)
 
+        if limits is None:
+            self.set_limits([0, 4095])
+        else:
+            self.set_limits(limits)
+
+        self.value = 0
         self._last_time = datetime.now(tz=timezone.utc)
         self._last_error = 0
         self._integral_sum = 0
@@ -435,7 +446,7 @@ class _PidControl(_Control):
             raise TypeError
         self._kd = kd
 
-    def set_gains(self, gains: tuple[float, float, float]) -> None:
+    def set_gains(self, gains: list[float, float, float]) -> None:
         self.kp = gains[0]
         self.ki = gains[1]
         self.kd = gains[2]
@@ -446,7 +457,7 @@ class _PidControl(_Control):
 
     @max_val.setter
     def max_val(self, max_val: float) -> None:
-        if not isinstance(max_val, float):
+        if not isinstance(max_val, float | int):
             raise TypeError
         self._max_val = max_val
 
@@ -456,11 +467,11 @@ class _PidControl(_Control):
 
     @min_val.setter
     def min_val(self, min_val: float) -> None:
-        if not isinstance(min_val, float):
+        if not isinstance(min_val, float | int):
             raise TypeError
         self._min_val = min_val
 
-    def set_limits(self, limits: tuple[float, float]) -> None:
+    def set_limits(self, limits: list[float, float]) -> None:
         self.min_val = limits[0]
         self.max_val = limits[1]
 
