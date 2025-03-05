@@ -7,7 +7,7 @@ class DictList(list):
     This object behaves like a list, but has the O(1) speed
     benefits of a dict when looking up elements by their id.
 
-    """
+    """ 
 
     def __init__(self, iterable: list) -> None:
         """Instance of DictList.
