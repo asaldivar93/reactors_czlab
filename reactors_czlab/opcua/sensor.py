@@ -10,6 +10,7 @@ from asyncua import ua
 
 if TYPE_CHECKING:
     from opcua.common.node import Node
+
     from reactors_czlab.core.sensor import Sensor
 
 _logger = logging.getLogger("server.opcsensor")
@@ -40,7 +41,9 @@ class SensorOpc:
                 ua.DataValue(ua.LocalizedText(Text=channel["description"])),
             )
             self.channels.append(var)
-            _logger.info(f"New variable in {self.sensor.id}:{self.node} - {channel}")
+            _logger.info(
+                f"New variable in {self.sensor.id}:{self.node} - {channel}"
+            )
 
     async def update_value(self) -> None:
         """Get a new reading and update the server."""

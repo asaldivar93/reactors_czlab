@@ -11,6 +11,7 @@ from asyncua import ua
 if TYPE_CHECKING:
     from asyncua import Server
     from asyncua.common.node import Node
+
     from reactors_czlab.core.actuator import Actuator
 
 _logger = logging.getLogger("server.opcactuator")
@@ -25,7 +26,7 @@ class ActuatorOpc:
         """Initialize the OPC actuator node."""
         self.actuator = actuator
 
-    async def init_node(self, server: Server, parent: Node, idx: str) -> None:
+    async def init_node(self, server: Server, parent: Node, idx: int) -> None:
         """Add node and variables for the actuator."""
         actuator = self.actuator
 
@@ -44,7 +45,9 @@ class ActuatorOpc:
         on_config = await self.control_method.get_variables()
         await sub.subscribe_data_change(on_config)
 
-    async def datachange_notification(self, node, val, data):
+    async def datachange_notification(
+        self, node: Node, val: float, data: object
+    ) -> None:
         """Read the control configuration, and update the actuator accordingly."""
         _logger.debug(f"Config update: {self.actuator.id}:{node}:{val}")
         index = await self.method.get_value()
@@ -94,13 +97,15 @@ class ActuatorOpc:
         try:
             reference_sensor = self.sensors_dict[sensor_idx]
         except KeyError:
-            _logger.exception(f"{sensor_idx} not a member of {self.sensors_dict}")
+            _logger.exception(
+                f"{sensor_idx} not a member of {self.sensors_dict}"
+            )
 
         self.actuator.set_reference_sensor(reference_sensor)
         _logger.debug(f"Available sensors: {self.sensors_dict}")
         _logger.debug(f"Selected sensor: {sensor_idx}: {reference_sensor}")
 
-    async def init_control_node(self, idx: str) -> None:
+    async def init_control_node(self, idx: int) -> None:
         """Add configuration variables for the control method."""
         # This is a mess, might need to think of a better way,
         # maybe use an OPC structure instead or a Builder Class?
@@ -188,7 +193,8 @@ class ActuatorOpc:
             [ua.LocalizedText(sensor) for sensor in self.sensors_dict],
             ua.VariantType.LocalizedText,
         )
-        # Build a dict to recover sensor name for datachange_notification callback
+        # Build a dict to recover sensor name
+        # for datachange_notification callback
         self.sensors_dict = dict(enumerate(self.sensors_dict))
         # Add sensor list to the opc server
         await self.sensor.add_property(

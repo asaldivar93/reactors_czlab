@@ -51,7 +51,7 @@ class Actuator:
         self._sensors = sensors
 
     @property
-    def reference_sensor(self) -> Sensor:
+    def reference_sensor(self) -> Sensor | None:
         """Sensor instance used as a reference."""
         return self._reference_sensor
 
@@ -63,7 +63,7 @@ class Actuator:
         self._reference_sensor = sensor
 
     @property
-    def controller(self) -> _Control:
+    def controller(self) -> _Control | None:
         """Get controller."""
         return self._controller
 
@@ -106,23 +106,29 @@ class Actuator:
         try:
             # Instance a new controller class
             new_controller = ControlFactory().create_control(control_config)
-            remove_from_timer = all(
-                [
-                    new_controller.method in ["manual", "timer"],
-                    self.reference_sensor is not None,
-                ]
-            )
-            if remove_from_timer:
-                self.reference_sensor.timer.remove_suscriber(self.controller)
             # sets the new config only if it is different from the old config
             if current_controller != new_controller:
+                if self.reference_sensor is not None:
+                    # remove old controller form the timer sub
+                    self.reference_sensor.timer.remove_suscriber(
+                        self.controller
+                    )
+                    # Add the new controller to the time subscription
+                    self.reference_sensor.timer.add_suscriber(new_controller)
                 self.controller = new_controller
-                _logger.info(f"Control config update - {self.id}:{new_controller}")
+                _logger.info(
+                    f"Control config update - {self.id}:{new_controller}"
+                )
 
         except TypeError:
             # Each control class checks that the values
             # passed are of the correct type
             _logger.exception(f"Wrong attributes in {self.id}:{control_config}")
+
+        except AttributeError:
+            # Catch an exception when the user hasn't set a reference sensor
+            # before setting _OnBoundaries or _PidControl classes
+            _logger.exception(f"reference sensor in {self.id} not set")
 
     @abstractmethod
     def _write(self, value: float) -> float:
