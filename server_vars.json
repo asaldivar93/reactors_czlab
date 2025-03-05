@@ -1,0 +1,80 @@
+{
+  "R_0": {
+    "ns=2;i=7": {
+      "model": "VisiFerm",
+      "variable": "dissolved_oxygen",
+      "datetime": null,
+      "value": null
+    },
+    "ns=2;i=8": {
+      "model": "VisiFerm",
+      "variable": "temperature",
+      "datetime": null,
+      "value": null
+    },
+    "ns=2;i=4": {
+      "model": "ArcPh",
+      "variable": "ph",
+      "datetime": null,
+      "value": null
+    },
+    "ns=2;i=5": {
+      "model": "ArcPh",
+      "variable": "temperature",
+      "datetime": null,
+      "value": null
+    }
+  },
+  "R_1": {
+    "ns=2;i=25": {
+      "model": "VisiFerm",
+      "variable": "dissolved_oxygen",
+      "datetime": null,
+      "value": null
+    },
+    "ns=2;i=26": {
+      "model": "VisiFerm",
+      "variable": "temperature",
+      "datetime": null,
+      "value": null
+    },
+    "ns=2;i=22": {
+      "model": "ArcPh",
+      "variable": "ph",
+      "datetime": null,
+      "value": null
+    },
+    "ns=2;i=23": {
+      "model": "ArcPh",
+      "variable": "temperature",
+      "datetime": null,
+      "value": null
+    }
+  },
+  "R_2": {
+    "ns=2;i=43": {
+      "model": "VisiFerm",
+      "variable": "dissolved_oxygen",
+      "datetime": null,
+      "value": null
+    },
+    "ns=2;i=44": {
+      "model": "VisiFerm",
+      "variable": "temperature",
+      "datetime": null,
+      "value": null
+    },
+    "ns=2;i=40": {
+      "model": "ArcPh",
+      "variable": "ph",
+      "datetime": null,
+      "value": null
+    },
+    "ns=2;i=41": {
+      "model": "ArcPh",
+      "variable": "temperature",
+      "datetime": null,
+      "value": null
+    }
+  }
+}

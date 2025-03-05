@@ -7,16 +7,18 @@ import logging
 from typing import TYPE_CHECKING
 
 from asyncua import ua
+
 from reactors_czlab.core.reactor import Reactor
 from reactors_czlab.opcua.actuator import ActuatorOpc
 from reactors_czlab.opcua.sensor import SensorOpc
 
 if TYPE_CHECKING:
     from asyncua import Server
+
     from reactors_czlab.core.actuator import Actuator
     from reactors_czlab.core.sensor import Sensor
 
-_logger = logging.getLogger("server.opcactuator")
+_logger = logging.getLogger("server.opcreactor")
 
 reactor_status = {0: "off", 1: "on", 2: "experiment"}
 
@@ -75,9 +77,13 @@ class ReactorOpc:
         for sensor in self.sensor_nodes:
             await sensor.init_node(self.node, self.idx)
 
-    async def _add_actuator_nodes(self, server: Server, actuators: dict) -> None:
+    async def _add_actuator_nodes(
+        self, server: Server, actuators: dict
+    ) -> None:
         """Add actuator nodes."""
-        self.actuator_nodes = [ActuatorOpc(actuator) for actuator in actuators.values()]
+        self.actuator_nodes = [
+            ActuatorOpc(actuator) for actuator in actuators.values()
+        ]
         for actuator in self.actuator_nodes:
             await actuator.init_node(server, self.node, self.idx)
 

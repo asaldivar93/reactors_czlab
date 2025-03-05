@@ -40,18 +40,22 @@ class Timer:
         self._interval = interval
         _logger.debug(f"New interval: {self.interval}")
 
-    def add_suscriber(self, suscriber: object) -> None:
-        self._subscribers.append(suscriber)
+    def add_suscriber(self, subscriber: object) -> None:
+        if subscriber not in self._subscribers:
+            self._subscribers.append(subscriber)
 
-    def remove_suscriber(self, suscriber: object) -> None:
-        self._subscribers.remove(suscriber)
+    def remove_suscriber(self, subscriber: object) -> None:
+        if subscriber in self._subscribers:
+            self._subscribers.remove(subscriber)
 
     def is_elapsed(self) -> None:
         """Evaluate if the elapsed time is higher than the interval."""
         this_time = perf_counter()
         self.elapsed_time = this_time - self.last_time
-        _logger.debug(f"elapsed_time: {self.elapsed_time}, interval: {self.interval}")
+        _logger.debug(
+            f"elapsed_time: {self.elapsed_time}, interval: {self.interval}"
+        )
         if self.elapsed_time > self.interval:
             self.last_time = this_time
-            for suscriber in self._subscribers:
-                suscriber.on_timer_callback()
+            for subscriber in self._subscribers:
+                subscriber.on_timer_callback()

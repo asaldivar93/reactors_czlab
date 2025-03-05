@@ -9,9 +9,9 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from asyncua import Client
-    from asyncua.common import DataChangeNotif, Node
+    from asyncua.common import Node
 
-_logger = logging.getLogger("run.client")
+_logger = logging.getLogger("client.client")
 
 
 class ReactorOpcClient:
@@ -43,7 +43,7 @@ class ReactorOpcClient:
         await sub.subscribe_data_change(self.vars)
 
     def datachange_notification(
-        self, node: Node, val: float, data: DataChangeNotif
+        self, node: Node, val: float, data: object
     ) -> None:
         """Commit to the sql database."""
         nodeid = node.nodeid.to_string()

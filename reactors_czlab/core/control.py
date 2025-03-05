@@ -99,7 +99,7 @@ class _Control(ABC):
             raise TypeError
         self._min_val = min_val
 
-    def set_limits(self, limits: list[float, float]) -> None:
+    def set_limits(self, limits: list[float]) -> None:
         self.min_val = limits[0]
         self.max_val = limits[1]
 
@@ -115,7 +115,7 @@ class _Control(ABC):
 class _ManualControl(_Control):
     """ManualControl class sets the output value based on user input."""
 
-    def __init__(self, value: int, limits: float | None = None) -> None:
+    def __init__(self, value: int, limits: list[float] | None = None) -> None:
         self.method = CONTROL_METHODS[0]
         self.value = value
         if limits is None:
@@ -212,7 +212,8 @@ class _TimerControl(_Control):
 class _OnBoundariesControl(_Control):
     """OnBoundariesControl class.
 
-    Sets the output only when the reference variable crosses upper or lower thresholds.
+    Sets the output only when the reference variable crosses
+    upper or lower thresholds.
     """
 
     def __init__(
@@ -253,9 +254,7 @@ class _OnBoundariesControl(_Control):
             self.set_limits(limits)
 
     def __repr__(self) -> str:
-        return (
-            f"_OnBoundariesControl({self.lower_bound, self.upper_bound, self.value_on})"
-        )
+        return f"_OnBoundariesControl({self.lower_bound, self.upper_bound, self.value_on})"
 
     def __eq__(self, other: object) -> bool:
         this = [self.method, self.lower_bound, self.upper_bound, self.value]
@@ -378,12 +377,12 @@ class _PidControl(_Control):
             raise TypeError
         self._kd = kd
 
-    def set_gains(self, gains: list[float, float, float]) -> None:
+    def set_gains(self, gains: list[float]) -> None:
         self.kp = gains[0]
         self.ki = gains[1]
         self.kd = gains[2]
 
-    def get_value(self, sensor: Sensor | None = None) -> float | None:
+    def get_value(self, sensor: Sensor | None = None) -> float:
         if sensor is None:
             raise AttributeError
 
@@ -411,11 +410,11 @@ class _PidControl(_Control):
             output = p_term + self._integral_sum + d_term
             # Constraint the output to the allowable range
             self.value = max(self.min_val, min(output, self.max_val))
-            _logger.debug(f"p_term: {p_term}, i_term: {i_term}, d_term: {d_term}")
+            _logger.debug(
+                f"p_term: {p_term}, i_term: {i_term}, d_term: {d_term}"
+            )
             _logger.debug(
                 f"error: {error}, _integral_sum: {self._integral_sum}, value: {self.value}"
             )
 
-            return self.value
-
-        return None
+        return self.value

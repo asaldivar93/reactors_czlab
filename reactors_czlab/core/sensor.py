@@ -113,7 +113,7 @@ class Sensor:
         # updated every time we read the primary channel. This variable is used
         # by the method actuator.write_output()
         for ch in self.channels:
-            ch["value"] = 9999
+            ch["value"] = -0.111
 
     def __repr__(self) -> str:
         return f"Sensor(id: {self.id})"

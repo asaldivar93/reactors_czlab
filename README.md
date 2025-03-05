@@ -1,12 +1,14 @@
 # reactors_czlab
 ---
 To do List:
-- opc_client
-- experiment_client
 - sql database and api
 - Mass Flow Controller Modbus
+- Pump actuators
 - calibration routine (Modbus and OPC callback)
 - live plotter
+- Restore server from power out
+- Restore client from power out
+- Experiment functions
 
 Non essential to do list:
 - How to you create pytests for the server?
