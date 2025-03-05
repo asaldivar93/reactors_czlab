@@ -3,14 +3,22 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import TYPE_CHECKING
 
-from reactors_czlab import Actuator, Reactor, Sensor
+from asyncua import ua
+from reactors_czlab.core.reactor import Reactor
 from reactors_czlab.opcua.actuator import ActuatorOpc
 from reactors_czlab.opcua.sensor import SensorOpc
 
 if TYPE_CHECKING:
     from asyncua import Server
+    from reactors_czlab.core.actuator import Actuator
+    from reactors_czlab.core.sensor import Sensor
+
+_logger = logging.getLogger("server.opcactuator")
+
+reactor_status = {0: "off", 1: "on", 2: "experiment"}
 
 
 class ReactorOpc:
@@ -27,7 +35,7 @@ class ReactorOpc:
         self.id = identifier
         self.reactor = Reactor(identifier, volume, sensors, actuators)
 
-    async def add_opc_nodes(self, server: Server, idx: int) -> None:
+    async def init_node(self, server: Server, idx: int) -> None:
         """Create the Reactor nodes and add the sensor and actuator nodes."""
         self.idx = idx
         sensors = self.reactor.sensors
@@ -35,18 +43,50 @@ class ReactorOpc:
 
         # Create a Reactor object in the server
         self.node = await server.nodes.objects.add_object(idx, self.id)
+        _logger.info(f"New Reactor node {self.reactor.id}:{self.node}")
+
+        # Add variable to store the status from the reactor
+        self.state = await self.node.add_variable(
+            idx,
+            "state",
+            0,
+            varianttype=ua.VariantType.UInt32,
+        )
+        await self.state.set_writable()
+        enum_strings_variant = ua.Variant(
+            [ua.LocalizedText(reactor_status[k]) for k in reactor_status],
+            ua.VariantType.LocalizedText,
+        )
+        await self.state.add_property(
+            ua.ObjectIds.MultiStateDiscreteType_EnumStrings,
+            "EnumStrings",
+            enum_strings_variant,
+        )
 
         # Add sensor nodes to the server
-        self.sensor_nodes = [SensorOpc(sensor) for sensor in sensors]
-        for sensor in self.sensor_nodes:
-            await sensor.add_node(self.node, idx)
+        await self._add_sensor_nodes(sensors)
 
         # Add actuator nodes to the server
-        self.actuator_nodes = [ActuatorOpc(actuator) for actuator in actuators]
+        await self._add_actuator_nodes(server, actuators)
+
+    async def _add_sensor_nodes(self, sensors: dict) -> None:
+        """Add sensor nodes."""
+        self.sensor_nodes = [SensorOpc(sensor) for sensor in sensors.values()]
+        for sensor in self.sensor_nodes:
+            await sensor.init_node(self.node, self.idx)
+
+    async def _add_actuator_nodes(self, server: Server, actuators: dict) -> None:
+        """Add actuator nodes."""
+        self.actuator_nodes = [ActuatorOpc(actuator) for actuator in actuators.values()]
         for actuator in self.actuator_nodes:
-            await actuator.add_node(self.node, idx)
+            await actuator.init_node(server, self.node, self.idx)
 
     async def update_sensors(self) -> None:
         """Read each sensor and send the value to the server."""
         for sensor in self.sensor_nodes:
             await sensor.update_value()
+
+    def update_actuators(self) -> None:
+        """Update the state of the actuators after taking the sensor readings."""
+        for actuator in self.reactor.actuators.values():
+            actuator.write_output()
