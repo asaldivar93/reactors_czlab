@@ -105,7 +105,7 @@ class _Control(ABC):
 
     def on_timer_callback(self) -> None:
         self._sampling_event = True
-        _logger.debug(f"Timer callback on {self}")
+        _logger.debug(f"Timer callback on {self}:{self._sampling_event}")
 
     @abstractmethod
     def get_value(self, sensor: Sensor | None = None) -> float:
