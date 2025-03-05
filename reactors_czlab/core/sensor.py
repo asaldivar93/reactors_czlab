@@ -1,23 +1,29 @@
 """Sensors Definitions."""
 
 from __future__ import annotations
-
-import logging
-import platform
-import random
-import struct
+from pymodbus.exceptions import ModbusException
+import logging, struct, queue, threading, platform, random
 from typing import TYPE_CHECKING
-
 from reactors_czlab.core.utils import Timer
 
 if TYPE_CHECKING:
     from typing import ClassVar
 
 if platform.machine().startswith("arm"):
-    from librpiplc import rpiplc as rp
+    from librpiplc import rpiplc as rp # type: ignore
     from pymodbus.client import ModbusSerialClient
 
+# Configuring logging
+logging.basicConfig(
+    level=logging.DEBUG, 
+    format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
 _logger = logging.getLogger("server.sensors")
+
+class ModbusError(Exception):
+    """Custom exception for Modbus errors."""
+    pass
 
 IN_RASPBERRYPI = platform.machine().startswith("arm")
 # Hamilton sensors can have addresses from 1 to 32.
@@ -200,102 +206,168 @@ class HamiltonSensor(Sensor):
         0x04: "Slave device failure",
     }
 
-    def __init__(
-        self,
-        identifier,
-        config,
-        port="/dev/ttyUSB0",
-        baudrate=19200,
-        timeout=1,
-    ):
+    def __init__(self, identifier: str, config: dict, port="/dev/ttyUSB0", baudrate=19200, timeout=0.5):
         super().__init__(identifier, config)
-        self.client = ModbusSerialClient(
-            method="rtu",
-            port=port,
-            baudrate=baudrate,
-            timeout=timeout,
-            stopbits=1,
-            bytesize=8,
-            parity="N",
-        )
+        self.address = config["address"]
+        self.client = ModbusSerialClient(method="rtu", port=port, baudrate=baudrate, timeout=timeout, stopbits=1, bytesize=8, parity="N")
         self.client.connect()
+        self.request_queue = queue.Queue()  # FIFO queue for incoming requests
+        self.lock = threading.Lock()  # Lock for thread-safe access to the Modbus client
+        self._stop_event = threading.Event()  # Event to stop the request processing thread
+        self._processing_thread = threading.Thread(target=self._process_requests, daemon=True)
+        self._processing_thread.start()
+        _logger.info(f"Initialized HamiltonSensor {identifier} at address {self.address}")
+        
+    def _process_requests(self):
+        """Process requests from the FIFO queue sequentially."""
+        while not self._stop_event.is_set():
+            try:
+                request = self.request_queue.get(timeout=1)
+                if request is None:
+                    break
+                method, args, kwargs, result_queue = request
+                with self.lock:
+                    try:
+                        result = method(*args, **kwargs)
+                        result_queue.put((result, None))
+                    except Exception as e:
+                        _logger.error(f"Error processing request {method.__name__}: {e}")
+                        result_queue.put((None, e))
+                self.request_queue.task_done()
+            except queue.Empty:
+                continue
+
+    def _enqueue_request(self, method, *args, **kwargs):
+        """Enqueue a request and wait for the result."""
+        result_queue = queue.Queue()
+        _logger.debug(f"Queueing request: {method.__name__} with args={args}, kwargs={kwargs}")
+        self.request_queue.put((method, args, kwargs, result_queue))
+        result, error = result_queue.get()
+        if error:
+            _logger.error(f"Error executing {method.__name__}: {error}")
+            raise error
+        _logger.info(f"Successfully executed {method.__name__}")
+        return result
 
     def _read(self, register, count=2, scale=1.0):
-        # Do you know what happens in case of a time out? Does it raise an error?
-        # Say for example, we disconnect the sensor during operation. In that
-        # situation this function needs to raise an error
-
-        # The timeout should be less than a second to avoid blocking
-        # the main thread that is going to be runnig the server.
-        # Or consider using the AsyncModbusSerialClient but keeping
-        # the FIFO queue we discuss to avoid collading the serial channel
-        result = self.client.read_holding_registers(
-            register,
-            count,
-            slave=self.address,
-        )
-
-        # Instead of return None, we need to raise an error as well
-        # and we need to print the ERROR_CODE
-        # Maybe create our own exception (ModbusError?) to handle modbus errors
-        # or check if the pymodbus library has exceptions we can use (ModbusException?)
-        if result.isError():
-            # and replace error print statements with _logger.error("")
-            print(f"Error reading register {register} from unit {self.address}")
-            return None
-
-        # I think its better if this function returns the result object itself
-        # and to make another function to convert the registers to float (hex_to_float?)
+        """Read holding registers with FIFO queue support."""
+        _logger.debug(f"Reading {count} registers from {register} on address {self.address}")
+        try:
+            # Enqueue the read request
+            result = self._enqueue_request(self.client.read_holding_registers, register, count, slave=self.address)
+            # Check if the result is an error
+            if result.isError():
+                error_code = result.exception_code
+                error_message = f"Error reading register {register} from unit {self.address}: {self.ERROR_CODES.get(error_code, 'Unknown error')}"
+                _logger.error(error_message)
+                raise ModbusError(error_message)
+            _logger.info(f"Read success: {result.registers}")
+            # Return the result object without transforming
+            return result
+        except ModbusException as e:
+            # Handle Modbus exceptions (e.g., disconnection, timeout)
+            error_message = f"Error while reading {register}: {e}"
+            _logger.error(error_message)
+            raise ModbusError(error_message)
+        except Exception as e:
+            # Handle any other exceptions
+            error_message = f"Error while reading {register}: {e}"
+            _logger.error(error_message)
+            raise ModbusError(error_message)
+            
+            
+    def hex_to_float(self, result, scale=1.0) -> float:
+        """Convert the raw registers from the result object to a float."""
+        if not result or result.isError():
+            raise ModbusError("Invalid result object provided")
         raw = (result.registers[0] << 16) + result.registers[1]
         value = struct.unpack(">f", raw.to_bytes(4, byteorder="big"))[0]
         return value / scale
 
-    def set_operator_level(self, register=4288):
-        print("Select an operator level:")
+    def set_operator_level(self, register=4288) -> None:
+        """Set the operator level for the sensor."""
+        
+        _logger.info("Setting operator level for sensor %s at address %d", self.id, self.address)
+        # Display the available operator levels
+        _logger.info("Available operator levels: ")
         for level_name, level_value in self.OPERATOR_LEVELS.items():
-            print(f"{level_name}: {level_value}")
-        level_name = input("Enter the operator level: ")
-        level = self.OPERATOR_LEVELS.get(level_name, 1)
-        password = int(input("Enter password (default 0): ") or 0)
-        print(f"Setting operator level to {level_name} ({level})")
-        self.client.write_registers(
-            register,
-            [level, password],
-            slave=self.address,
-        )
+            _logger.info(f"{level_name}: {level_value}")
+        # Prompt user to select a level
+        level_name = input("Enter the operator level: ").strip().lower()
+        if level_name not in self.OPERATOR_LEVELS:
+            error_message = f"Invalid operator level: {level_name}. Valid levels are: {list(self.OPERATOR_LEVELS.keys())}"
+            _logger.error(error_message)
+            raise ValueError(error_message)
+        # Get the corresponding level data (code and password)
+        level = self.OPERATOR_LEVELS[level_name]
+        password = level["Password"]
+        # Log the chosen level and password
+        _logger.info(f"Setting operator level to {level_name} (code: {level['code']}, password: {password})")
+        try:
+            # Enqueue the request to set the operator level
+            self._enqueue_request(self.client.write_registers, register, [level["code"], password], slave=self.address)
+            _logger.info("Operator level set successfully.")
+        except ModbusError as e:
+            _logger.error(f"Failed to set operator level: {e}")
+            raise
 
-    def set_serial_interface(
-        self,
-        baudrate_code,
-        parity="N",
-        address=None,
-        register=4102,
-    ):
-        print(
-            f"Setting serial interface: Baudrate Code={baudrate_code}, Parity={parity}",
-        )
-        self.client.write_register(register, baudrate_code, slave=self.address)
 
-        if address is not None:
-            print(f"Setting new sensor address to {address}")
-            self.client.write_register(4096, address, slave=self.address)
-            self.address = address  # Updating object"s address to the new one
+    def set_serial_interface(self, baudrate_code, parity="N", address=None, register=4102) -> None:
+        """Set the serial interface configuration for the sensor."""
 
-    def read_pm1(self, register):
-        # If the read returns an error we need to catch the error and return 9999
-        # If there is no error then we would call (hex_to_float?)
-        return self._read(register=register)
+        _logger.info("Setting serial interface for sensor %s at address %d", self.id, self.address)
+        try:
+            # Enqueue the request to set the baudrate
+            self._enqueue_request(self.client.write_register, register, baudrate_code, slave=self.address)
+            _logger.info(f"Setting serial interface: Baudrate Code={baudrate_code}, Parity={parity}")
+            
+            if address is not None:
+                # Enqueue the request to set the new sensor address
+                self._enqueue_request(self.client.write_register, 4096, address, slave=self.address)
+                self.address = address  # Updating the object's address
+                _logger.info(f"Sensor address updated to {address}")
+        except ModbusError as e:
+            _logger.error(f"Failed to set serial interface: {e}")
+            raise
 
-    def read_pm6(self, register):
-        return self._read(register=register)
 
-    def set_measurement_configs(self, config_params):
-        print(f"Setting measurement configs: {config_params}")
-        for param, value in config_params.items():
-            self.client.write_register(param, value, slave=self.address)
+    def read_pm1(self, register: int) -> float:
+        try:
+            result = self._read(register=register)
+            return self.hex_to_float(result)
+        except ModbusError as e:
+            _logger.error(f"Failed to read PM1: {e}")
+            return 9999
 
-    def close(self):
+
+    def read_pm6(self, register: int) -> float:
+        try:
+            result = self._read(register=register)
+            return self.hex_to_float(result)
+        except ModbusError as e:
+            _logger.error(f"Failed to read PM6: {e}")
+            return 9999
+        
+
+    def set_measurement_configs(self, config_params) -> None:
+        """Set measurement configurations for the sensor."""
+        _logger.info("Setting measurement configs for sensor %s at address %d", self.id, self.address)
+        try:
+            for param, value in config_params.items():
+                self._enqueue_request(self.client.write_register, param, value, slave=self.address)
+            _logger.info("Measurement configs set successfully.")
+        except ModbusError as e:
+            _logger.error(f"Failed to set measurement configs: {e}")
+            raise
+
+
+    def close(self) -> None:
+        """Close the Modbus client connection and stop the processing thread."""
+        self._stop_event.set()  # Signal the thread to stop
+        self.request_queue.put(None)  # Sentinel value to stop the thread
+        self._processing_thread.join()  # Wait for the thread to finish
         self.client.close()
+        _logger.info(f"Closed HamiltonSensor {self.id} at address {self.address}")
 
 
 class AnalogSensor(Sensor):
@@ -325,30 +397,23 @@ class AnalogSensor(Sensor):
 if __name__ == "__main__":
     sensors = [
         {
-            "address": 1,
-            "sensor_type": "pH Arc",
-            "units": "pH",
-            "pm1_register": 2090,
-            "pm6_register": 2410,
+            "identifier": "sensor1",
+            "config": PH_SENSORS["ph_0"]
         },
         {
-            "address": 2,
-            "sensor_type": "VisiFerm DO",
-            "units": "%-vol",
-            "pm1_register": 2090,
-            "pm6_register": 2410,
+            "identifier": "sensor2",
+            "config": DO_SENSORS["do_0"]
         },
     ]
 
     for sensor in sensors:
-        reader = SensorReader(
-            address=sensor["address"],
-            sensor_type=sensor["sensor_type"],
-            units=sensor["units"],
+        reader = HamiltonSensor(
+            identifier=sensor["identifier"],
+            config=sensor["config"]
         )
         print(
-            f"Reading from {sensor['sensor_type']} at Address {sensor['address']}",
+            f"Reading from {sensor['config']['model']} at Address {sensor['config']['address']}",
         )
-        print("PM1:", reader.read_pm1(register=sensor["pm1_register"]))
-        print("PM6:", reader.read_pm6(register=sensor["pm6_register"]))
+        print("PM1:", reader.read_pm1(register=sensor["config"]["channels"][0]["register"]))
+        print("PM6:", reader.read_pm6(register=sensor["config"]["channels"][1]["register"]))
         reader.close()
