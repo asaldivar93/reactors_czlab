@@ -13,7 +13,7 @@ from reactors_czlab.opcua.sensor import SensorOpc
 
 if TYPE_CHECKING:
     from asyncua import Server
-    from reactors_czlab.core.actuator import BaseActuator
+    from reactors_czlab.core.actuator import Actuator
     from reactors_czlab.core.sensor import Sensor
 
 _logger = logging.getLogger("server.opcactuator")
@@ -29,7 +29,7 @@ class ReactorOpc:
         identifier: str,
         volume: float,
         sensors: list[Sensor],
-        actuators: list[BaseActuator],
+        actuators: list[Actuator],
     ) -> None:
         """Initialize the OPC Reactor node."""
         self.id = identifier
@@ -64,14 +64,22 @@ class ReactorOpc:
         )
 
         # Add sensor nodes to the server
-        self.sensor_nodes = [SensorOpc(sensor) for sensor in sensors]
-        for sensor in self.sensor_nodes:
-            await sensor.init_node(self.node, idx)
+        await self._add_sensor_nodes(sensors)
 
         # Add actuator nodes to the server
-        self.actuator_nodes = [ActuatorOpc(actuator) for actuator in actuators]
+        await self._add_actuator_nodes(server, actuators)
+
+    async def _add_sensor_nodes(self, sensors: dict) -> None:
+        """Add sensor nodes."""
+        self.sensor_nodes = [SensorOpc(sensor) for sensor in sensors.values()]
+        for sensor in self.sensor_nodes:
+            await sensor.init_node(self.node, self.idx)
+
+    async def _add_actuator_nodes(self, server: Server, actuators: dict) -> None:
+        """Add actuator nodes."""
+        self.actuator_nodes = [ActuatorOpc(actuator) for actuator in actuators.values()]
         for actuator in self.actuator_nodes:
-            await actuator.init_node(server, self.node, idx)
+            await actuator.init_node(server, self.node, self.idx)
 
     async def update_sensors(self) -> None:
         """Read each sensor and send the value to the server."""
@@ -80,5 +88,5 @@ class ReactorOpc:
 
     def update_actuators(self) -> None:
         """Update the state of the actuators after taking the sensor readings."""
-        for actuator in self.reactor.actuators:
+        for actuator in self.reactor.actuators.values():
             actuator.write_output()

@@ -8,6 +8,8 @@ import random
 import struct
 from typing import TYPE_CHECKING
 
+from reactors_czlab.core.utils import Timer
+
 if TYPE_CHECKING:
     from typing import ClassVar
 
@@ -26,6 +28,7 @@ PH_SENSORS = {
     "ph_0": {
         "model": "ArcPh",
         "address": 0x01,
+        "sample_interval": 3,
         "channels": [
             {"register": 2090, "units": "pH", "description": "pH"},
             {"register": 2410, "units": "oC", "description": "degree_celsius"},
@@ -34,6 +37,7 @@ PH_SENSORS = {
     "ph_1": {
         "model": "ArcPh",
         "address": 0x02,
+        "sample_interval": 3,
         "channels": [
             {"register": 2090, "units": "pH", "description": "pH"},
             {"register": 2410, "units": "oC", "description": "degree_celsius"},
@@ -42,6 +46,7 @@ PH_SENSORS = {
     "ph_2": {
         "model": "ArcPh",
         "address": 0x03,
+        "sample_interval": 3,
         "channels": [
             {"register": 2090, "units": "pH", "description": "pH"},
             {"register": 2410, "units": "oC", "description": "degree_celsius"},
@@ -53,6 +58,7 @@ DO_SENSORS = {
     "do_0": {
         "model": "VisiFerm",
         "address": 0x09,
+        "sample_interval": 1,
         "channels": [
             {
                 "register": 2090,
@@ -65,6 +71,7 @@ DO_SENSORS = {
     "do_1": {
         "model": "VisiFerm",
         "address": 0x10,
+        "sample_interval": 1,
         "channels": [
             {
                 "register": 2090,
@@ -77,6 +84,7 @@ DO_SENSORS = {
     "do_2": {
         "model": "VisiFerm",
         "address": 0x11,
+        "sample_interval": 1,
         "channels": [
             {
                 "register": 2090,
@@ -90,13 +98,16 @@ DO_SENSORS = {
 
 
 class Sensor:
-    """Base sensor class used for type checking."""
+    """Base sensor."""
 
     def __init__(self, identifier: str, config: dict) -> None:
         self.id = identifier
         self.address = config["address"]
         self.model = config["model"]
         self.channels = config["channels"]
+        self.timer = Timer(config["sample_interval"])
+        self.timer.add_suscriber(self)
+        self._sampling_event = True
 
         # This variable holds the measurement from the sensor. It needs to be
         # updated every time we read the primary channel. This variable is used
@@ -104,9 +115,19 @@ class Sensor:
         for ch in self.channels:
             ch["value"] = 9999
 
+    def __repr__(self) -> str:
+        return f"Sensor(id: {self.id})"
+
+    def on_timer_callback(self) -> None:
+        self._sampling_event = True
+        _logger.debug(f"Timer callback on {self}")
+
     def read(self) -> None:
-        for ch in self.channels:
-            ch["value"] = random.gauss(35, 1)
+        self.timer.is_elapsed()
+        if self._sampling_event:
+            for ch in self.channels:
+                ch["value"] = random.gauss(35, 1)
+            self._sampling_event = False
 
 
 class HamiltonSensor(Sensor):

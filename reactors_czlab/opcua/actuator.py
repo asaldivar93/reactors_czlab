@@ -11,7 +11,7 @@ from asyncua import ua
 if TYPE_CHECKING:
     from asyncua import Server
     from asyncua.common.node import Node
-    from reactors_czlab.core.actuator import BaseActuator
+    from reactors_czlab.core.actuator import Actuator
 
 _logger = logging.getLogger("server.opcactuator")
 
@@ -21,7 +21,7 @@ control_method = {0: "manual", 1: "timer", 2: "on_boundaries", 3: "pid"}
 class ActuatorOpc:
     """Actuator node."""
 
-    def __init__(self, actuator: BaseActuator) -> None:
+    def __init__(self, actuator: Actuator) -> None:
         """Initialize the OPC actuator node."""
         self.actuator = actuator
 
@@ -103,7 +103,7 @@ class ActuatorOpc:
     async def init_control_node(self, idx: str) -> None:
         """Add configuration variables for the control method."""
         # This is a mess, might need to think of a better way,
-        # maybe use an OPC structure instead or a python DataClass
+        # maybe use an OPC structure instead or a Builder Class?
         # Add Node to store the control settings
         self.control_method = await self.node.add_object(idx, "ControlMethod")
 
@@ -181,7 +181,7 @@ class ActuatorOpc:
         # The default sensor is none, user needs to set it
         self.sensors_dict = ["none"]
         # Get all avaliable sensors
-        for sensor in self.actuator.sensors:
+        for sensor in self.actuator.sensors.values():
             self.sensors_dict.append(sensor.id)
         # Build ua.VariantType list
         sensors_variant = ua.Variant(

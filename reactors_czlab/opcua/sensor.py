@@ -47,4 +47,6 @@ class SensorOpc:
         self.sensor.read()
         for i, channel in enumerate(self.channels):
             new_val = self.sensor.channels[i]["value"]
-            await channel.write_value(new_val)
+            if not isinstance(new_val, float | int):
+                raise TypeError
+            await channel.write_value(float(new_val))
