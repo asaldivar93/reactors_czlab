@@ -41,12 +41,13 @@ class Timer:
         _logger.debug(f"New interval: {self.interval}")
 
     def add_suscriber(self, subscriber: object) -> None:
-        if subscriber not in self._subscribers:
-            self._subscribers.append(subscriber)
+        self._subscribers.append(subscriber)
 
     def remove_suscriber(self, subscriber: object) -> None:
-        if subscriber in self._subscribers:
-            self._subscribers.remove(subscriber)
+        # I'm pretty sure there is a bug here
+        # How does the method remove() find the object?
+        # Does it use the special method __eq__?
+        self._subscribers.remove(subscriber)
 
     def is_elapsed(self) -> None:
         """Evaluate if the elapsed time is higher than the interval."""
@@ -55,6 +56,7 @@ class Timer:
         _logger.debug(
             f"elapsed_time: {self.elapsed_time}, interval: {self.interval}"
         )
+        print(f"elapsed_time: {self.elapsed_time}, interval: {self.interval}")
         if self.elapsed_time > self.interval:
             self.last_time = this_time
             for subscriber in self._subscribers:
