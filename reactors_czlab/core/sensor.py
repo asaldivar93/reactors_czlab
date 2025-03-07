@@ -218,6 +218,7 @@ class HamiltonSensor(Sensor):
         self._processing_thread.start()
         _logger.info(f"Initialized HamiltonSensor {identifier} at address {self.address}")
         
+    # create a different file and class to handle the modbus client and queue. 
     def _process_requests(self):
         """Process requests from the FIFO queue sequentially."""
         while not self._stop_event.is_set():
@@ -284,31 +285,24 @@ class HamiltonSensor(Sensor):
         value = struct.unpack(">f", raw.to_bytes(4, byteorder="big"))[0]
         return value / scale
 
-    def set_operator_level(self, register=4288) -> None:
-        """Set the operator level for the sensor."""
-        
-        _logger.info("Setting operator level for sensor %s at address %d", self.id, self.address)
-        # Display the available operator levels
-        _logger.info("Available operator levels: ")
-        for level_name, level_value in self.OPERATOR_LEVELS.items():
-            _logger.info(f"{level_name}: {level_value}")
-        # Prompt user to select a level
-        level_name = input("Enter the operator level: ").strip().lower()
-        if level_name not in self.OPERATOR_LEVELS:
-            error_message = f"Invalid operator level: {level_name}. Valid levels are: {list(self.OPERATOR_LEVELS.keys())}"
-            _logger.error(error_message)
-            raise ValueError(error_message)
-        # Get the corresponding level data (code and password)
+    # Update it to hardcode the operator level based on the requested operation.
+    def set_operator_level(self, operation: str, register=4288) -> None:
+        """Set the operator level for the sensor based on the operation type."""
+        OPERATION_LEVELS = {
+            "read": "user",
+            "write": "administrator",
+            "calibration": "specialist",
+            "PM1": "user",
+            "PM6": "user",
+        }
+        level_name = OPERATION_LEVELS.get(operation, "user") # Default operator level is set to 'user'
         level = self.OPERATOR_LEVELS[level_name]
-        password = level["Password"]
-        # Log the chosen level and password
-        _logger.info(f"Setting operator level to {level_name} (code: {level['code']}, password: {password})")
+        _logger.info(f"Setting operator level to {level_name} for {operation} operation")
         try:
-            # Enqueue the request to set the operator level
-            self._enqueue_request(self.client.write_registers, register, [level["code"], password], slave=self.address)
-            _logger.info("Operator level set successfully.")
-        except ModbusError as e:
-            _logger.error(f"Failed to set operator level: {e}")
+            self._enqueue_request(self.client.write_registers, register, [level["code"], level["password"]], slave=self.address)
+            _logger.info(f"Operator level '{level_name}' set successfully.")
+        except ModbusException as e:
+            _logger.error(f"Failed to set operator level for {operation}: {e}")
             raise
 
 
@@ -406,6 +400,7 @@ if __name__ == "__main__":
         },
     ]
 
+    # sensor instances are passed each time measurement is 
     for sensor in sensors:
         reader = HamiltonSensor(
             identifier=sensor["identifier"],

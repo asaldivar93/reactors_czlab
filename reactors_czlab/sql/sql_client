@@ -1,0 +1,53 @@
+
+# Database connection parameters
+DB_PARAMS = {
+    "dbname": "bioreactor_db",
+    "user": "postgres",
+    "password": "password",
+    "host": "localhost",
+    "port": "5432"
+}
+
+CREATE TABLE experiment (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(255),
+    date DATE,
+    volume FLOAT
+);
+
+CREATE TABLE visiferm (
+    id SERIAL PRIMARY KEY,
+    experiment_id INT REFERENCES experiment(id) ON DELETE CASCADE,
+    date DATE,
+    chn1 FLOAT,
+    chn1_units VARCHAR(50) DEFAULT 'ppm',
+    chn2 FLOAT,
+    chn2_units VARCHAR(50) DEFAULT '°C'
+);
+
+CREATE TABLE arcph (
+    id SERIAL PRIMARY KEY,
+    experiment_id INT REFERENCES experiment(id) ON DELETE CASCADE,
+    date DATE,
+    chn1 FLOAT,
+    chn1_units VARCHAR(50) DEFAULT 'pH',
+    chn2 FLOAT,
+    chn2_units VARCHAR(50) DEFAULT '°C'
+);
+
+CREATE TABLE analog (
+    id SERIAL PRIMARY KEY,
+    experiment_id INT REFERENCES experiment(id) ON DELETE CASCADE,
+    date DATE,
+    calibration VARCHAR(255),
+    chn1 FLOAT
+);
+
+CREATE TABLE actuator (
+    id SERIAL PRIMARY KEY,
+    experiment_id INT REFERENCES experiment(id) ON DELETE CASCADE,
+    date DATE,
+    calibration VARCHAR(255),
+    chn1 FLOAT
+);
+
