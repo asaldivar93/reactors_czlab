@@ -12,6 +12,7 @@ To do List:
 
 Non essential to do list:
 - How to you create pytests for the server?
+- move sensor info to a json file
 - add roles to the opc server for user authentication
 - add description and metadata to opc variables (Units, range, etc.)
 - fix ruff code G004: logging statement uses f-strings
