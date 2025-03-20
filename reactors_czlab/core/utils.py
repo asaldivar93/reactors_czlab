@@ -53,11 +53,10 @@ class Timer:
         """Evaluate if the elapsed time is higher than the interval."""
         this_time = perf_counter()
         self.elapsed_time = this_time - self.last_time
-        _logger.debug(
-            f"elapsed_time: {self.elapsed_time}, interval: {self.interval}"
-        )
-        print(f"elapsed_time: {self.elapsed_time}, interval: {self.interval}")
         if self.elapsed_time > self.interval:
+            _logger.debug(
+                f"elapsed_time: {self.elapsed_time}, interval: {self.interval}"
+            )
             self.last_time = this_time
             for subscriber in self._subscribers:
                 subscriber.on_timer_callback()
