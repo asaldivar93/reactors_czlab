@@ -1,17 +1,16 @@
 """Sensors Definitions."""
 
 from __future__ import annotations
-from pymodbus.exceptions import ModbusException
-import logging, struct, queue, threading, platform, random
+import logging, struct, platform, random
 from typing import TYPE_CHECKING
 from reactors_czlab.core.utils import Timer
+from modbus_handler import ModbusHandler, ModbusError
 
 if TYPE_CHECKING:
-    from typing import ClassVar
+    from typing import ClassVar,Dict,Optional,List
 
 if platform.machine().startswith("arm"):
     from librpiplc import rpiplc as rp # type: ignore
-    from pymodbus.client import ModbusSerialClient
 
 # Configuring logging
 logging.basicConfig(
@@ -134,7 +133,7 @@ class Sensor:
             for ch in self.channels:
                 ch["value"] = random.gauss(35, 1)
             self._sampling_event = False
-
+            
 
 class HamiltonSensor(Sensor):
     """Hamilton sensors common functions.
@@ -206,119 +205,75 @@ class HamiltonSensor(Sensor):
         0x04: "Slave device failure",
     }
 
-    def __init__(self, identifier: str, config: dict, port="/dev/ttyUSB0", baudrate=19200, timeout=0.5):
+    def __init__(self, identifier: str, config: dict, modbus_handler: ModbusHandler):
         super().__init__(identifier, config)
-        self.address = config["address"]
-        self.client = ModbusSerialClient(method="rtu", port=port, baudrate=baudrate, timeout=timeout, stopbits=1, bytesize=8, parity="N")
-        self.client.connect()
-        self.request_queue = queue.Queue()  # FIFO queue for incoming requests
-        self.lock = threading.Lock()  # Lock for thread-safe access to the Modbus client
-        self._stop_event = threading.Event()  # Event to stop the request processing thread
-        self._processing_thread = threading.Thread(target=self._process_requests, daemon=True)
-        self._processing_thread.start()
+        self.modbus_handler = modbus_handler
         _logger.info(f"Initialized HamiltonSensor {identifier} at address {self.address}")
-        
-    # create a different file and class to handle the modbus client and queue. 
-    def _process_requests(self):
-        """Process requests from the FIFO queue sequentially."""
-        while not self._stop_event.is_set():
-            try:
-                request = self.request_queue.get(timeout=1)
-                if request is None:
-                    break
-                method, args, kwargs, result_queue = request
-                with self.lock:
-                    try:
-                        result = method(*args, **kwargs)
-                        result_queue.put((result, None))
-                    except Exception as e:
-                        _logger.error(f"Error processing request {method.__name__}: {e}")
-                        result_queue.put((None, e))
-                self.request_queue.task_done()
-            except queue.Empty:
-                continue
 
-    def _enqueue_request(self, method, *args, **kwargs):
-        """Enqueue a request and wait for the result."""
-        result_queue = queue.Queue()
-        _logger.debug(f"Queueing request: {method.__name__} with args={args}, kwargs={kwargs}")
-        self.request_queue.put((method, args, kwargs, result_queue))
-        result, error = result_queue.get()
-        if error:
-            _logger.error(f"Error executing {method.__name__}: {error}")
-            raise error
-        _logger.info(f"Successfully executed {method.__name__}")
-        return result
+        # Dispatcher for operations and register addresses
+        self.dispatcher = {
+            "read": {
+                2090: self.read_pm1,
+                2410: self.read_pm6,
+            },
+            "write": {
+                4288: self.set_operator_level,
+                4102: self.set_serial_interface,
+            },
+        }
 
-    def _read(self, register, count=2, scale=1.0):
-        """Read holding registers with FIFO queue support."""
-        _logger.debug(f"Reading {count} registers from {register} on address {self.address}")
-        try:
-            # Enqueue the read request
-            result = self._enqueue_request(self.client.read_holding_registers, register, count, slave=self.address)
-            # Check if the result is an error
-            if result.isError():
-                error_code = result.exception_code
-                error_message = f"Error reading register {register} from unit {self.address}: {self.ERROR_CODES.get(error_code, 'Unknown error')}"
-                _logger.error(error_message)
-                raise ModbusError(error_message)
-            _logger.info(f"Read success: {result.registers}")
-            # Return the result object without transforming
-            return result
-        except ModbusException as e:
-            # Handle Modbus exceptions (e.g., disconnection, timeout)
-            error_message = f"Error while reading {register}: {e}"
-            _logger.error(error_message)
-            raise ModbusError(error_message)
-        except Exception as e:
-            # Handle any other exceptions
-            error_message = f"Error while reading {register}: {e}"
-            _logger.error(error_message)
-            raise ModbusError(error_message)
-            
-            
-    def hex_to_float(self, result, scale=1.0) -> float:
-        """Convert the raw registers from the result object to a float."""
-        if not result or result.isError():
-            raise ModbusError("Invalid result object provided")
-        raw = (result.registers[0] << 16) + result.registers[1]
-        value = struct.unpack(">f", raw.to_bytes(4, byteorder="big"))[0]
-        return value / scale
-
-    # Update it to hardcode the operator level based on the requested operation.
-    def set_operator_level(self, operation: str, register=4288) -> None:
+    
+    def set_operator_level(self, operation: str, register: int = 4288) -> None:
         """Set the operator level for the sensor based on the operation type."""
         OPERATION_LEVELS = {
             "read": "user",
-            "write": "administrator",
+            "write": "specialist",  # Set write operations to specialist level
             "calibration": "specialist",
             "PM1": "user",
             "PM6": "user",
         }
-        level_name = OPERATION_LEVELS.get(operation, "user") # Default operator level is set to 'user'
+        level_name = OPERATION_LEVELS.get(operation, "user")  # Default operator level is set to 'user'
         level = self.OPERATOR_LEVELS[level_name]
         _logger.info(f"Setting operator level to {level_name} for {operation} operation")
         try:
-            self._enqueue_request(self.client.write_registers, register, [level["code"], level["password"]], slave=self.address)
+            # Write the operator level and password to the sensor
+            self.modbus_handler.process_request(
+                address=self.address,
+                register=register,
+                operation="write",
+                value=[level["code"], level["password"]]
+            )
+            self.modbus_handler.get_result()  # Ensure the write operation was successful
             _logger.info(f"Operator level '{level_name}' set successfully.")
-        except ModbusException as e:
+        except ModbusError as e:
             _logger.error(f"Failed to set operator level for {operation}: {e}")
             raise
 
-
-    def set_serial_interface(self, baudrate_code, parity="N", address=None, register=4102) -> None:
+    
+    def set_serial_interface(self, baudrate_code: int, parity: str = "N", address: Optional[int] = None, register: int = 4102) -> None:
         """Set the serial interface configuration for the sensor."""
-
-        _logger.info("Setting serial interface for sensor %s at address %d", self.id, self.address)
+        _logger.info(f"Setting serial interface for sensor {self.id} at address {self.address}")
         try:
-            # Enqueue the request to set the baudrate
-            self._enqueue_request(self.client.write_register, register, baudrate_code, slave=self.address)
+            # Set the baudrate
+            self.modbus_handler.process_request(
+                address=self.address,
+                register=register,
+                operation="write",
+                value=baudrate_code
+            )
+            self.modbus_handler.get_result()  # Ensure the write operation was successful
             _logger.info(f"Setting serial interface: Baudrate Code={baudrate_code}, Parity={parity}")
-            
+
             if address is not None:
-                # Enqueue the request to set the new sensor address
-                self._enqueue_request(self.client.write_register, 4096, address, slave=self.address)
-                self.address = address  # Updating the object's address
+                # Set the new sensor address
+                self.modbus_handler.process_request(
+                    address=self.address,
+                    register=4096,
+                    operation="write",
+                    value=address
+                )
+                self.modbus_handler.get_result()  # Ensure the write operation was successful
+                self.address = address  # Update the object's address
                 _logger.info(f"Sensor address updated to {address}")
         except ModbusError as e:
             _logger.error(f"Failed to set serial interface: {e}")
@@ -326,41 +281,90 @@ class HamiltonSensor(Sensor):
 
 
     def read_pm1(self, register: int) -> float:
+        """Read PM1 value from the sensor."""
         try:
-            result = self._read(register=register)
+            self.modbus_handler.process_request(
+                address=self.address,
+                register=register,
+                operation="read"
+            )
+            result = self.modbus_handler.get_result()
             return self.hex_to_float(result)
         except ModbusError as e:
             _logger.error(f"Failed to read PM1: {e}")
             return 9999
 
-
     def read_pm6(self, register: int) -> float:
+        """Read PM6 value from the sensor."""
         try:
-            result = self._read(register=register)
+            self.modbus_handler.process_request(
+                address=self.address,
+                register=register,
+                operation="read"
+            )
+            result = self.modbus_handler.get_result()
             return self.hex_to_float(result)
         except ModbusError as e:
             _logger.error(f"Failed to read PM6: {e}")
             return 9999
         
 
-    def set_measurement_configs(self, config_params) -> None:
+    def set_measurement_configs(self, config_params: Dict[int, int]) -> None:
         """Set measurement configurations for the sensor."""
-        _logger.info("Setting measurement configs for sensor %s at address %d", self.id, self.address)
+        _logger.info(f"Setting measurement configs for sensor {self.id} at address {self.address}")
         try:
             for param, value in config_params.items():
-                self._enqueue_request(self.client.write_register, param, value, slave=self.address)
+                self.modbus_handler.process_request(
+                    address=self.address,
+                    register=param,
+                    operation="write",
+                    value=value
+                )
+                self.modbus_handler.get_result()  # Ensure the write operation was successful
             _logger.info("Measurement configs set successfully.")
         except ModbusError as e:
             _logger.error(f"Failed to set measurement configs: {e}")
             raise
 
+    def hex_to_float(self, registers: List[int]) -> float:
+        """Convert the raw registers to a float."""
+        if not registers or len(registers) < 2:
+            raise ModbusError("Invalid register data provided")
+        raw = (registers[0] << 16) + registers[1]
+        value = struct.unpack(">f", raw.to_bytes(4, byteorder="big"))[0]
+        return value
+
+    def handle_request(self, operation: str, register_address: int, **kwargs):
+        """Automatically invoke the appropriate method based on the operation and register address."""
+        try:
+            # Set the operator level based on the operation type
+            if operation == "read":
+                self.set_operator_level("read")
+            elif operation == "write":
+                self.set_operator_level("write")
+
+            # Look up the method in the dispatcher
+            method = self.dispatcher.get(operation, {}).get(register_address)
+            if not method:
+                raise ModbusError(f"No handler found for operation '{operation}' and register address '{register_address}'")
+
+            # Invoke the method with additional arguments
+            result = method(register_address, **kwargs)
+
+            # Reset the operator level to 'user' after a write operation
+            if operation == "write":
+                self.set_operator_level("read")  # Reset to user level
+                _logger.info("Operator level reset to 'user' after write operation.")
+
+            return result
+        except ModbusError as e:
+            _logger.error(f"Failed to handle request: {e}")
+            raise
+
 
     def close(self) -> None:
-        """Close the Modbus client connection and stop the processing thread."""
-        self._stop_event.set()  # Signal the thread to stop
-        self.request_queue.put(None)  # Sentinel value to stop the thread
-        self._processing_thread.join()  # Wait for the thread to finish
-        self.client.close()
+        """Close the Modbus client connection."""
+        self.modbus_handler.close()
         _logger.info(f"Closed HamiltonSensor {self.id} at address {self.address}")
 
 
@@ -400,7 +404,7 @@ if __name__ == "__main__":
         },
     ]
 
-    # sensor instances are passed each time measurement is 
+ 
     for sensor in sensors:
         reader = HamiltonSensor(
             identifier=sensor["identifier"],
@@ -412,3 +416,10 @@ if __name__ == "__main__":
         print("PM1:", reader.read_pm1(register=sensor["config"]["channels"][0]["register"]))
         print("PM6:", reader.read_pm6(register=sensor["config"]["channels"][1]["register"]))
         reader.close()
+
+
+
+    
+
+
+    

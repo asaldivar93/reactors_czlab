@@ -6,10 +6,10 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING
 
-from asyncua import ua
+from asyncua import ua # type: ignore
 
 if TYPE_CHECKING:
-    from opcua.common.node import Node
+    from opcua.common.node import Node # type: ignore
 
     from reactors_czlab.core.sensor import Sensor
 
