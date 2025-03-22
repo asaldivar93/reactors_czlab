@@ -3,28 +3,24 @@
 from __future__ import annotations
 
 import logging
-import platform
 from abc import abstractmethod
 
 from reactors_czlab.core.control import ControlFactory, _Control
+from reactors_czlab.core.reactor import IN_RASPBERRYPI
 from reactors_czlab.core.sensor import Sensor
 
-if platform.machine().startswith("arm"):
-    from librpiplc import rpiplc as rp
+if IN_RASPBERRYPI:
+    from reactors_czlab.core.reactor import rpiplc
 
 _logger = logging.getLogger("server.actuator")
 
-IN_RASPBERRYPI = platform.machine().startswith("arm")
 
-
-# Missing a Modbus Actuator, to do after Modbus FIFO queue
+# Missing a Modbus Actuator
 # Missing an Actuator factory?
-
-
 class Actuator:
     """Base Actuator class."""
 
-    def __init__(self, identifier: str, address: str | int) -> None:
+    def __init__(self, identifier: str, config: dict) -> None:
         """Instance the actuator class.
 
         Inputs
@@ -33,10 +29,13 @@ class Actuator:
         -address: the Modbus address or the gpio pin
         """
         self.id = identifier
-        self.address = address
-        self.controller = None
+        self.address = config["address"]
+        self.model = config["model"]
+        self.channels = config["channels"]
+        self.controller = ControlFactory().create_control(
+            {"method": "manual", "value": 0},
+        )
         self.reference_sensor = None
-        self.set_control_config({"method": "manual", "value": 0})
 
     @property
     def sensors(self) -> dict:
@@ -63,13 +62,13 @@ class Actuator:
         self._reference_sensor = sensor
 
     @property
-    def controller(self) -> _Control | None:
+    def controller(self) -> _Control:
         """Get controller."""
         return self._controller
 
     @controller.setter
-    def controller(self, controller: _Control | None) -> None:
-        if not isinstance(controller, _Control | None):
+    def controller(self, controller: _Control) -> None:
+        if not isinstance(controller, _Control):
             raise TypeError
         self._controller = controller
 
@@ -111,13 +110,13 @@ class Actuator:
                 if self.reference_sensor is not None:
                     # remove old controller form the timer sub
                     self.reference_sensor.timer.remove_suscriber(
-                        self.controller
+                        self.controller,
                     )
                     # Add the new controller to the time subscription
                     self.reference_sensor.timer.add_suscriber(new_controller)
                 self.controller = new_controller
                 _logger.info(
-                    f"Control config update - {self.id}:{new_controller}"
+                    f"Control config update - {self.id}:{new_controller}",
                 )
 
         except TypeError:
@@ -138,16 +137,17 @@ class Actuator:
 class AnalogActuator(Actuator):
     """Class writing to the RaspberryPi pins."""
 
-    def __init__(self, identifier: str, address: str | int) -> None:
-        super().__init__(identifier, address)
+    def __init__(self, identifier: str, config: dict) -> None:
+        super().__init__(identifier, config)
         if IN_RASPBERRYPI:
-            rp.pin_mode(address, rp.OUTPUT)
-            rp.analog_write_set_frequency(address, 24)
+            for chn in self.channels:
+                rpiplc.pin_mode(chn["pin"], rpiplc.OUTPUT)
+                rpiplc.analog_write_set_frequency(chn["pin"], 24)
 
-    def _write(self, value: float) -> float:
+    def _write(self, value: float) -> None:
         if IN_RASPBERRYPI:
-            rp.analog_write(self.address, int(value))
-        return value
+            for chn in self.channels:
+                rpiplc.analog_write(chn["pin"], value)
 
 
 class ModbusActuator(Actuator):

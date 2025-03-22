@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
+import platform
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from reactors_czlab.core.actuator import Actuator
     from reactors_czlab.core.sensor import Sensor
+
+if platform.machine().startswith("arm"):
+    from librpiplc import rpiplc
+
+    rpiplc.init("RPIPLC_58")
+
+IN_RASPBERRYPI = platform.machine().startswith("arm")
 
 
 class Reactor:

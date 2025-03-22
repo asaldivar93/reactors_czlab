@@ -1,30 +1,28 @@
 """Sensors Definitions."""
 
 from __future__ import annotations
-import logging, struct, platform, random
+
+import logging
+import random
+import struct
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
+
+from reactors_czlab.core.modbus import ModbusError
+from reactors_czlab.core.reactor import IN_RASPBERRYPI
 from reactors_czlab.core.utils import Timer
-from modbus_handler import ModbusHandler, ModbusError
 
 if TYPE_CHECKING:
-    from typing import ClassVar,Dict,Optional,List
+    from typing import ClassVar
 
-if platform.machine().startswith("arm"):
-    from librpiplc import rpiplc as rp # type: ignore
+    from reactors_czlab.core.modbus import ModbusHandler
 
-# Configuring logging
-logging.basicConfig(
-    level=logging.DEBUG, 
-    format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S"
-)
+if IN_RASPBERRYPI:
+    from reactors_czlab.core.reactor import rpiplc
+
 _logger = logging.getLogger("server.sensors")
 
-class ModbusError(Exception):
-    """Custom exception for Modbus errors."""
-    pass
-
-IN_RASPBERRYPI = platform.machine().startswith("arm")
 # Hamilton sensors can have addresses from 1 to 32.
 # There are four types of hamilton sensors.
 # We'll divide the address space this way: 1-8: ph_sensors, 9-16: oxygen_sensors,
@@ -102,7 +100,7 @@ DO_SENSORS = {
 }
 
 
-class Sensor:
+class Sensor(ABC):
     """Base sensor."""
 
     def __init__(self, identifier: str, config: dict) -> None:
@@ -110,6 +108,9 @@ class Sensor:
         self.address = config["address"]
         self.model = config["model"]
         self.channels = config["channels"]
+        # We don't need to keep a reference of the timer instance inside the sensor?
+        # Maybe create a list of [sensor, timer] pairs
+        # Maybe group sensors by sampling interval and create a single timer for the group
         self.timer = Timer(config["sample_interval"])
         self.timer.add_suscriber(self)
         self._sampling_event = True
@@ -121,19 +122,35 @@ class Sensor:
             ch["value"] = -0.111
 
     def __repr__(self) -> str:
+        """Print sensor id."""
         return f"Sensor(id: {self.id})"
 
     def on_timer_callback(self) -> None:
+        """Set sampling flag to True."""
         self._sampling_event = True
         _logger.debug(f"Timer callback on {self}")
 
+    @abstractmethod
     def read(self) -> None:
-        self.timer.is_elapsed()
+        """Abstract class, all subclasses need to implent this method."""
+        self.timer.is_elapsed()  # The timer should be called indepently of read operations?
         if self._sampling_event:
             for ch in self.channels:
                 ch["value"] = random.gauss(35, 1)
             self._sampling_event = False
-            
+
+
+class RandomSensor(Sensor):
+    """Class used for testing."""
+
+    def read(self) -> None:
+        """Print values with a gaussian distribution."""
+        self.timer.is_elapsed()  # The timer should be called indepently of read operations?
+        if self._sampling_event:
+            self._sampling_event = False
+            for ch in self.channels:
+                ch["value"] = random.gauss(35, 1)
+
 
 class HamiltonSensor(Sensor):
     """Hamilton sensors common functions.
@@ -188,238 +205,199 @@ class HamiltonSensor(Sensor):
         -the limits of slope and offset at pH 7 have to be met
     """
 
-    # Updated with information from Hamilton Documentation
-    # You were right, administrator and specialist do need a password
-    # we can change the password but we won't
     OPERATOR_LEVELS: ClassVar = {
         "user": {"code": 0x03, "Password": 0},
         "administrator": {"code": 0x0C, "Password": 18111978},
         "specialist": {"code": 0x30, "Password": 16021966},
     }
 
-    ERROR_CODES: ClassVar = {
-        0x00: "Ok",
-        0x01: "Illegal function",
-        0x02: "Illegal data address",
-        0x03: "Illegal data Value",
-        0x04: "Slave device failure",
-    }
-
-    def __init__(self, identifier: str, config: dict, modbus_handler: ModbusHandler):
+    def __init__(
+        self,
+        identifier: str,
+        config: dict,
+        modbus_handler: ModbusHandler,
+    ):
         super().__init__(identifier, config)
         self.modbus_handler = modbus_handler
-        _logger.info(f"Initialized HamiltonSensor {identifier} at address {self.address}")
+        _logger.info(
+            f"Initialized HamiltonSensor {identifier} at address {self.address}",
+        )
 
-        # Dispatcher for operations and register addresses
-        self.dispatcher = {
-            "read": {
-                2090: self.read_pm1,
-                2410: self.read_pm6,
-            },
-            "write": {
-                4288: self.set_operator_level,
-                4102: self.set_serial_interface,
-            },
-        }
+    def __repr__(self) -> str:
+        """Print sensor id."""
+        return f"HamiltonSensor(id: {self.id}, model: {self.model}, addr: {self.address})"
 
-    
-    def set_operator_level(self, operation: str, register: int = 4288) -> None:
+    def set_operator_level(self, level_name: str) -> None:
         """Set the operator level for the sensor based on the operation type."""
-        OPERATION_LEVELS = {
-            "read": "user",
-            "write": "specialist",  # Set write operations to specialist level
-            "calibration": "specialist",
-            "PM1": "user",
-            "PM6": "user",
+        operator_levels = {
+            "user": {"code": 0x03, "Password": 0},
+            "administrator": {"code": 0x0C, "Password": 18111978},
+            "specialist": {"code": 0x30, "Password": 16021966},
         }
-        level_name = OPERATION_LEVELS.get(operation, "user")  # Default operator level is set to 'user'
-        level = self.OPERATOR_LEVELS[level_name]
-        _logger.info(f"Setting operator level to {level_name} for {operation} operation")
+
+        # Default operator level is set to 'user'
+        level = operator_levels.get(
+            level_name,
+            {"code": 0x03, "Password": 0},
+        )
+
+        request = {
+            "operation": "write",
+            "address": self.address,
+            "register": 4288,
+            "values": [level],
+        }
         try:
             # Write the operator level and password to the sensor
-            self.modbus_handler.process_request(
-                address=self.address,
-                register=register,
-                operation="write",
-                value=[level["code"], level["password"]]
-            )
-            self.modbus_handler.get_result()  # Ensure the write operation was successful
-            _logger.info(f"Operator level '{level_name}' set successfully.")
+
+            self.modbus_handler.process_request(request)
+            # Ensure the write operation was successful
+            self.modbus_handler.get_result()
+            _logger.debug(f"Operator level '{level_name}' set successfully.")
         except ModbusError as e:
-            _logger.error(f"Failed to set operator level for {operation}: {e}")
+            _logger.error(f"Failed to set operator level for {level_name}: {e}")
             raise
 
-    
-    def set_serial_interface(self, baudrate_code: int, parity: str = "N", address: Optional[int] = None, register: int = 4102) -> None:
+    def set_serial_interface(
+        self,
+        new_address: int,
+        baudrate: int | None = None,
+    ) -> None:
         """Set the serial interface configuration for the sensor."""
-        _logger.info(f"Setting serial interface for sensor {self.id} at address {self.address}")
+        _logger.info(
+            f"Setting serial interface for sensor {self.id} at address {self.address}",
+        )
+        request = {
+            "operation": "write",
+            "address": self.address,
+            "register": 4288,
+        }
         try:
-            # Set the baudrate
-            self.modbus_handler.process_request(
-                address=self.address,
-                register=register,
-                operation="write",
-                value=baudrate_code
-            )
-            self.modbus_handler.get_result()  # Ensure the write operation was successful
-            _logger.info(f"Setting serial interface: Baudrate Code={baudrate_code}, Parity={parity}")
+            # Set operator level
+            self.set_operator_level("specialist")
+            # Set the address
+            request["register"] = 4288
+            request["values"] = [new_address]
+            self.modbus_handler.process_request(request)
+            # Ensure the write operation was successful
+            self.modbus_handler.get_result()
+            self.address = new_address
 
-            if address is not None:
-                # Set the new sensor address
-                self.modbus_handler.process_request(
-                    address=self.address,
-                    register=4096,
-                    operation="write",
-                    value=address
-                )
-                self.modbus_handler.get_result()  # Ensure the write operation was successful
-                self.address = address  # Update the object's address
-                _logger.info(f"Sensor address updated to {address}")
+            if baudrate is not None:
+                # Set the new sensor baudrate
+                # Careful! If you change the baud rate you
+                # also have to update the Modbus Client
+                request["register"] = 4102
+                request["values"] = [baudrate]
+                self.modbus_handler.process_request(request)
+                # Ensure the write operation was successful
+                self.modbus_handler.get_result()
+
+            self.set_operator_level("user")
+            _logger.info(f"Updated serial interface - address:{new_address}")
         except ModbusError as e:
-            _logger.error(f"Failed to set serial interface: {e}")
+            _logger.exception(f"Failed to set serial interface: {e}")
             raise
 
+    def read(self) -> None:
+        """Read all available channels in the sensor."""
+        request = {
+            "operation": "read",
+            "address": self.address,
+            "count": 10,
+        }
+        self.timer.is_elapsed()
+        if self._sampling_event:
+            self._sampling_event = False
+            for chn in self.channels:
+                try:
+                    request["register"] = chn["register"]
+                    self.modbus_handler.process_request(request)
+                    result = self.modbus_handler.get_result()
+                    chn["value"] = self.hex_to_float(result)
 
-    def read_pm1(self, register: int) -> float:
-        """Read PM1 value from the sensor."""
-        try:
-            self.modbus_handler.process_request(
-                address=self.address,
-                register=register,
-                operation="read"
-            )
-            result = self.modbus_handler.get_result()
-            return self.hex_to_float(result)
-        except ModbusError as e:
-            _logger.error(f"Failed to read PM1: {e}")
-            return 9999
+                except ModbusError as e:
+                    _logger.exception(e)
+                    chn["value"] = -0.111
 
-    def read_pm6(self, register: int) -> float:
-        """Read PM6 value from the sensor."""
-        try:
-            self.modbus_handler.process_request(
-                address=self.address,
-                register=register,
-                operation="read"
-            )
-            result = self.modbus_handler.get_result()
-            return self.hex_to_float(result)
-        except ModbusError as e:
-            _logger.error(f"Failed to read PM6: {e}")
-            return 9999
-        
-
-    def set_measurement_configs(self, config_params: Dict[int, int]) -> None:
+    def set_measurement_configs(self, config_params: dict[int, int]) -> None:
         """Set measurement configurations for the sensor."""
-        _logger.info(f"Setting measurement configs for sensor {self.id} at address {self.address}")
+        _logger.info(
+            f"Setting measurement configs for sensor {self.id} at address {self.address}",
+        )
+        request = {
+            "operation": "write",
+            "address": self.address,
+        }
         try:
             for param, value in config_params.items():
-                self.modbus_handler.process_request(
-                    address=self.address,
-                    register=param,
-                    operation="write",
-                    value=value
-                )
-                self.modbus_handler.get_result()  # Ensure the write operation was successful
+                request["register"] = param
+                request["values"] = [value]
+                self.modbus_handler.process_request(request)
+                # Ensure the write operation was successful
+                self.modbus_handler.get_result()
             _logger.info("Measurement configs set successfully.")
         except ModbusError as e:
             _logger.error(f"Failed to set measurement configs: {e}")
             raise
 
-    def hex_to_float(self, registers: List[int]) -> float:
+    def hex_to_float(self, registers: list[int]) -> float:
         """Convert the raw registers to a float."""
         if not registers or len(registers) < 2:
-            raise ModbusError("Invalid register data provided")
+            error_message = "Invalid register data provided"
+            raise ModbusError(error_message)
         raw = (registers[0] << 16) + registers[1]
-        value = struct.unpack(">f", raw.to_bytes(4, byteorder="big"))[0]
-        return value
-
-    def handle_request(self, operation: str, register_address: int, **kwargs):
-        """Automatically invoke the appropriate method based on the operation and register address."""
-        try:
-            # Set the operator level based on the operation type
-            if operation == "read":
-                self.set_operator_level("read")
-            elif operation == "write":
-                self.set_operator_level("write")
-
-            # Look up the method in the dispatcher
-            method = self.dispatcher.get(operation, {}).get(register_address)
-            if not method:
-                raise ModbusError(f"No handler found for operation '{operation}' and register address '{register_address}'")
-
-            # Invoke the method with additional arguments
-            result = method(register_address, **kwargs)
-
-            # Reset the operator level to 'user' after a write operation
-            if operation == "write":
-                self.set_operator_level("read")  # Reset to user level
-                _logger.info("Operator level reset to 'user' after write operation.")
-
-            return result
-        except ModbusError as e:
-            _logger.error(f"Failed to handle request: {e}")
-            raise
-
-
-    def close(self) -> None:
-        """Close the Modbus client connection."""
-        self.modbus_handler.close()
-        _logger.info(f"Closed HamiltonSensor {self.id} at address {self.address}")
+        return struct.unpack(">f", raw.to_bytes(4, byteorder="big"))[0]
 
 
 class AnalogSensor(Sensor):
     """Class for reading analog channels from the Raspberry."""
 
-    def __init__(self, identifier: str, config: str):
+    def __init__(self, identifier: str, config: dict):
+        """Analog input pins in the Raspberry PLC. Range(0, 4095) (0-10V)."""
         super().__init__(identifier, config)
         self.cal = None
         if IN_RASPBERRYPI:
-            rp.pin_mode(self.channel, rp.INPUT)
+            for chn in self.channels:
+                rpiplc.pin_mode(chn["pin"], rpiplc.INPUT)
+                chn["calibration"] = None
+
+    def __repr__(self) -> str:
+        """Print sensor id."""
+        return f"AnalogSensor(id: {self.id}, channels: {self.channels})"
 
     def read(self) -> None:
-        if IN_RASPBERRYPI:
-            analog = rp.analog_read(self.channel)
-            if self.cal:
-                self.value = self.get_value(analog)
-            else:
-                self.value = analog
+        """Read analog values."""
+        self.timer.is_elapsed()
+        if IN_RASPBERRYPI and self._sampling_event:
+            self._sampling_event = False
+            for chn in self.channels:
+                analog = rpiplc.analog_read(chn["pin"])
+                value = (
+                    self.get_value(analog, chn["cal"]) if chn["cal"] else analog
+                )
+                chn["value"] = value
 
-    def get_value(self, value: float) -> float:
-        return self.cal[0] * value + self.cal[1]
+    def get_value(self, analog: float, cal: Calibration) -> float:
+        """Apply a linear transformation to an analog value."""
+        return cal.a * analog + cal.b
 
-    def set_calibration(self, cal: list[float, float]) -> None:
-        self.cal = cal
+    def set_calibration(self, cal: list[list]) -> None:
+        """Set calibration values for all the channels.
 
-
-if __name__ == "__main__":
-    sensors = [
-        {
-            "identifier": "sensor1",
-            "config": PH_SENSORS["ph_0"]
-        },
-        {
-            "identifier": "sensor2",
-            "config": DO_SENSORS["do_0"]
-        },
-    ]
-
- 
-    for sensor in sensors:
-        reader = HamiltonSensor(
-            identifier=sensor["identifier"],
-            config=sensor["config"]
-        )
-        print(
-            f"Reading from {sensor['config']['model']} at Address {sensor['config']['address']}",
-        )
-        print("PM1:", reader.read_pm1(register=sensor["config"]["channels"][0]["register"]))
-        print("PM6:", reader.read_pm6(register=sensor["config"]["channels"][1]["register"]))
-        reader.close()
+        Input:
+        -----
+        cal: list[list]
+            A list of lists with [a, b] pairs of linear regression
+            parameters for each channel
+        """
+        for i, par in enumerate(cal):
+            self.channels[i]["cal"] = Calibration(par[0], par[1])
 
 
+@dataclass
+class Calibration:
+    """Class holding linear regression parameters y = a*x + b."""
 
-    
-
-
-    
+    a: float
+    b: float
