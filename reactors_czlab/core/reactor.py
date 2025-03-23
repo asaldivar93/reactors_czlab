@@ -29,12 +29,17 @@ class Reactor:
     ) -> None:
         """Initialize the reactor.
 
-        Inputs:
-        -------
-        -identifier: a unique identifier for the reactor.
-        -volume: the initial volume of the reactor.
-        -sensors: a list containig the Sensor instances.
-        -actuator: a list cotaining the Actuator instances.
+        Parameters
+        ----------
+        identifier: str
+            A unique identifier for the reactor.
+        volume: float
+            The initial volume of the reactor.
+        sensors: list[Sensor]
+            A list containig the Sensor instances.
+        actuators: list[Actuators]
+            A list cotaining the Actuator instances.
+
         """
         self.id = identifier
         self.sensors = sensors
@@ -45,7 +50,7 @@ class Reactor:
             actuator.sensors = self.sensors
 
     @property
-    def sensors(self) -> dict:
+    def sensors(self) -> dict[str, Sensor]:
         """Get the sensors dict."""
         return self._sensors
 
@@ -57,7 +62,7 @@ class Reactor:
         self._sensors = {s.id: s for s in sensors}
 
     @property
-    def actuators(self) -> dict:
+    def actuators(self) -> dict[str, Actuator]:
         """Get the actuators dict."""
         return self._actuators
 

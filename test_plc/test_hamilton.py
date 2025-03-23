@@ -4,11 +4,8 @@ import platform
 import time
 
 from reactors_czlab.core.modbus import ModbusHandler
-from reactors_czlab.core.sensor import (
-    IN_RASPBERRYPI,
-    PH_SENSORS,
-    HamiltonSensor,
-)
+from reactors_czlab.core.reactor import IN_RASPBERRYPI
+from reactors_czlab.core.sensor import PH_SENSORS, HamiltonSensor
 
 serial_0 = "/dev/ttySC0"
 

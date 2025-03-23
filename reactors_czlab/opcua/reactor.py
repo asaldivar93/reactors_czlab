@@ -89,10 +89,12 @@ class ReactorOpc:
 
     async def update_sensors(self) -> None:
         """Read each sensor and send the value to the server."""
-        for sensor in self.sensor_nodes:
-            await sensor.update_value()
+        self.reactor.update_sensors()
+        for sensor_opc in self.sensor_nodes:
+            await sensor_opc.update_value()
 
-    def update_actuators(self) -> None:
+    async def update_actuators(self) -> None:
         """Update the state of the actuators after taking the sensor readings."""
-        for actuator in self.reactor.actuators.values():
-            actuator.write_output()
+        self.reactor.update_actuators()
+        for actuator_opc in self.actuator_nodes:
+            await actuator_opc.update_value()

@@ -257,7 +257,7 @@ class _OnBoundariesControl(_Control):
         return f"_OnBoundariesControl({self.lower_bound, self.upper_bound, self.value_on})"
 
     def __eq__(self, other: object) -> bool:
-        this = [self.method, self.lower_bound, self.upper_bound, self.value]
+        this = [self.method, self.lower_bound, self.upper_bound, self.value_on]
         return this == other
 
     @property
@@ -286,7 +286,7 @@ class _OnBoundariesControl(_Control):
 
         if self._sampling_event:
             self._sampling_event = False
-            variable = sensor.channels[0]["value"]
+            variable = sensor.channels[0].value
             if variable < self.lower_bound:
                 if self.backwards:
                     self.value = 0
@@ -388,7 +388,7 @@ class _PidControl(_Control):
 
         if self._sampling_event:
             self._sampling_event = False
-            variable = sensor.channels[0]["value"]
+            variable = sensor.channels[0].value
             dt = sensor.timer.elapsed_time
 
             # Get error
@@ -410,6 +410,7 @@ class _PidControl(_Control):
             output = p_term + self._integral_sum + d_term
             # Constraint the output to the allowable range
             self.value = max(self.min_val, min(output, self.max_val))
+            _logger.debug(f"elapsed_time: {dt}, var: {variable}")
             _logger.debug(
                 f"p_term: {p_term}, i_term: {i_term}, d_term: {d_term}"
             )

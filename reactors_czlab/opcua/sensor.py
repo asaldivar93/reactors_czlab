@@ -6,10 +6,10 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING
 
-from asyncua import ua # type: ignore
+from asyncua import ua
 
 if TYPE_CHECKING:
-    from opcua.common.node import Node # type: ignore
+    from asyncua.common.node import Node
 
     from reactors_czlab.core.sensor import Sensor
 
@@ -38,7 +38,7 @@ class SensorOpc:
             await var.set_writable()
             await var.write_attribute(
                 ua.AttributeIds.Description,
-                ua.DataValue(ua.LocalizedText(Text=channel["description"])),
+                ua.DataValue(ua.LocalizedText(Text=channel.description)),
             )
             self.channels.append(var)
             _logger.info(
@@ -47,9 +47,8 @@ class SensorOpc:
 
     async def update_value(self) -> None:
         """Get a new reading and update the server."""
-        self.sensor.read()
         for i, channel in enumerate(self.channels):
-            new_val = self.sensor.channels[i]["value"]
+            new_val = self.sensor.channels[i].value
             if not isinstance(new_val, float | int):
                 raise TypeError
             await channel.write_value(float(new_val))

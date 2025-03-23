@@ -5,14 +5,13 @@ import logging
 
 from asyncua import Server
 
-from reactors_czlab.core.actuator import PlcActuator
-from reactors_czlab.core.modbus import ModbusHandler
-from reactors_czlab.core.sensor import DO_SENSORS, PH_SENSORS, HamiltonSensor
+from reactors_czlab.core.actuator import RandomActuator
+from reactors_czlab.core.sensor import DO_SENSORS, PH_SENSORS, RandomSensor
 from reactors_czlab.core.utils import Channel, PhysicalInfo
 from reactors_czlab.opcua import ReactorOpc
 
 _logger = logging.getLogger("server")
-_logger.setLevel(logging.INFO)
+_logger.setLevel(logging.DEBUG)
 
 _formatter = logging.Formatter(
     "%(name)s: %(asctime)s %(levelname)s - %(message)s",
@@ -20,22 +19,14 @@ _formatter = logging.Formatter(
 
 _file_handler = logging.FileHandler("record.log")
 _file_handler.setFormatter(_formatter)
-_file_handler.setLevel(logging.INFO)
+_file_handler.setLevel(logging.DEBUG)
 
 _stream_handler = logging.StreamHandler()
-_stream_handler.setLevel(logging.WARNING)
+_stream_handler.setLevel(logging.DEBUG)
 _stream_handler.setFormatter(_formatter)
 
 _logger.addHandler(_file_handler)
 _logger.addHandler(_stream_handler)
-
-serial_0 = "/dev/ttySC0"
-
-modbus_client = ModbusHandler(
-    port=serial_0,
-    baudrate=19200,
-    timeout=0.5,
-)
 
 actuators_dict = {
     "pump_0": PhysicalInfo(
@@ -51,17 +42,17 @@ actuators_dict = {
 
 ph_sensors = []
 for k, config in PH_SENSORS.items():
-    sensor = HamiltonSensor(k, config, modbus_client)
+    sensor = RandomSensor(k, config)
     ph_sensors.append(sensor)
 
 do_sensors = []
 for k, config in DO_SENSORS.items():
-    sensor = HamiltonSensor(k, config, modbus_client)
+    sensor = RandomSensor(k, config)
     do_sensors.append(sensor)
 
 actuators = []
 for k, config in actuators_dict.items():
-    actuators.append(PlcActuator(k, config))
+    actuators.append(RandomActuator(k, config))
 
 reactors = [
     ReactorOpc(f"R_{i}", 5, [ph_sensors[i], do_sensors[i]], [actuators[i]])
@@ -74,7 +65,7 @@ async def main() -> None:
     # Init the server
     server = Server()
     await server.init()
-    server.set_endpoint("opc.tcp://0.0.0.0:55488/")
+    server.set_endpoint("opc.tcp://localhost:4840/")
 
     uri = "http://czlab/biocontroller"
     idx = await server.register_namespace(uri)

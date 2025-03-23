@@ -6,12 +6,11 @@ import logging
 import random
 import struct
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from reactors_czlab.core.modbus import ModbusError
+from reactors_czlab.core.modbus import ModbusError, ModbusRequest
 from reactors_czlab.core.reactor import IN_RASPBERRYPI
-from reactors_czlab.core.utils import Timer
+from reactors_czlab.core.utils import Calibration, Channel, PhysicalInfo, Timer
 
 if TYPE_CHECKING:
     from typing import ClassVar
@@ -28,98 +27,93 @@ _logger = logging.getLogger("server.sensors")
 # We'll divide the address space this way: 1-8: ph_sensors, 9-16: oxygen_sensors,
 # 17-24: incyte_sensors, 25-32: co2_sensors
 PH_SENSORS = {
-    "ph_0": {
-        "model": "ArcPh",
-        "address": 0x01,
-        "sample_interval": 3,
-        "channels": [
-            {"register": 2090, "units": "pH", "description": "pH"},
-            {"register": 2410, "units": "oC", "description": "degree_celsius"},
+    "ph_0": PhysicalInfo(
+        "ArcPh",
+        0x01,
+        3,
+        [
+            Channel("pH", "pH", register=2090),
+            Channel("oC", "degree_celsius", register=2410),
         ],
-    },
-    "ph_1": {
-        "model": "ArcPh",
-        "address": 0x02,
-        "sample_interval": 3,
-        "channels": [
-            {"register": 2090, "units": "pH", "description": "pH"},
-            {"register": 2410, "units": "oC", "description": "degree_celsius"},
+    ),
+    "ph_1": PhysicalInfo(
+        "ArcPh",
+        0x02,
+        3,
+        [
+            Channel("pH", "pH", register=2090),
+            Channel("oC", "degree_celsius", register=2410),
         ],
-    },
-    "ph_2": {
-        "model": "ArcPh",
-        "address": 0x03,
-        "sample_interval": 3,
-        "channels": [
-            {"register": 2090, "units": "pH", "description": "pH"},
-            {"register": 2410, "units": "oC", "description": "degree_celsius"},
+    ),
+    "ph_2": PhysicalInfo(
+        "ArcPh",
+        0x03,
+        3,
+        [
+            Channel("pH", "pH", register=2090),
+            Channel("oC", "degree_celsius", register=2410),
         ],
-    },
+    ),
 }
 
 DO_SENSORS = {
-    "do_0": {
-        "model": "VisiFerm",
-        "address": 0x09,
-        "sample_interval": 1,
-        "channels": [
-            {
-                "register": 2090,
-                "units": "ppm",
-                "description": "dissolved_oxygen",
-            },
-            {"register": 2410, "units": "oC", "description": "degree_celsius"},
+    "do_0": PhysicalInfo(
+        "VisiFerm",
+        0x09,
+        1,
+        [
+            Channel("ppm", "dissolved_oxygen", register=2090),
+            Channel("oC", "degree_celsius", register=2410),
         ],
-    },
-    "do_1": {
-        "model": "VisiFerm",
-        "address": 0x10,
-        "sample_interval": 1,
-        "channels": [
-            {
-                "register": 2090,
-                "units": "ppm",
-                "description": "dissolved_oxygen",
-            },
-            {"register": 2410, "units": "oC", "description": "degree_celsius"},
+    ),
+    "do_1": PhysicalInfo(
+        "VisiFerm",
+        0x10,
+        1,
+        [
+            Channel("ppm", "dissolved_oxygen", register=2090),
+            Channel("oC", "degree_celsius", register=2410),
         ],
-    },
-    "do_2": {
-        "model": "VisiFerm",
-        "address": 0x11,
-        "sample_interval": 1,
-        "channels": [
-            {
-                "register": 2090,
-                "units": "ppm",
-                "description": "dissolved_oxygen",
-            },
-            {"register": 2410, "units": "oC", "description": "degree_celsius"},
+    ),
+    "do_2": PhysicalInfo(
+        "VisiFerm",
+        0x11,
+        1,
+        [
+            Channel("ppm", "dissolved_oxygen", register=2090),
+            Channel("oC", "degree_celsius", register=2410),
         ],
-    },
+    ),
 }
 
 
 class Sensor(ABC):
     """Base sensor."""
 
-    def __init__(self, identifier: str, config: dict) -> None:
+    def __init__(self, identifier: str, config: PhysicalInfo) -> None:
+        """Instance a Base sensor class.
+
+        Parameters
+        ----------
+        identifier: str
+            A unique identifier for the sensor
+        config: PhysicalInfo
+            A class with sensor information: model, address,
+            sample_interval, channels
+
+        """
         self.id = identifier
-        self.address = config["address"]
-        self.model = config["model"]
-        self.channels = config["channels"]
-        # We don't need to keep a reference of the timer instance inside the sensor?
+        self.sensor_info = config
+        self.address = config.address
+        self.channels = config.channels
+        # We don't need to keep a reference of the
+        # timer instance inside the sensor?
         # Maybe create a list of [sensor, timer] pairs
-        # Maybe group sensors by sampling interval and create a single timer for the group
-        self.timer = Timer(config["sample_interval"])
+        # Maybe group sensors by sampling interval and create
+        # a single timer for the group, let reactor handle the timers?
+        self.timer = Timer(config.sample_interval)
         self.timer.add_suscriber(self)
         self._sampling_event = True
-
-        # This variable holds the measurement from the sensor. It needs to be
-        # updated every time we read the primary channel. This variable is used
-        # by the method actuator.write_output()
-        for ch in self.channels:
-            ch["value"] = -0.111
 
     def __repr__(self) -> str:
         """Print sensor id."""
@@ -128,20 +122,29 @@ class Sensor(ABC):
     def on_timer_callback(self) -> None:
         """Set sampling flag to True."""
         self._sampling_event = True
-        _logger.debug(f"Timer callback on {self}")
+        # _logger.debug(f"Timer callback on {self}")
 
     @abstractmethod
     def read(self) -> None:
-        """Abstract class, all subclasses need to implent this method."""
-        self.timer.is_elapsed()  # The timer should be called indepently of read operations?
-        if self._sampling_event:
-            for ch in self.channels:
-                ch["value"] = random.gauss(35, 1)
-            self._sampling_event = False
+        """Read all sensor channels."""
 
 
 class RandomSensor(Sensor):
     """Class used for testing."""
+
+    def __init__(self, identifier: str, config: PhysicalInfo) -> None:
+        """Instance a random sensor class used for testing.
+
+        Parameters
+        ----------
+        identifier: str
+            A unique identifier for the sensor
+        config: PhysicalInfo
+            A class with sensor information: model, address,
+            sample_interval, channels
+
+        """
+        super().__init__(identifier, config)
 
     def read(self) -> None:
         """Print values with a gaussian distribution."""
@@ -149,7 +152,7 @@ class RandomSensor(Sensor):
         if self._sampling_event:
             self._sampling_event = False
             for ch in self.channels:
-                ch["value"] = random.gauss(35, 1)
+                ch.value = random.gauss(35, 1)
 
 
 class HamiltonSensor(Sensor):
@@ -205,6 +208,14 @@ class HamiltonSensor(Sensor):
         -the limits of slope and offset at pH 7 have to be met
     """
 
+    REGISTERS: ClassVar = {
+        "operator": 4288,
+        "address": 4096,
+        "baudrate": 4102,
+        "pmc1": 2090,
+        "pmc6": 2410,
+    }
+
     OPERATOR_LEVELS: ClassVar = {
         "user": {"code": 0x03, "Password": 0},
         "administrator": {"code": 0x0C, "Password": 18111978},
@@ -214,18 +225,28 @@ class HamiltonSensor(Sensor):
     def __init__(
         self,
         identifier: str,
-        config: dict,
+        config: PhysicalInfo,
         modbus_handler: ModbusHandler,
-    ):
+    ) -> None:
+        """Instance a Base sensor class.
+
+        Parameters
+        ----------
+        identifier: str
+            A unique identifier for the sensor
+        config: PhysicalInfo
+            A class with sensor information: model, address,
+            sample_interval, channels
+        modbus_handler: ModbusHandles
+            A sentinel which handles modbus communications for all sensors
+
+        """
         super().__init__(identifier, config)
         self.modbus_handler = modbus_handler
-        _logger.info(
-            f"Initialized HamiltonSensor {identifier} at address {self.address}",
-        )
 
     def __repr__(self) -> str:
         """Print sensor id."""
-        return f"HamiltonSensor(id: {self.id}, model: {self.model}, addr: {self.address})"
+        return f"HamiltonSensor(id: {self.id}, model: {self.sensor_info.model}, addr: {self.address})"
 
     def set_operator_level(self, level_name: str) -> None:
         """Set the operator level for the sensor based on the operation type."""
@@ -240,16 +261,14 @@ class HamiltonSensor(Sensor):
             level_name,
             {"code": 0x03, "Password": 0},
         )
-
-        request = {
-            "operation": "write",
-            "address": self.address,
-            "register": 4288,
-            "values": [level],
-        }
+        request = ModbusRequest(
+            operation="write",
+            address=self.address,
+            register=self.REGISTERS["operator"],
+            values=list(level.values()),
+        )
         try:
             # Write the operator level and password to the sensor
-
             self.modbus_handler.process_request(request)
             # Ensure the write operation was successful
             self.modbus_handler.get_result()
@@ -267,17 +286,15 @@ class HamiltonSensor(Sensor):
         _logger.info(
             f"Setting serial interface for sensor {self.id} at address {self.address}",
         )
-        request = {
-            "operation": "write",
-            "address": self.address,
-            "register": 4288,
-        }
+        request = ModbusRequest(
+            operation="write",
+            address=self.address,
+            register=self.REGISTERS["address"],
+            values=[new_address],
+        )
         try:
             # Set operator level
             self.set_operator_level("specialist")
-            # Set the address
-            request["register"] = 4288
-            request["values"] = [new_address]
             self.modbus_handler.process_request(request)
             # Ensure the write operation was successful
             self.modbus_handler.get_result()
@@ -287,8 +304,8 @@ class HamiltonSensor(Sensor):
                 # Set the new sensor baudrate
                 # Careful! If you change the baud rate you
                 # also have to update the Modbus Client
-                request["register"] = 4102
-                request["values"] = [baudrate]
+                request.register = self.REGISTERS["baudrate"]
+                request.values = [baudrate]
                 self.modbus_handler.process_request(request)
                 # Ensure the write operation was successful
                 self.modbus_handler.get_result()
@@ -301,38 +318,43 @@ class HamiltonSensor(Sensor):
 
     def read(self) -> None:
         """Read all available channels in the sensor."""
-        request = {
-            "operation": "read",
-            "address": self.address,
-            "count": 10,
-        }
+        request = ModbusRequest(
+            operation="read",
+            address=self.address,
+            register=0,
+            count=10,
+        )
         self.timer.is_elapsed()
         if self._sampling_event:
             self._sampling_event = False
             for chn in self.channels:
                 try:
-                    request["register"] = chn["register"]
+                    request.register = chn.register
                     self.modbus_handler.process_request(request)
                     result = self.modbus_handler.get_result()
-                    chn["value"] = self.hex_to_float(result)
+                    chn.value = self.hex_to_float(result)
 
                 except ModbusError as e:
                     _logger.exception(e)
-                    chn["value"] = -0.111
+                    chn.value = -0.111
 
-    def set_measurement_configs(self, config_params: dict[int, int]) -> None:
+    def set_measurement_configs(
+        self,
+        config_params: dict[int, list[int]],
+    ) -> None:
         """Set measurement configurations for the sensor."""
         _logger.info(
             f"Setting measurement configs for sensor {self.id} at address {self.address}",
         )
-        request = {
-            "operation": "write",
-            "address": self.address,
-        }
+        request = ModbusRequest(
+            operation="write",
+            address=self.address,
+            register=0,
+        )
         try:
-            for param, value in config_params.items():
-                request["register"] = param
-                request["values"] = [value]
+            for param, values in config_params.items():
+                request.register = param
+                request.values = values
                 self.modbus_handler.process_request(request)
                 # Ensure the write operation was successful
                 self.modbus_handler.get_result()
@@ -353,14 +375,25 @@ class HamiltonSensor(Sensor):
 class AnalogSensor(Sensor):
     """Class for reading analog channels from the Raspberry."""
 
-    def __init__(self, identifier: str, config: dict):
-        """Analog input pins in the Raspberry PLC. Range(0, 4095) (0-10V)."""
+    def __init__(self, identifier: str, config: PhysicalInfo) -> None:
+        """Analog sensor class. Analog input pins Range(0, 4095) (0-10V).
+
+        Parameters
+        ----------
+        identifier: str
+            A unique identifier for the sensor
+        config: PhysicalInfo
+            A class with sensor information: model, address,
+            sample_interval, channels
+        modbus_handler: ModbusHandles
+            A sentinel which handles modbus communications for all sensors
+
+        """
         super().__init__(identifier, config)
         self.cal = None
         if IN_RASPBERRYPI:
             for chn in self.channels:
-                rpiplc.pin_mode(chn["pin"], rpiplc.INPUT)
-                chn["calibration"] = None
+                rpiplc.pin_mode(chn.pin, rpiplc.INPUT)
 
     def __repr__(self) -> str:
         """Print sensor id."""
@@ -372,11 +405,10 @@ class AnalogSensor(Sensor):
         if IN_RASPBERRYPI and self._sampling_event:
             self._sampling_event = False
             for chn in self.channels:
-                analog = rpiplc.analog_read(chn["pin"])
-                value = (
-                    self.get_value(analog, chn["cal"]) if chn["cal"] else analog
-                )
-                chn["value"] = value
+                analog = rpiplc.analog_read(chn.pin)
+                cal = chn.calibration
+                value = self.get_value(analog, cal) if cal else analog
+                chn.value = value
 
     def get_value(self, analog: float, cal: Calibration) -> float:
         """Apply a linear transformation to an analog value."""
@@ -392,12 +424,4 @@ class AnalogSensor(Sensor):
             parameters for each channel
         """
         for i, par in enumerate(cal):
-            self.channels[i]["cal"] = Calibration(par[0], par[1])
-
-
-@dataclass
-class Calibration:
-    """Class holding linear regression parameters y = a*x + b."""
-
-    a: float
-    b: float
+            self.channels[i].calibration = Calibration(par[0], par[1])

@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import logging
-from abc import abstractmethod
+from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING, ClassVar
 
 from reactors_czlab.core.control import ControlFactory, _Control
 from reactors_czlab.core.reactor import IN_RASPBERRYPI
 from reactors_czlab.core.sensor import Sensor
+
+if TYPE_CHECKING:
+    from reactors_czlab.core.utils import PhysicalInfo
 
 if IN_RASPBERRYPI:
     from reactors_czlab.core.reactor import rpiplc
@@ -17,21 +21,23 @@ _logger = logging.getLogger("server.actuator")
 
 # Missing a Modbus Actuator
 # Missing an Actuator factory?
-class Actuator:
+class Actuator(ABC):
     """Base Actuator class."""
 
-    def __init__(self, identifier: str, config: dict) -> None:
-        """Instance the actuator class.
+    def __init__(self, identifier: str, config: PhysicalInfo) -> None:
+        """Instance base actuator class.
 
-        Inputs
-        -------
-        -identifier: a unique identifier for the actuator
-        -address: the Modbus address or the gpio pin
+        Parameters
+        ----------
+        identifier: str
+            A unique identifier for the actuator
+        config: PhysicalInfo
+            A data class with config parameters for the actuator
+
         """
         self.id = identifier
-        self.address = config["address"]
-        self.model = config["model"]
-        self.channels = config["channels"]
+        self.info = config
+        self.channel = config.channels[0]
         self.controller = ControlFactory().create_control(
             {"method": "manual", "value": 0},
         )
@@ -79,7 +85,6 @@ class Actuator:
         else:
             reference = self.sensors[sensor]
             self.reference_sensor = reference
-        self.reference_sensor.timer.add_suscriber(self.controller)
 
     def write_output(self) -> None:
         """Write the actuator values."""
@@ -107,6 +112,7 @@ class Actuator:
             new_controller = ControlFactory().create_control(control_config)
             # sets the new config only if it is different from the old config
             if current_controller != new_controller:
+                self.controller = new_controller
                 if self.reference_sensor is not None:
                     # remove old controller form the timer sub
                     self.reference_sensor.timer.remove_suscriber(
@@ -114,7 +120,7 @@ class Actuator:
                     )
                     # Add the new controller to the time subscription
                     self.reference_sensor.timer.add_suscriber(new_controller)
-                self.controller = new_controller
+
                 _logger.info(
                     f"Control config update - {self.id}:{new_controller}",
                 )
@@ -130,24 +136,68 @@ class Actuator:
             _logger.exception(f"reference sensor in {self.id} not set")
 
     @abstractmethod
-    def _write(self, value: float) -> float:
+    def _write(self, value: float) -> None:
         """Write actuator method."""
 
 
-class AnalogActuator(Actuator):
-    """Class writing to the RaspberryPi pins."""
+class RandomActuator(Actuator):
+    """Class for testing."""
 
-    def __init__(self, identifier: str, config: dict) -> None:
+    def __init__(self, identifier: str, config: PhysicalInfo) -> None:
+        """Instance a random actuator class for testing.
+
+        Parameters
+        ----------
+        identifier: str
+            A unique identifier for the actuator
+        config: PhysicalInfo
+            A data class with config parameters for the actuator
+
+        """
+        super().__init__(identifier, config)
+
+    def _write(self, value: float) -> None:
+        self.channel.value = value
+
+
+class PlcActuator(Actuator):
+    """Class to interface with the RaspberryPi PLC pins."""
+
+    limits: ClassVar = {
+        "lb": 0,
+        "ub": 4095,
+    }
+
+    def __init__(
+        self,
+        identifier: str,
+        config: PhysicalInfo,
+        mode: str = "pwm",
+    ) -> None:
+        """Interface a pin as an actuator class.
+
+        Parameters
+        ----------
+        identifier: str
+            A unique identifier for the actuator
+        config: PhysicalInfo
+            A data class with config parameters for the actuator
+        mode: str
+            Sets the pin as PWM channel, else sets the pin as analog channel
+
+        """
         super().__init__(identifier, config)
         if IN_RASPBERRYPI:
-            for chn in self.channels:
-                rpiplc.pin_mode(chn["pin"], rpiplc.OUTPUT)
-                rpiplc.analog_write_set_frequency(chn["pin"], 24)
+            chn = self.channel
+            rpiplc.pin_mode(chn.pin, rpiplc.OUTPUT)
+            if mode == "pwm":
+                rpiplc.analog_write_set_frequency(chn.register, 24)
 
     def _write(self, value: float) -> None:
         if IN_RASPBERRYPI:
-            for chn in self.channels:
-                rpiplc.analog_write(chn["pin"], value)
+            chn = self.channel
+            rpiplc.analog_write(chn.register, value)
+            chn.value = value
 
 
 class ModbusActuator(Actuator):
