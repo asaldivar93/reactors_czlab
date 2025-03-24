@@ -29,7 +29,7 @@ _stream_handler.setFormatter(_formatter)
 _logger.addHandler(_file_handler)
 _logger.addHandler(_stream_handler)
 
-serial_0 = "/dev/ttySC0"
+serial_0 = "/dev/ttySC2"
 
 modbus_client = ModbusHandler(
     port=serial_0,

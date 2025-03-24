@@ -7,7 +7,7 @@ from pymodbus.datastore import (
     ModbusSlaveContext,
 )
 from pymodbus.server import StartSerialServer
-
+serial_port="/dev/ttySC2"
 # Define a simple data block with 10 registers
 store = ModbusSlaveContext(
     di=ModbusSequentialDataBlock(0, [0x0] * 10000),
@@ -18,7 +18,8 @@ store = ModbusSlaveContext(
 context = ModbusServerContext(slaves=store, single=True)
 
 # Start the Modbus RTU server on a serial port
-# In this case using '/dev/ttySC0' port from Raspberry PLC 21
+# RPI PLC v6 uses serial ports ttySC2 and ttysc3
+print(f"Server running on port {serial_port}")
 StartSerialServer(
-    context=context, port="/dev/ttySC0", framer=FramerType.RTU, baudrate=9600
+    context=context, port=serial_port, framer=FramerType.RTU, baudrate=9600
 )

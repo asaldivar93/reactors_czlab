@@ -5,7 +5,7 @@ from pymodbus.client import ModbusSerialClient
 
 # Create a Modbus RTU client
 client = ModbusSerialClient(
-    framer=FramerType.RTU, port="/dev/ttySC1", baudrate=9600
+    framer=FramerType.RTU, port="/dev/ttySC3", baudrate=9600
 )
 
 # Connect to the Modbus RTU slave
