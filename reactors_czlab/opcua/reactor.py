@@ -98,3 +98,8 @@ class ReactorOpc:
         self.reactor.update_actuators()
         for actuator_opc in self.actuator_nodes:
             await actuator_opc.update_value()
+
+    def stop(self) -> None:
+        """Kill all actuators."""
+        for actuator in self.reactor.actuators.values():
+            actuator.write(0)

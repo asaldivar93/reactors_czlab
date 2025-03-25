@@ -93,6 +93,8 @@ async def main() -> None:
                     await reactor_i.update_actuators()
                 await asyncio.sleep(1)
         except KeyboardInterrupt:
+            for reactor_i in reactors:
+                reactor_i.stop()
             await server.stop()
 
 

@@ -89,13 +89,13 @@ class Actuator(ABC):
     def write_output(self) -> None:
         """Write the actuator values."""
         try:
-            self._write(self.controller.get_value(self.reference_sensor))
+            self.write(self.controller.get_value(self.reference_sensor))
         except AttributeError:
             # Catch an exception when the user hasn't set a reference sensor
             # before setting _OnBoundaries or _PidControl classes
             _logger.exception(f"reference sensor in {self.id} not set")
             _logger.warning(f"Setting output in {self.id} = 0")
-            self._write(0)
+            self.write(0)
 
     def set_control_config(self, control_config: dict) -> None:
         """Change the current configuration of the actuator outputs.
@@ -136,7 +136,7 @@ class Actuator(ABC):
             _logger.exception(f"reference sensor in {self.id} not set")
 
     @abstractmethod
-    def _write(self, value: float) -> None:
+    def write(self, value: float) -> None:
         """Write actuator method."""
 
 
@@ -156,7 +156,8 @@ class RandomActuator(Actuator):
         """
         super().__init__(identifier, config)
 
-    def _write(self, value: float) -> None:
+    def write(self, value: float) -> None:
+        """Write value."""
         self.channel.value = value
 
 
@@ -193,7 +194,8 @@ class PlcActuator(Actuator):
             if mode == "pwm":
                 rpiplc.analog_write_set_frequency(chn.register, 24)
 
-    def _write(self, value: float) -> None:
+    def write(self, value: float) -> None:
+        """Write to physical pin."""
         if IN_RASPBERRYPI:
             chn = self.channel
             rpiplc.analog_write(chn.register, value)
