@@ -30,20 +30,20 @@ _logger.addHandler(_stream_handler)
 
 actuators_dict = {
     "pump_0": PhysicalInfo(
-        "any", 0, 0, [Channel("analog", "pump", pin="Q0.5")]
+        "any", 0, 0, [Channel("analog", "pump", pin="Q0.7")]
     ),
     "pump_1": PhysicalInfo(
         "any", 0, 0, [Channel("analog", "pump", pin="Q0.6")]
     ),
     "pump_2": PhysicalInfo(
-        "any", 0, 0, [Channel("analog", "pump", pin="Q0.7")]
+        "any", 0, 0, [Channel("analog", "pump", pin="Q0.5")]
     ),
 }
 
 sensors_dict = {
-    "A0.5": PhysicalInfo("any", 0, 0, [Channel("analog", "a", pin="A0.5")]),
-    "A0.6": PhysicalInfo("any", 0, 0, [Channel("analog", "a", pin="A0.6")]),
-    "A0.7": PhysicalInfo("any", 0, 0, [Channel("analog", "a", pin="A0.7")]),
+    "A0.12": PhysicalInfo("any", 0, 0, [Channel("analog", "a", pin="A0.12")]),
+    "A0.11": PhysicalInfo("any", 0, 0, [Channel("analog", "a", pin="A0.11")]),
+    "A0.10": PhysicalInfo("any", 0, 0, [Channel("analog", "a", pin="A0.10")]),
 }
 
 sensors = []
