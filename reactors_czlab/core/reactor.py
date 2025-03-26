@@ -9,12 +9,12 @@ if TYPE_CHECKING:
     from reactors_czlab.core.actuator import Actuator
     from reactors_czlab.core.sensor import Sensor
 
-if platform.machine().startswith("arm"):
+if platform.machine().startswith("aarch64"):
     from librpiplc import rpiplc
 
-    rpiplc.init("RPIPLC_58")
+    rpiplc.init("RPIPLC_V6", "RPIPLC_58")
 
-IN_RASPBERRYPI = platform.machine().startswith("arm")
+IN_RASPBERRYPI = platform.machine().startswith("aarch64")
 
 
 class Reactor:

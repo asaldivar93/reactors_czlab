@@ -358,7 +358,7 @@ class HamiltonSensor(Sensor):
             self._sampling_event = False
             for chn in self.channels:
                 try:
-                    request.register = chn.register
+                    request.register = chn.register - 1
                     self.modbus_handler.process_request(request)
                     result = self.modbus_handler.get_result()
                     # Channel measurments are stored as u16 vars
