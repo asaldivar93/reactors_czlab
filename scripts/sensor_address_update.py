@@ -1,11 +1,12 @@
-from sensor import HamiltonSensor  # Import the HamiltonSensor class
 import logging
+
+from reactors_czlab.core.sensor import HamiltonSensor
 
 # Configuring logging
 logging.basicConfig(
     level=logging.DEBUG,
     format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S"
+    datefmt="%Y-%m-%d %H:%M:%S",
 )
 _logger = logging.getLogger("sensor_port_update")
 
@@ -14,7 +15,7 @@ DEFAULT_ADDRESSES = [1, 2]  # Example default addresses
 NEW_ADDRESSES = [10, 11]   # New addresses to assign
 
 # Serial port address (Need to update this based on our system)
-PORT_ADDRESS = "/dev/ttyUSB0"  
+PORT_ADDRESS = "/dev/ttyUSB0"
 
 def update_sensor_port_addresses():
     """Connect to sensors using their default addresses and update their port addresses."""
@@ -26,7 +27,7 @@ def update_sensor_port_addresses():
                 config={"address": default_addr, "model": "ArcPh", "channels": []},
                 port=PORT_ADDRESS,  # Use the specified port address
                 baudrate=19200,
-                timeout=0.5
+                timeout=0.5,
             )
             _logger.info(f"Connected to sensor at default address {default_addr}")
 

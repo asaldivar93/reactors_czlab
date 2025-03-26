@@ -7,12 +7,12 @@ from reactors_czlab.core.modbus import ModbusHandler
 from reactors_czlab.core.reactor import IN_RASPBERRYPI
 from reactors_czlab.core.sensor import PH_SENSORS, HamiltonSensor
 
-serial_0 = "/dev/ttySC2"
+port = "/dev/ttySC2"
 
 if __name__ == "__main__":
     if IN_RASPBERRYPI:
         modbus_client = ModbusHandler(
-            port=serial_0,
+            port=port,
             baudrate=19200,
             timeout=0.5,
         )
@@ -21,8 +21,8 @@ if __name__ == "__main__":
         try:
             while True:
                 sensor_0.read()
-                ph = sensor_0.channels[0]["value"]
-                temp = sensor_0.channels[1]["value"]
+                ph = sensor_0.channels[0].value
+                temp = sensor_0.channels[1].value
                 print(f"ph: {ph}, temp: {temp}")
                 time.sleep(1)
         except KeyboardInterrupt:

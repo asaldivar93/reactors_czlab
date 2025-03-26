@@ -3,10 +3,17 @@
 from __future__ import annotations
 
 import logging
+import struct
 from dataclasses import dataclass
 from time import perf_counter
 
 _logger = logging.getLogger("server.utils")
+
+
+def u16_to_float(low: int, high: int) -> float:
+    """Convert little endian notation to float."""
+    packed = struct.pack("<HH", low, high)
+    return struct.unpack("<f", packed)[0]
 
 
 class Timer:

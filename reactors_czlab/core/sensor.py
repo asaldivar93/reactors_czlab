@@ -4,13 +4,22 @@ from __future__ import annotations
 
 import logging
 import random
-import struct
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
-from reactors_czlab.core.modbus import ModbusError, ModbusRequest
+from reactors_czlab.core.modbus import (
+    ModbusError,
+    ModbusRequest,
+    valid_baudrates,
+)
 from reactors_czlab.core.reactor import IN_RASPBERRYPI
-from reactors_czlab.core.utils import Calibration, Channel, PhysicalInfo, Timer
+from reactors_czlab.core.utils import (
+    Calibration,
+    Channel,
+    PhysicalInfo,
+    Timer,
+    u16_to_float,
+)
 
 if TYPE_CHECKING:
     from typing import ClassVar
@@ -24,8 +33,8 @@ _logger = logging.getLogger("server.sensors")
 
 # Hamilton sensors can have addresses from 1 to 32.
 # There are four types of hamilton sensors.
-# We'll divide the address space this way: 1-8: ph_sensors, 9-16: oxygen_sensors,
-# 17-24: incyte_sensors, 25-32: co2_sensors
+# We'll divide the address space this way: 1-8: ph_sensors,
+# 9-16: oxygen_sensors, 17-24: incyte_sensors, 25-32: co2_sensors
 PH_SENSORS = {
     "ph_0": PhysicalInfo(
         "ArcPh",
@@ -209,11 +218,12 @@ class HamiltonSensor(Sensor):
     """
 
     REGISTERS: ClassVar = {
-        "operator": 4288,
-        "address": 4096,
-        "baudrate": 4102,
-        "pmc1": 2090,
-        "pmc6": 2410,
+        # Registers in Hamilton star with index 0
+        "operator": 4288 - 1,
+        "address": 4096 - 1,
+        "baudrate": 4102 - 1,
+        "pmc1": 2090 - 1,
+        "pmc6": 2410 - 1,
     }
 
     OPERATOR_LEVELS: ClassVar = {
@@ -277,14 +287,13 @@ class HamiltonSensor(Sensor):
             _logger.error(f"Failed to set operator level for {level_name}: {e}")
             raise
 
-    def set_serial_interface(
+    def set_address(
         self,
         new_address: int,
-        baudrate: int | None = None,
     ) -> None:
-        """Set the serial interface configuration for the sensor."""
+        """Set a new address for the sensor."""
         _logger.info(
-            f"Setting serial interface for sensor {self.id} at address {self.address}",
+            f"Changing address for sensor {self.id} at address {self.address}",
         )
         request = ModbusRequest(
             operation="write",
@@ -293,28 +302,48 @@ class HamiltonSensor(Sensor):
             values=[new_address],
         )
         try:
-            # Set operator level
             self.set_operator_level("specialist")
             self.modbus_handler.process_request(request)
-            # Ensure the write operation was successful
-            self.modbus_handler.get_result()
+            self.modbus_handler.get_result()  # Make sure operation succeded
             self.address = new_address
-
-            if baudrate is not None:
-                # Set the new sensor baudrate
-                # Careful! If you change the baud rate you
-                # also have to update the Modbus Client
-                request.register = self.REGISTERS["baudrate"]
-                request.values = [baudrate]
-                self.modbus_handler.process_request(request)
-                # Ensure the write operation was successful
-                self.modbus_handler.get_result()
-
             self.set_operator_level("user")
             _logger.info(f"Updated serial interface - address:{new_address}")
         except ModbusError as e:
             _logger.exception(f"Failed to set serial interface: {e}")
             raise
+
+    def set_baudrate(self, baudrate: int) -> None:
+        """Update the baudrate for the sensor."""
+        _logger.info(
+            f"Changing baudrate for sensor {self.id} at address {self.address}",
+        )
+        _logger.warning(
+            "Carefull! If you update the baudrate in the sensor \
+            you need to update the serial client as well",
+        )
+        try:
+            # Carefull! If you update the baudrate in the sensor
+            # you need to update the serial client as well
+            baudrate_code = valid_baudrates[baudrate]
+            request = ModbusRequest(
+                operation="write",
+                address=self.address,
+                register=self.REGISTERS["baudrate"],
+                values=[baudrate_code],
+            )
+            try:
+                self.set_operator_level("specialist")
+                self.modbus_handler.process_request(request)
+                self.modbus_handler.get_result()  # Make sure operation succeded
+                self.set_operator_level("user")
+                _logger.info(
+                    f"Updated updated baudrate interface - baudrate:{baudrate}",
+                )
+            except ModbusError as e:
+                _logger.exception(f"Failed to set serial interface: {e}")
+                raise
+        except KeyError:
+            _logger.warning(f"Baudrate should be one of: {valid_baudrates}")
 
     def read(self) -> None:
         """Read all available channels in the sensor."""
@@ -332,7 +361,11 @@ class HamiltonSensor(Sensor):
                     request.register = chn.register
                     self.modbus_handler.process_request(request)
                     result = self.modbus_handler.get_result()
-                    chn.value = self.hex_to_float(result)
+                    # Channel measurments are stored as u16 vars
+                    # in registers 2 and 3
+                    low, high = result[2], result[3]
+                    # convert two u16 to float32
+                    chn.value = u16_to_float(low, high)
 
                 except ModbusError as e:
                     _logger.exception(e)

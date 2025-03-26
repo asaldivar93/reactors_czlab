@@ -12,6 +12,8 @@ from pymodbus.exceptions import ModbusException
 
 _logger = logging.getLogger("server.modbus_handler")
 
+valid_baudrates = {4800: 2, 9600: 3, 19200: 4, 38400: 5, 57600: 6, 115200: 7}
+
 
 class ModbusError(Exception):
     """Custom exception for Modbus errors."""
@@ -72,10 +74,11 @@ class ModbusHandler:
             Timeout
 
         """
+        self.baudrate = baudrate
         self.client = ModbusSerialClient(
             framer=FramerType.RTU,
             port=port,
-            baudrate=baudrate,
+            baudrate=self.baudrate,
             timeout=timeout,
             stopbits=1,
             bytesize=8,
@@ -86,6 +89,18 @@ class ModbusHandler:
             raise ModbusError(error_message)
         self._last_result = None
         _logger.info(f"Initialized ModbusHandler at port: {port}")
+
+    @property
+    def baudrate(self) -> int:
+        """Serial speed."""
+        return self._baudrate
+
+    @baudrate.setter
+    def baudrate(self, baudrate: int) -> None:
+        if baudrate not in valid_baudrates:
+            error_message = f"Baudrate should be one of {valid_baudrates}"
+            raise ModbusError(error_message)
+        self._baudrate = baudrate
 
     def process_request(self, request: ModbusRequest) -> None:
         """Process a Modbus request (read/write) and store the result internally.
@@ -135,20 +150,19 @@ class ModbusHandler:
                     raise ModbusError(error_message)
 
             if result.isError():
-                # The error code is stored in either status or function_code,
-                # I'm not sure which one
-                error_code = result.status
+                # When a response is on of ERROR_CODES, pymodbus prints an
+                # exception response, I'm not sure how to access that response,
+                # I could not find the error code in result
                 error_message = f"\
                 Modbus error during {request.operation} \
-                on {request.register} on unit {request.address}: \
-                {self.ERROR_CODES.get(error_code, 'Unknown error')}"
+                on {request.register} on unit {request.address}: {result}"
                 self._last_result = None
                 raise ModbusError(error_message)
 
             _logger.debug(
                 f"Modbus success - slave: {request.address}, \
                 operation: {request.operation}, value: {request.values}, \
-                result: {result.registers}"
+                result: {result.registers}",
             )
             self._last_result = result.registers
 
