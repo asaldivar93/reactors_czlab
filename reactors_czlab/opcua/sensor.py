@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import TYPE_CHECKING
 
@@ -22,7 +21,7 @@ class SensorOpc:
     def __init__(self, sensor: Sensor) -> None:
         """Initialize OPC sensor node."""
         self.sensor = sensor
-        self.channels = []
+        self.channels: list[Node] = []
 
     async def init_node(self, parent: Node, idx: int) -> None:
         """Add node and variables for the sensor."""
@@ -30,7 +29,7 @@ class SensorOpc:
 
         # Add sensor node to reactor
         self.node = await parent.add_object(idx, f"{sensor.id}")
-        _logger.info(f"New Sensor node {self.sensor.id}:{self.node}")
+        _logger.debug(f"New Sensor node {self.sensor.id}:{self.node}")
 
         # Add channels to store data from the sensor
         for i, channel in enumerate(self.sensor.channels):
@@ -41,8 +40,8 @@ class SensorOpc:
                 ua.DataValue(ua.LocalizedText(Text=channel.description)),
             )
             self.channels.append(var)
-            _logger.info(
-                f"New variable in {self.sensor.id}:{self.node} - {channel}"
+            _logger.debug(
+                f"New variable in {self.sensor.id}:{self.node} - {channel}",
             )
 
     async def update_value(self) -> None:

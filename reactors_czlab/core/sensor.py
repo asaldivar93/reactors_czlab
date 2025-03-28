@@ -15,7 +15,6 @@ from reactors_czlab.core.modbus import (
 from reactors_czlab.core.reactor import IN_RASPBERRYPI
 from reactors_czlab.core.utils import (
     Calibration,
-    Channel,
     PhysicalInfo,
     Timer,
     u16_to_float,
@@ -30,70 +29,6 @@ if IN_RASPBERRYPI:
     from reactors_czlab.core.reactor import rpiplc
 
 _logger = logging.getLogger("server.sensors")
-
-# Hamilton sensors can have addresses from 1 to 32.
-# There are four types of hamilton sensors.
-# We'll divide the address space this way: 1-8: ph_sensors,
-# 9-16: oxygen_sensors, 17-24: incyte_sensors, 25-32: co2_sensors
-PH_SENSORS = {
-    "ph_0": PhysicalInfo(
-        "ArcPh",
-        0x01,
-        3,
-        [
-            Channel("pH", "pH", register=2090),
-            Channel("oC", "degree_celsius", register=2410),
-        ],
-    ),
-    "ph_1": PhysicalInfo(
-        "ArcPh",
-        0x02,
-        3,
-        [
-            Channel("pH", "pH", register=2090),
-            Channel("oC", "degree_celsius", register=2410),
-        ],
-    ),
-    "ph_2": PhysicalInfo(
-        "ArcPh",
-        0x03,
-        3,
-        [
-            Channel("pH", "pH", register=2090),
-            Channel("oC", "degree_celsius", register=2410),
-        ],
-    ),
-}
-
-DO_SENSORS = {
-    "do_0": PhysicalInfo(
-        "VisiFerm",
-        0x09,
-        1,
-        [
-            Channel("ppm", "dissolved_oxygen", register=2090),
-            Channel("oC", "degree_celsius", register=2410),
-        ],
-    ),
-    "do_1": PhysicalInfo(
-        "VisiFerm",
-        0x10,
-        1,
-        [
-            Channel("ppm", "dissolved_oxygen", register=2090),
-            Channel("oC", "degree_celsius", register=2410),
-        ],
-    ),
-    "do_2": PhysicalInfo(
-        "VisiFerm",
-        0x11,
-        1,
-        [
-            Channel("ppm", "dissolved_oxygen", register=2090),
-            Channel("oC", "degree_celsius", register=2410),
-        ],
-    ),
-}
 
 
 class Sensor(ABC):
@@ -218,7 +153,7 @@ class HamiltonSensor(Sensor):
     """
 
     REGISTERS: ClassVar = {
-        # Registers in Hamilton star with index 0
+        # Registers in Hamilton start with index 0
         "operator": 4288 - 1,
         "address": 4096 - 1,
         "baudrate": 4102 - 1,
@@ -345,32 +280,6 @@ class HamiltonSensor(Sensor):
         except KeyError:
             _logger.warning(f"Baudrate should be one of: {valid_baudrates}")
 
-    def read(self) -> None:
-        """Read all available channels in the sensor."""
-        request = ModbusRequest(
-            operation="read",
-            address=self.address,
-            register=0,
-            count=10,
-        )
-        self.timer.is_elapsed()
-        if self._sampling_event:
-            self._sampling_event = False
-            for chn in self.channels:
-                try:
-                    request.register = chn.register - 1
-                    self.modbus_handler.process_request(request)
-                    result = self.modbus_handler.get_result()
-                    # Channel measurments are stored as u16 vars
-                    # in registers 2 and 3
-                    low, high = result[2], result[3]
-                    # convert two u16 to float32
-                    chn.value = u16_to_float(low, high)
-
-                except ModbusError as e:
-                    _logger.exception(e)
-                    chn.value = -0.111
-
     def set_measurement_configs(
         self,
         config_params: dict[int, list[int]],
@@ -396,13 +305,31 @@ class HamiltonSensor(Sensor):
             _logger.error(f"Failed to set measurement configs: {e}")
             raise
 
-    def hex_to_float(self, registers: list[int]) -> float:
-        """Convert the raw registers to a float."""
-        if not registers or len(registers) < 2:
-            error_message = "Invalid register data provided"
-            raise ModbusError(error_message)
-        raw = (registers[0] << 16) + registers[1]
-        return struct.unpack(">f", raw.to_bytes(4, byteorder="big"))[0]
+    def read(self) -> None:
+        """Read all available channels in the sensor."""
+        request = ModbusRequest(
+            operation="read",
+            address=self.address,
+            register=0,
+            count=10,
+        )
+        self.timer.is_elapsed()
+        if self._sampling_event:
+            self._sampling_event = False
+            for chn in self.channels:
+                try:
+                    request.register = self.REGISTERS[chn.register]
+                    self.modbus_handler.process_request(request)
+                    result = self.modbus_handler.get_result()
+                    # Channel measurments are stored as u16 vars
+                    # in registers 2 and 3
+                    low, high = result[2], result[3]
+                    # convert two u16 to float32
+                    chn.value = u16_to_float(low, high)
+
+                except ModbusError as e:
+                    _logger.exception(e)
+                    chn.value = -0.111
 
 
 class AnalogSensor(Sensor):
@@ -447,7 +374,9 @@ class AnalogSensor(Sensor):
         """Apply a linear transformation to an analog value."""
         return cal.a * analog + cal.b
 
-    def set_calibration(self, cal: list[list]) -> None:
+    def set_calibration(
+        self, cal: list[tuple[str, tuple[float, float]]]
+    ) -> None:
         """Set calibration values for all the channels.
 
         Input:
@@ -456,5 +385,6 @@ class AnalogSensor(Sensor):
             A list of lists with [a, b] pairs of linear regression
             parameters for each channel
         """
-        for i, par in enumerate(cal):
-            self.channels[i].calibration = Calibration(par[0], par[1])
+        for i, info in enumerate(cal):
+            file, pars = info[0], info[1]
+            self.channels[i].calibration = Calibration(file, pars[0], pars[1])

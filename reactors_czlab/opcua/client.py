@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from datetime import datetime
 from typing import TYPE_CHECKING
@@ -11,26 +10,43 @@ if TYPE_CHECKING:
     from asyncua import Client
     from asyncua.common import Node
 
+    from reactors_czlab.core.utils import PhysicalInfo
+
 _logger = logging.getLogger("client.client")
 
 
 class ReactorOpcClient:
     """Class used to subcribe to server updates."""
 
-    def __init__(self, identifier: str) -> None:
-        """Initialize."""
-        self.id = identifier
+    def __init__(self, identifier: str, experiment: str) -> None:
+        """Instance the reactor client.
 
-    async def connect_nodes(self, client: Client, variables: dict) -> None:
+        Parameters
+        ----------
+        identifier: str
+            A unique identifier for the reactor. This id should match
+            the id in the server.
+        experiment: str
+            The experiment id associated to this instance.
+
+        """
+        self.id = identifier
+        self.experiment = experiment
+
+    async def connect_nodes(
+        self,
+        client: Client,
+        variables: dict[str, PhysicalInfo],
+    ) -> None:
         """Subcribe to the variables in the reactor.
 
         Inputs:
         ----
         client: Client
             The opc client instance that handles the connection
-        variables: dict
+        variables: dict[str, PhysicalInfo]
             A dictionary where the keys are the nodeids of the variable and the
-            items a dictionary with the info used to commit to the sql database
+            items are a core.utils.PhysicalInfo instance
         """
         self.variables = variables
         # Get all the variable
@@ -43,12 +59,16 @@ class ReactorOpcClient:
         await sub.subscribe_data_change(self.vars)
 
     def datachange_notification(
-        self, node: Node, val: float, data: object
+        self,
+        node: Node,
+        val: float,
+        data: object,
     ) -> None:
         """Commit to the sql database."""
         nodeid = node.nodeid.to_string()
-        new_data = self.variables[nodeid]
-        new_data["value"] = val
-        new_data["datetime"] = datetime.now().isoformat()
-        _logger.debug(f"{self.id}: {new_data}")
+        data = self.variables[nodeid]
+        data.channels[0].value = val
+        timestamp = datetime.now().isoformat()
+        _logger.debug(f"Data change in {self.id} - {data.model}: {val}")
+
         # commit to sql database

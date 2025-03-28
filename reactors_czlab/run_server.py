@@ -7,9 +7,9 @@ from asyncua import Server
 
 from reactors_czlab.core.actuator import PlcActuator
 from reactors_czlab.core.modbus import ModbusHandler
-from reactors_czlab.core.sensor import DO_SENSORS, PH_SENSORS, HamiltonSensor
-from reactors_czlab.core.utils import Channel, PhysicalInfo
+from reactors_czlab.core.sensor import HamiltonSensor
 from reactors_czlab.opcua import ReactorOpc
+from reactors_czlab.server_info import DO_SENSORS, PH_SENSORS, PUMPS
 
 _logger = logging.getLogger("server")
 _logger.setLevel(logging.INFO)
@@ -37,18 +37,6 @@ modbus_client = ModbusHandler(
     timeout=0.5,
 )
 
-actuators_dict = {
-    "pump_0": PhysicalInfo(
-        "any", 0, 0, [Channel("analog", "pump", pin="Q0.5")]
-    ),
-    "pump_1": PhysicalInfo(
-        "any", 0, 0, [Channel("analog", "pump", pin="Q0.6")]
-    ),
-    "pump_2": PhysicalInfo(
-        "any", 0, 0, [Channel("analog", "pump", pin="Q0.7")]
-    ),
-}
-
 ph_sensors = []
 for k, config in PH_SENSORS.items():
     sensor = HamiltonSensor(k, config, modbus_client)
@@ -60,7 +48,7 @@ for k, config in DO_SENSORS.items():
     do_sensors.append(sensor)
 
 actuators = []
-for k, config in actuators_dict.items():
+for k, config in PUMPS.items():
     actuators.append(PlcActuator(k, config))
 
 reactors = [

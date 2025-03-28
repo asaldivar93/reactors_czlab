@@ -88,7 +88,7 @@ class Channel:
 
     units: str
     description: str
-    register: int = 0
+    register: str = "none"
     pin: str = "none"
     value: float = -0.111
     calibration: Calibration | None = None
@@ -98,5 +98,6 @@ class Channel:
 class Calibration:
     """Class holding linear regression parameters y = a*x + b."""
 
+    file: str
     a: float
     b: float
