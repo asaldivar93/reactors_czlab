@@ -1,26 +1,29 @@
 """Test hamilton rs485 communications."""
+
 import struct
 
 from pymodbus import FramerType
 from pymodbus.client import ModbusSerialClient
 
-port="/dev/ttySC2"
+port = "/dev/ttySC2"
 #  Default Hamilton sensor slave address
 slave = 0x01
 # Channels PMC1 and PMC6 address
-pmc1=2089
-pmc6=2409
-count=10
+pmc1 = 2089
+pmc6 = 2409
+count = 10
+
 
 def u16_to_float(low, high):
-	"""Converts little endian notation to float."""
-	packed = struct.pack("<HH", low, high)
-	return struct.unpack("<f", packed)[0]
-	
+    """Convert little endian notation to float."""
+    packed = struct.pack("<HH", low, high)
+    return struct.unpack("<f", packed)[0]
+
+
 # Create a Modbus RTU client
 client = ModbusSerialClient(
-	framer=FramerType.RTU,
-	port=port,
+    framer=FramerType.RTU,
+    port=port,
     baudrate=19200,
     timeout=1,
     stopbits=1,
@@ -32,7 +35,7 @@ client = ModbusSerialClient(
 client.connect()
 
 response = client.read_holding_registers(
-	address=pmc1,
+    address=pmc1,
     count=10,
     slave=slave,
 )
@@ -42,7 +45,7 @@ pmc1 = u16_to_float(low, high)
 print(f"PMC1: {pmc1}")
 
 response = client.read_holding_registers(
-	address=pmc6,
+    address=pmc6,
     count=10,
     slave=slave,
 )
