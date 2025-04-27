@@ -9,7 +9,7 @@ from reactors_czlab.core.utils import Calibration, Channel, PhysicalInfo
 # We'll divide the address space this way: 1-8: ph_sensors,
 # 9-16: oxygen_sensors, 17-24: incyte_sensors, 25-32: co2_sensors
 PH_SENSORS = {
-    "ph_0": PhysicalInfo(
+    "R0:ph": PhysicalInfo(
         model="ArcPh",
         address=0x01,
         sample_interval=3,
@@ -18,7 +18,7 @@ PH_SENSORS = {
             Channel("oC", "degree_celsius", register="pmc6"),
         ],
     ),
-    "ph_1": PhysicalInfo(
+    "R1:ph": PhysicalInfo(
         model="ArcPh",
         address=0x02,
         sample_interval=3,
@@ -27,7 +27,7 @@ PH_SENSORS = {
             Channel("oC", "degree_celsius", register="pmc6"),
         ],
     ),
-    "ph_2": PhysicalInfo(
+    "R2:ph": PhysicalInfo(
         model="ArcPh",
         address=0x03,
         sample_interval=3,
@@ -39,7 +39,7 @@ PH_SENSORS = {
 }
 
 DO_SENSORS = {
-    "do_0": PhysicalInfo(
+    "R0:do": PhysicalInfo(
         model="VisiFerm",
         address=0x09,
         sample_interval=1,
@@ -48,7 +48,7 @@ DO_SENSORS = {
             Channel("oC", "degree_celsius", register="pmc6"),
         ],
     ),
-    "do_1": PhysicalInfo(
+    "R1:do": PhysicalInfo(
         model="VisiFerm",
         address=0x10,
         sample_interval=1,
@@ -57,7 +57,7 @@ DO_SENSORS = {
             Channel("oC", "degree_celsius", register="pmc6"),
         ],
     ),
-    "do_2": PhysicalInfo(
+    "R2:ph": PhysicalInfo(
         model="VisiFerm",
         address=0x11,
         sample_interval=1,
@@ -69,7 +69,7 @@ DO_SENSORS = {
 }
 
 ANALOG_SENSORS = {
-    "ph_3": PhysicalInfo(
+    "R3:ph": PhysicalInfo(
         model="analog",
         address=0,
         sample_interval=5,
@@ -81,7 +81,7 @@ ANALOG_SENSORS = {
             ),
         ],
     ),
-    "do_3": PhysicalInfo(
+    "R3:do": PhysicalInfo(
         model="analog",
         address=0,
         sample_interval=5,
@@ -96,19 +96,37 @@ ANALOG_SENSORS = {
 }
 
 PUMPS = {
-    "pump_0": PhysicalInfo(
+    "R0:pump_0": PhysicalInfo(
         model="actuator",
         address=0,
         sample_interval=0,
         channels=[Channel("analog", "pump", pin="Q0.5")],
     ),
-    "pump_1": PhysicalInfo(
+    "R0:pump_1": PhysicalInfo(
         model="actuator",
         address=0,
         sample_interval=0,
         channels=[Channel("analog", "pump", pin="Q0.6")],
     ),
-    "pump_2": PhysicalInfo(
+    "R1:pump_0": PhysicalInfo(
+        model="actuator",
+        address=0,
+        sample_interval=0,
+        channels=[Channel("analog", "pump", pin="Q0.7")],
+    ),
+    "R1:pump_1": PhysicalInfo(
+        model="actuator",
+        address=0,
+        sample_interval=0,
+        channels=[Channel("analog", "pump", pin="Q0.7")],
+    ),
+    "R2:pump_0": PhysicalInfo(
+        model="actuator",
+        address=0,
+        sample_interval=0,
+        channels=[Channel("analog", "pump", pin="Q0.7")],
+    ),
+    "R2:pump_1": PhysicalInfo(
         model="actuator",
         address=0,
         sample_interval=0,

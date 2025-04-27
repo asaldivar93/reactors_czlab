@@ -1,9 +1,10 @@
-import struct
-
 from pymodbus import FramerType
 from pymodbus.client import ModbusSerialClient
+from pymodbus.constants import Endian
+from pymodbus.payload import BinaryPayloadBuilder, BinaryPayloadDecoder
 
 REGISTERS = {
+    "operator": 4288 - 1,
     "cp1_info": 5152 - 1,
     "cp2_info": 5184 - 1,
     "cp6_info": 5312 - 1,
@@ -36,11 +37,26 @@ client = ModbusSerialClient(
     parity="N",
 )
 
+Builder = BinaryPayloadBuilder
+Decoder = BinaryPayloadDecoder
 
-def u16_to_float(low, high):
-    """Convert little endian notation to float."""
-    packed = struct.pack("<HH", low, high)
-    return struct.unpack("<f", packed)[0]
+
+def update_operator_level(operator: str) -> None:
+    """Change operator level."""
+    builder = Builder(byteorder=Endian.LITTLE, wordorder=Endian.LITTLE)
+    level = OPERATOR_LEVELS[operator]
+    for val in level.values():
+        builder.add_32bit_uint(val)
+    payload = builder.build()
+
+    response = client.write_registers(
+        address=REGISTERS["operator"],
+        values=payload,
+        slave=slave,
+        skip_encode=True,
+    )
+    print("\nOperator Update:")
+    print(response)
 
 
 if __name__ == "__main__":
@@ -48,12 +64,7 @@ if __name__ == "__main__":
     client.connect()
 
     # Change operator level
-    level = OPERATOR_LEVELS["specialist"]
-    response = client.write_registers(
-        address=REGISTERS["cp1_status"],
-        values=list(level.values()),
-        slave=slave,
-    )
+    update_operator_level("specialist")
 
     # Read current calibration status
     response = client.read_input_registers(
@@ -61,13 +72,18 @@ if __name__ == "__main__":
         count=6,
         slave=slave,
     )
-    print(f"CP status: {response}")
+    print("\nCP status:")
+    print(response)
 
     # Calibration
+    builder = Builder(byteorder=Endian.LITTLE)
+    builder.add_32bit_float(10.01)
+    payload = builder.build()
     response = client.write_registers(
         address=REGISTERS["cp1"],
-        values=[0],
+        values=payload,
         slave=slave,
+        skip_encode=True,
     )
 
     # Read current calibration status
@@ -76,21 +92,33 @@ if __name__ == "__main__":
         count=6,
         slave=slave,
     )
-    print(f"CP status: {response}")
+    print("\nCP status:")
+    print(response)
+
     # Read current quality indicator
     response = client.read_input_registers(
         address=REGISTERS["cp1_status"],
         count=6,
         slave=slave,
     )
-    print(f"CP quality: {response}")
+    print("\nProbe quality:")
+    print(response)
+
     # Read current ph value
     response = client.read_holding_registers(
         address=REGISTERS["pmc1"],
         count=10,
         slave=slave,
     )
+    print("\npH value:")
     print(response)
     low, high = response.registers[2], response.registers[3]
-    pmc1 = u16_to_float(low, high)
+    decoder = Decoder(
+        payload=[low, high],
+        byteorder=Endian.LITTLE,
+        wordorder=Endian.LITTLE,
+    )
+    pmc1 = decoder.decode_32bit_float()
     print(f"pH: {pmc1}")
+
+    update_operator_level("user")

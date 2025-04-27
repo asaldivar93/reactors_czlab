@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import random
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 from reactors_czlab.core.modbus import (
     ModbusError,
@@ -17,7 +17,6 @@ from reactors_czlab.core.utils import (
     Calibration,
     PhysicalInfo,
     Timer,
-    u16_to_float,
 )
 
 if TYPE_CHECKING:
@@ -29,6 +28,11 @@ if IN_RASPBERRYPI:
     from reactors_czlab.core.reactor import rpiplc
 
 _logger = logging.getLogger("server.sensors")
+
+
+class _RegisterInfo(NamedTuple):
+    address: int
+    num: int
 
 
 class Sensor(ABC):
@@ -143,9 +147,10 @@ class HamiltonSensor(Sensor):
     Calibration procedure:
     ----
         The Arc Sensor family has a unique calibration routine. When initiating
-    the calibration, the data set of the sensor is automatically traced back within
-    the last 3 minutes and a decision is made immediately if the calibration is
-    successful or not. The criteria for a successful calibration are:
+    the calibration, the data set of the sensor is automatically traced back
+    within the last 3 minutes and a decision is made immediately if the
+    calibration is successful or not. The criteria for a successful calibration
+    are:
         -the stability of pH value and temperature over the last 3 minutes
         -the currently measured pH value fits to one of the calibration
         standards defined in the selectedset of calibration standards
@@ -154,11 +159,20 @@ class HamiltonSensor(Sensor):
 
     REGISTERS: ClassVar = {
         # Registers in Hamilton start with index 0
-        "operator": 4288 - 1,
-        "address": 4096 - 1,
-        "baudrate": 4102 - 1,
-        "pmc1": 2090 - 1,
-        "pmc6": 2410 - 1,
+        "operator": _RegisterInfo(4288 - 1, 4),
+        "address": _RegisterInfo(4096 - 1, 2),
+        "baudrate": _RegisterInfo(4102 - 1, 2),
+        "pmc1": _RegisterInfo(2090 - 1, 10),
+        "pmc6": _RegisterInfo(2410 - 1, 10),
+        "cp1_info": _RegisterInfo(5152 - 1, 6),
+        "cp2_info": _RegisterInfo(5184 - 1, 6),
+        "cp6_info": _RegisterInfo(5312 - 1, 6),
+        "cp1_status": _RegisterInfo(5158 - 1, 6),
+        "cp2_status": _RegisterInfo(5190 - 1, 6),
+        "cp6_status": _RegisterInfo(5318 - 1, 6),
+        "cp1": _RegisterInfo(5162 - 1, 2),
+        "cp2": _RegisterInfo(5194 - 1, 2),
+        "quality": _RegisterInfo(4872 - 1, 2),
     }
 
     OPERATOR_LEVELS: ClassVar = {
@@ -195,28 +209,21 @@ class HamiltonSensor(Sensor):
 
     def set_operator_level(self, level_name: str) -> None:
         """Set the operator level for the sensor based on the operation type."""
-        operator_levels = {
-            "user": {"code": 0x03, "Password": 0},
-            "administrator": {"code": 0x0C, "Password": 18111978},
-            "specialist": {"code": 0x30, "Password": 16021966},
-        }
-
         # Default operator level is set to 'user'
-        level = operator_levels.get(
+        level = self.OPERATOR_LEVELS.get(
             level_name,
             {"code": 0x03, "Password": 0},
         )
-        request = ModbusRequest(
+        register = self.REGISTERS["operator"]
+        write_operator = ModbusRequest(
             operation="write",
             address=self.address,
-            register=self.REGISTERS["operator"],
+            register=register.address,
             values=list(level.values()),
         )
         try:
-            # Write the operator level and password to the sensor
-            self.modbus_handler.process_request(request)
-            # Ensure the write operation was successful
-            self.modbus_handler.get_result()
+            self.modbus_handler.process_request(write_operator)
+            response = self.modbus_handler.get_result()
             _logger.debug(f"Operator level '{level_name}' set successfully.")
         except ModbusError as e:
             _logger.error(f"Failed to set operator level for {level_name}: {e}")
@@ -230,19 +237,22 @@ class HamiltonSensor(Sensor):
         _logger.info(
             f"Changing address for sensor {self.id} at address {self.address}",
         )
+        register = self.REGISTERS["address"]
         request = ModbusRequest(
             operation="write",
             address=self.address,
-            register=self.REGISTERS["address"],
+            register=register.address,
             values=[new_address],
         )
         try:
             self.set_operator_level("specialist")
             self.modbus_handler.process_request(request)
-            self.modbus_handler.get_result()  # Make sure operation succeded
+            result = self.modbus_handler.get_result()
             self.address = new_address
             self.set_operator_level("user")
-            _logger.info(f"Updated serial interface - address:{new_address}")
+            _logger.info(
+                f"Updated serial interface - address:{new_address}, {result}"
+            )
         except ModbusError as e:
             _logger.exception(f"Failed to set serial interface: {e}")
             raise
@@ -260,10 +270,11 @@ class HamiltonSensor(Sensor):
             # Carefull! If you update the baudrate in the sensor
             # you need to update the serial client as well
             baudrate_code = valid_baudrates[baudrate]
+            register = self.REGISTERS["baudrate"]
             request = ModbusRequest(
                 operation="write",
                 address=self.address,
-                register=self.REGISTERS["baudrate"],
+                register=register.address,
                 values=[baudrate_code],
             )
             try:
@@ -280,34 +291,9 @@ class HamiltonSensor(Sensor):
         except KeyError:
             _logger.warning(f"Baudrate should be one of: {valid_baudrates}")
 
-    def set_measurement_configs(
-        self,
-        config_params: dict[int, list[int]],
-    ) -> None:
-        """Set measurement configurations for the sensor."""
-        _logger.info(
-            f"Setting measurement configs for sensor {self.id} at address {self.address}",
-        )
-        request = ModbusRequest(
-            operation="write",
-            address=self.address,
-            register=0,
-        )
-        try:
-            for param, values in config_params.items():
-                request.register = param
-                request.values = values
-                self.modbus_handler.process_request(request)
-                # Ensure the write operation was successful
-                self.modbus_handler.get_result()
-            _logger.info("Measurement configs set successfully.")
-        except ModbusError as e:
-            _logger.error(f"Failed to set measurement configs: {e}")
-            raise
-
     def read(self) -> None:
         """Read all available channels in the sensor."""
-        request = ModbusRequest(
+        read_pmc = ModbusRequest(
             operation="read",
             address=self.address,
             register=0,
@@ -318,18 +304,104 @@ class HamiltonSensor(Sensor):
             self._sampling_event = False
             for chn in self.channels:
                 try:
-                    request.register = self.REGISTERS[chn.register]
-                    self.modbus_handler.process_request(request)
+                    register = self.REGISTERS[chn.register]
+                    read_pmc.register = register.address
+                    read_pmc.count = register.num
+                    self.modbus_handler.process_request(read_pmc)
                     result = self.modbus_handler.get_result()
                     # Channel measurments are stored as u16 vars
                     # in registers 2 and 3
                     low, high = result[2], result[3]
                     # convert two u16 to float32
-                    chn.value = u16_to_float(low, high)
+                    chn.value = self.modbus_handler.decode((low, high), "float")
 
                 except ModbusError as e:
                     _logger.exception(e)
                     chn.value = -0.111
+
+    def write_calibration(self, cp: str, value: float) -> None:
+        """Write value to calibration points."""
+        cp_register = self.REGISTERS[cp]
+        cp_status = self.REGISTERS[cp + "_status"]
+        quality = self.REGISTERS["quality"]
+        ph = self.REGISTERS["pmc1"]
+        write_cp = ModbusRequest(
+            operation="write",
+            address=self.address,
+            register=cp_register.address,
+            values=[value],
+        )
+        read_cp_status = ModbusRequest(
+            operation="read",
+            address=self.address,
+            register=cp_status.address,
+            count=cp_status.num,
+        )
+        read_quality = ModbusRequest(
+            operation="read",
+            address=self.address,
+            register=quality.address,
+            count=quality.num,
+        )
+        read_ph = ModbusRequest(
+            operation="read",
+            address=self.address,
+            register=ph.address,
+            count=ph.address,
+        )
+
+        try:
+            self.set_operator_level("specialist")
+
+            self.modbus_handler.process_request(write_cp)
+            cal_response = self.modbus_handler.get_result()
+
+            self.modbus_handler.process_request(read_cp_status)
+            status_response = self.modbus_handler.get_result()
+            low, high = status_response[0], status_response[1]
+            status = self.modbus_handler.decode((low, high), "int")
+            low, high = status_response[4], status_response[5]
+            cp = self.modbus_handler.decode((low, high), "float")
+
+            self.modbus_handler.process_request(read_quality)
+            quality_response = self.modbus_handler.get_result()
+            low, high = quality_response[0], quality_response[1]
+            quality = self.modbus_handler.decode((low, high), "float")
+
+            self.modbus_handler.process_request(read_ph)
+            ph_response = self.modbus_handler.get_result()
+            low, high = ph_response[2], ph_response[3]
+            ph = self.modbus_handler.decode((low, high), "float")
+            _logger.info(
+                f"Calibration attempt at {self.id} - status: {status}, \
+                cp: {cp}, quality: {quality}, pH: {ph}"
+            )
+        except ModbusError as e:
+            _logger.exception(e)
+
+    def read_holding_registers(self, param: str) -> list[int] | None:
+        """Read holding registers.
+
+        Parameters
+        ----------
+        param: str
+            One of the available channels in self.REGISTERS
+
+        """
+        try:
+            register = self.REGISTERS[param]
+            request = ModbusRequest(
+                operation="read",
+                address=self.address,
+                register=register.address,
+                count=register.num,
+            )
+            self.modbus_handler.process_request(request)
+            return self.modbus_handler.get_result()
+        except KeyError:
+            _logger.warning(f"KeyError: choose one of {self.REGISTERS.keys()}")
+        except ModbusError as e:
+            _logger.exception(e)
 
 
 class AnalogSensor(Sensor):

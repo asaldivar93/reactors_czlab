@@ -4,6 +4,7 @@ import struct
 
 from pymodbus import FramerType
 from pymodbus.client import ModbusSerialClient
+from pymodbus.exceptions import ModbusException
 
 port = "/dev/ttySC2"
 #  Default Hamilton sensor slave address
@@ -33,23 +34,26 @@ client = ModbusSerialClient(
 
 # Connect to the Modbus RTU slave
 client.connect()
+try:
+    response = client.read_holding_registers(
+        address=pmc1,
+        count=10,
+        slave=slave,
+    )
+    print(response)
+    low, high = response.registers[2], response.registers[3]
+    pmc1 = u16_to_float(low, high)
+    print(f"PMC1: {pmc1}")
 
-response = client.read_holding_registers(
-    address=pmc1,
-    count=10,
-    slave=slave,
-)
-print(response)
-low, high = response.registers[2], response.registers[3]
-pmc1 = u16_to_float(low, high)
-print(f"PMC1: {pmc1}")
+    response = client.read_holding_registers(
+        address=pmc6,
+        count=10,
+        slave=slave,
+    )
+    print(response)
+    low, high = response.registers[2], response.registers[3]
+    pmc6 = u16_to_float(low, high)
+    print(f"PMC6: {pmc6}")
 
-response = client.read_holding_registers(
-    address=pmc6,
-    count=10,
-    slave=slave,
-)
-print(response)
-low, high = response.registers[2], response.registers[3]
-pmc6 = u16_to_float(low, high)
-print(f"PMC6: {pmc6}")
+except ModbusException:
+    print("something went wrong")

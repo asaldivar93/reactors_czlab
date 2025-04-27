@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from pymodbus import FramerType
+from pymodbus import payload
 from pymodbus.client import ModbusSerialClient
+from pymodbus.constants import Endian
 from pymodbus.exceptions import ModbusException
+from pymodbus.payload import BinaryPayloadBuilder, BinaryPayloadDecoder
 
 _logger = logging.getLogger("server.modbus_handler")
 
@@ -42,7 +45,7 @@ class ModbusRequest:
     address: int
     register: int
     count: int = 2
-    values: list[int] | None = None
+    values: list[int | float] | None = None
 
 
 class ModbusHandler:
@@ -84,6 +87,7 @@ class ModbusHandler:
             bytesize=8,
             parity="N",
         )
+
         if not self.client.connect():
             error_message = "Failed to connect to Modbus device"
             raise ModbusError(error_message)
@@ -139,10 +143,12 @@ class ModbusHandler:
                         error_message = f"Write operation requires a \
                                           list of values in: {request}"
                         raise ModbusError(error_message)
+                    payload = self._build_payload(values)
                     result = self.client.write_registers(
                         address=address,
-                        values=values,
+                        values=payload,
                         slave=slave,
+                        skip_encode=True,
                     )
 
                 case _:
@@ -188,6 +194,39 @@ class ModbusHandler:
             error_message = "Invalid result"
             raise ModbusError(error_message)
         return self._last_result
+
+    def _build_payload(self, values: list) -> list:
+        """Transform a list of values to little endian."""
+        builder = BinaryPayloadBuilder(
+            byteorder=Endian.LITTLE,
+            wordorder=Endian.LITTLE,
+        )
+        for val in values:
+            match val:
+                case int():
+                    if val < 0:
+                        builder.add_32bit_uint(val)
+                    else:
+                        builder.add_32bit_int(val)
+                case float():
+                    builder.add_32bit_float(val)
+                case _
+                    error_message = ""
+                    raise ModbusError()
+
+        return builder.build()
+
+    def decode(self, registers: tuple[int, int], cast_type: str) -> Any:
+        decoder = BinaryPayloadDecoder(
+            payload=registers,
+            byteorder=Endian.LITTLE,
+            wordorder=Endian.LITTLE,
+        )
+        match cast_type:
+            case "float":
+                return decoder.decode_32bit_float()
+            case "int":
+                return decoder.decode_32bit_uint()
 
     def close(self) -> None:
         """Close the Modbus client connection."""
