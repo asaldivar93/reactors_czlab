@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from typing import Any, ClassVar
 
 from pymodbus import FramerType
-from pymodbus import payload
 from pymodbus.client import ModbusSerialClient
 from pymodbus.constants import Endian
 from pymodbus.exceptions import ModbusException
@@ -106,8 +105,8 @@ class ModbusHandler:
             raise ModbusError(error_message)
         self._baudrate = baudrate
 
-    def process_request(self, request: ModbusRequest) -> None:
-        """Process a Modbus request (read/write) and store the result internally.
+    def process_request(self, request: ModbusRequest) -> list[int]:
+        """Process a Modbus request.
 
         Parameters
         ----------
@@ -122,12 +121,24 @@ class ModbusHandler:
         try:
             match request:
                 case ModbusRequest(
-                    operation="read",
+                    operation="read_holding",
                     address=slave,
                     register=address,
                     count=count,
                 ):
                     result = self.client.read_holding_registers(
+                        address=address,
+                        count=count,
+                        slave=slave,
+                    )
+
+                case ModbusRequest(
+                    operation="read_input",
+                    address=slave,
+                    register=address,
+                    count=count,
+                ):
+                    result = self.client.read_input_registers(
                         address=address,
                         count=count,
                         slave=slave,
@@ -148,7 +159,6 @@ class ModbusHandler:
                         address=address,
                         values=payload,
                         slave=slave,
-                        skip_encode=True,
                     )
 
                 case _:
@@ -156,65 +166,44 @@ class ModbusHandler:
                     raise ModbusError(error_message)
 
             if result.isError():
-                # When a response is on of ERROR_CODES, pymodbus prints an
-                # exception response, I'm not sure how to access that response,
-                # I could not find the error code in result
                 error_message = f"\
-                Modbus error during {request.operation} \
-                on {request.register} on unit {request.address}: {result}"
-                self._last_result = None
+                Error during {request.operation} \
+                on {request.register} on unit {request.address} \
+                with code {result.exception_code}"
                 raise ModbusError(error_message)
 
             _logger.debug(
-                f"Modbus success - slave: {request.address}, \
+                f"Modbus success - unit: {request.address}, \
                 operation: {request.operation}, value: {request.values}, \
                 result: {result.registers}",
             )
-            self._last_result = result.registers
-
-        except ModbusException as e:
+        except ModbusException as err:
             error_message = f"Modbus error during {request.operation} \
-                on {request.register}: {e}"
-            self._last_result = None
-            raise ModbusError(error_message)
-
-    def get_result(self) -> list[int]:
-        """Return the result of the last processed request.
-
-        Returns:
-            _last_result: list[int] | bool
-                For read operations, returns a list of register values.
-                For write operations, returns True if successful.
-
-        Raises:
-            ModbusError: If no result is available.
-
-        """
-        if self._last_result is None:
-            error_message = "Invalid result"
-            raise ModbusError(error_message)
-        return self._last_result
+                on {request.address}: {err}"
+            raise ModbusError(error_message) from err
+        else:
+            return result.registers
 
     def _build_payload(self, values: list) -> list:
         """Transform a list of values to little endian."""
         builder = BinaryPayloadBuilder(
-            byteorder=Endian.LITTLE,
+            byteorder=Endian.BIG,
             wordorder=Endian.LITTLE,
         )
         for val in values:
             match val:
                 case int():
                     if val < 0:
-                        builder.add_32bit_uint(val)
-                    else:
                         builder.add_32bit_int(val)
+                    else:
+                        builder.add_32bit_uint(val)
                 case float():
                     builder.add_32bit_float(val)
                 case _:
                     error_message = "Only float and ints are implemented"
                     raise ModbusError(error_message)
 
-        return builder.build()
+        return builder.to_registers()
 
     def decode(self, registers: tuple[int, int], cast_type: str) -> Any:
         decoder = BinaryPayloadDecoder(

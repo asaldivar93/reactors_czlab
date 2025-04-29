@@ -72,7 +72,7 @@ ANALOG_SENSORS = {
     "R3:ph": PhysicalInfo(
         model="analog",
         address=0,
-        sample_interval=5,
+        sample_interval=1,
         channels=[
             Channel(
                 "ph",
@@ -84,7 +84,7 @@ ANALOG_SENSORS = {
     "R3:do": PhysicalInfo(
         model="analog",
         address=0,
-        sample_interval=5,
+        sample_interval=1,
         channels=[
             Channel(
                 "%",
@@ -135,8 +135,8 @@ PUMPS = {
 }
 
 # ~ server_vars = {
-    # ~ "R_0": {
-        # ~ "ns=2;i=7": deepcopy(DO_SENSORS["do_0"]).channels.pop(1),
-        # ~ "ns=2;i=8": deepcopy(DO_SENSORS["do_0"]).channels.pop(0),
-    # ~ },
+# ~ "R_0": {
+# ~ "ns=2;i=7": deepcopy(DO_SENSORS["do_0"]).channels.pop(1),
+# ~ "ns=2;i=8": deepcopy(DO_SENSORS["do_0"]).channels.pop(0),
+# ~ },
 # ~ }
