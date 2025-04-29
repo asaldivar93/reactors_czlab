@@ -210,9 +210,9 @@ class ModbusHandler:
                         builder.add_32bit_int(val)
                 case float():
                     builder.add_32bit_float(val)
-                case _
-                    error_message = ""
-                    raise ModbusError()
+                case _:
+                    error_message = "Only float and ints are implemented"
+                    raise ModbusError(error_message)
 
         return builder.build()
 

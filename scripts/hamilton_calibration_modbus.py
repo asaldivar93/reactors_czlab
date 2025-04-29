@@ -43,18 +43,19 @@ Decoder = BinaryPayloadDecoder
 
 def update_operator_level(operator: str) -> None:
     """Change operator level."""
-    builder = Builder(byteorder=Endian.LITTLE, wordorder=Endian.LITTLE)
+    builder = Builder(byteorder=Endian.BIG, wordorder=Endian.LITTLE)
     level = OPERATOR_LEVELS[operator]
     for val in level.values():
-        builder.add_32bit_uint(val)
-    payload = builder.build()
+        builder.add_32bit_int(val)
+    payload = builder.to_registers()
 
     response = client.write_registers(
         address=REGISTERS["operator"],
         values=payload,
         slave=slave,
-        skip_encode=True,
     )
+    if response.isError():
+        print(response.exception_code)
     print("\nOperator Update:")
     print(response)
 
@@ -62,9 +63,17 @@ def update_operator_level(operator: str) -> None:
 if __name__ == "__main__":
     # Connect to the Modbus RTU slave
     client.connect()
-
+    
     # Change operator level
     update_operator_level("specialist")
+    
+    response = client.read_input_registers(
+        address=REGISTERS["operator"],
+        count=4,
+        slave=slave,
+    )
+    print("\nCurrent Operator")
+    print(response)
 
     # Read current calibration status
     response = client.read_input_registers(
@@ -76,19 +85,19 @@ if __name__ == "__main__":
     print(response)
 
     # Calibration
-    builder = Builder(byteorder=Endian.LITTLE)
-    builder.add_32bit_float(10.01)
-    payload = builder.build()
+    builder = Builder(byteorder=Endian.BIG, wordorder=Endian.LITTLE)
+    builder.add_32bit_float(7.0)
+    payload = builder.to_registers()
+    print(0)
     response = client.write_registers(
-        address=REGISTERS["cp1"],
+        address=REGISTERS["cp2"],
         values=payload,
         slave=slave,
-        skip_encode=True,
     )
 
     # Read current calibration status
     response = client.read_input_registers(
-        address=REGISTERS["cp1_status"],
+        address=REGISTERS["cp2_status"],
         count=6,
         slave=slave,
     )
@@ -97,8 +106,8 @@ if __name__ == "__main__":
 
     # Read current quality indicator
     response = client.read_input_registers(
-        address=REGISTERS["cp1_status"],
-        count=6,
+        address=REGISTERS["quality"],
+        count=2,
         slave=slave,
     )
     print("\nProbe quality:")

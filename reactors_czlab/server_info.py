@@ -134,9 +134,9 @@ PUMPS = {
     ),
 }
 
-server_vars = {
-    "R_0": {
-        "ns=2;i=7": deepcopy(DO_SENSORS["do_0"]).channels.pop(1),
-        "ns=2;i=8": deepcopy(DO_SENSORS["do_0"]).channels.pop(0),
-    },
-}
+# ~ server_vars = {
+    # ~ "R_0": {
+        # ~ "ns=2;i=7": deepcopy(DO_SENSORS["do_0"]).channels.pop(1),
+        # ~ "ns=2;i=8": deepcopy(DO_SENSORS["do_0"]).channels.pop(0),
+    # ~ },
+# ~ }
