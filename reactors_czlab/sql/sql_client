@@ -1,5 +1,5 @@
 
-# Database connection parameters
+-- Database connection parameters
 DB_PARAMS = {
     "dbname": "bioreactor_db",
     "user": "postgres",
@@ -8,46 +8,51 @@ DB_PARAMS = {
     "port": "5432"
 }
 
+-- Table: experiment
 CREATE TABLE experiment (
     id SERIAL PRIMARY KEY,
-    name VARCHAR(255),
-    date DATE,
+    name TEXT NOT NULL,
+    date DATE NOT NULL,
     volume FLOAT
 );
 
+-- Table: visiferm
 CREATE TABLE visiferm (
     id SERIAL PRIMARY KEY,
-    experiment_id INT REFERENCES experiment(id) ON DELETE CASCADE,
-    date DATE,
-    chn1 FLOAT,
-    chn1_units VARCHAR(50) DEFAULT 'ppm',
-    chn2 FLOAT,
-    chn2_units VARCHAR(50) DEFAULT '°C'
+    experiment_id INTEGER NOT NULL REFERENCES experiment(id) ON DELETE CASCADE,
+    date DATE NOT NULL,
+    reactor TEXT NOT NULL,
+    value FLOAT NOT NULL,
+    units TEXT NOT NULL
 );
 
+-- Table: arcph
 CREATE TABLE arcph (
     id SERIAL PRIMARY KEY,
-    experiment_id INT REFERENCES experiment(id) ON DELETE CASCADE,
-    date DATE,
-    chn1 FLOAT,
-    chn1_units VARCHAR(50) DEFAULT 'pH',
-    chn2 FLOAT,
-    chn2_units VARCHAR(50) DEFAULT '°C'
+    experiment_id INTEGER NOT NULL REFERENCES experiment(id) ON DELETE CASCADE,
+    date DATE NOT NULL,
+    reactor TEXT NOT NULL,
+    value FLOAT NOT NULL,
+    units TEXT NOT NULL
 );
 
+-- Table: analog
 CREATE TABLE analog (
     id SERIAL PRIMARY KEY,
-    experiment_id INT REFERENCES experiment(id) ON DELETE CASCADE,
-    date DATE,
-    calibration VARCHAR(255),
-    chn1 FLOAT
+    experiment_id INTEGER NOT NULL REFERENCES experiment(id) ON DELETE CASCADE,
+    date DATE NOT NULL,
+    reactor TEXT NOT NULL,
+    calibration TEXT,
+    value FLOAT NOT NULL
 );
 
+-- Table: actuator
 CREATE TABLE actuator (
     id SERIAL PRIMARY KEY,
-    experiment_id INT REFERENCES experiment(id) ON DELETE CASCADE,
-    date DATE,
-    calibration VARCHAR(255),
-    chn1 FLOAT
+    experiment_id INTEGER NOT NULL REFERENCES experiment(id) ON DELETE CASCADE,
+    date DATE NOT NULL,
+    reactor TEXT NOT NULL,
+    calibration TEXT,
+    value FLOAT NOT NULL
 );
 
