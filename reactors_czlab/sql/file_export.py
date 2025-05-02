@@ -1,68 +1,106 @@
 import psycopg2
 import csv
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
-def connect_to_db():
-    """Establish a connection to the PostgreSQL database."""
-    try:
-        connection = psycopg2.connect(
-            dbname="bioreactor_db", 
-            user="postgres",         
-            password="password",     
-            host="localhost",        
-            port="5432"              
-        )
-        return connection
-    except Exception as e:
-        print(f"Error connecting to database: {e}")
+def connect():
+    return psycopg2.connect(
+        dbname="bioreactor_db",
+        user="postgres",
+        password="password",
+        host="localhost",
+        port="5432"
+    )
+
+def get_date_filter_range(filter_option: str):
+    """Return the cutoff date based on filter option"""
+    now_utc_date = datetime.now(timezone.utc).date()  # Always use UTC-aware and DATE only
+
+    filter_option = filter_option.strip().lower()  # Normalizing the input
+
+    if filter_option == "24h":
+        cutoff_datetime = datetime.now(timezone.utc) - timedelta(hours=24)
+        return cutoff_datetime.date()
+    elif filter_option == "7d":
+        return now_utc_date - timedelta(days=7)
+    elif filter_option == "1mo":
+        return now_utc_date - timedelta(days=30)
+    elif filter_option == "all":
         return None
+    else:
+        raise ValueError(f"Invalid filter option: {filter_option} (valid: '24h', '7d', '1mo', 'all')")
 
-def export_table_to_csv(connection, table_name, output_filename):
-    """Fetch data from a table and write it to a CSV file."""
-    try:
-        cursor = connection.cursor()
+def export_experiment_data(experiment_name: str, output_csv: str, time_filter: str = "all"):
+    conn = connect()
+    cur = conn.cursor()
 
-        # Fetch all rows from the table
-        cursor.execute(f"SELECT * FROM {table_name}")
-        rows = cursor.fetchall()
+    # Fetch experiment_id from experiment_name
+    cur.execute("SELECT id FROM experiment WHERE name = %s", (experiment_name,))
+    row = cur.fetchone()
 
-        # Write data to a CSV file
-        with open(output_filename, mode='w', newline='') as file:
-            writer = csv.writer(file)
-            
-            # Write header (column names)
-            colnames = [desc[0] for desc in cursor.description]
-            writer.writerow(colnames)
-            
-            # Write the data rows
-            for row in rows:
-                writer.writerow(row)
+    if not row:
+        print(f"No experiment found with name: {experiment_name}")
+        cur.close()
+        conn.close()
+        return
 
-        print(f"Data from table '{table_name}' has been exported to {output_filename}")
+    experiment_id = row[0]
 
-    except Exception as e:
-        print(f"Error exporting data from table '{table_name}': {e}")
-    finally:
-        cursor.close()
+    # Determine date filter
+    cutoff_date = get_date_filter_range(time_filter)
+    base_conditions = "experiment_id = %s"
+    params = [experiment_id]
 
-def export_all_tables_to_csv():
-    """Export data from all tables to CSV files."""
-    connection = connect_to_db()
-    
-    if connection is None:
-        return  # If connection fails, stop further processing
+    if cutoff_date:
+        base_conditions += " AND date >= %s"
+        params.append(cutoff_date)
 
-    try:
-        # Export data from each table to CSV files
-        tables = ["visiferm", "arcph", "analog", "actuator"]
+    # Queries (with optional date filter)
+    queries = {
+        "visiferm": f"""
+            SELECT 'visiferm' AS source_table, date, reactor, value, units, NULL AS calibration
+            FROM visiferm
+            WHERE {base_conditions}
+        """,
+        "arcph": f"""
+            SELECT 'arcph' AS source_table, date, reactor, value, units, NULL AS calibration
+            FROM arcph
+            WHERE {base_conditions}
+        """,
+        "analog": f"""
+            SELECT 'analog' AS source_table, date, reactor, value, NULL AS units, calibration
+            FROM analog
+            WHERE {base_conditions}
+        """,
+        "actuator": f"""
+            SELECT 'actuator' AS source_table, date, reactor, value, NULL AS units, calibration
+            FROM actuator
+            WHERE {base_conditions}
+        """
+    }
 
-        for table in tables:
-            output_filename = f"{table}_{datetime.now().strftime('%Y%m%d%H%M%S')}.csv"
-            export_table_to_csv(connection, table, output_filename)
+    # Combine all rows into one list
+    all_rows = []
+    for table_name, query in queries.items():
+        cur.execute(query, tuple(params))
+        rows = cur.fetchall()
+        all_rows.extend(rows)
 
-    finally:
-        # Close the connection
-        connection.close()
+    # Write combined data to CSV
+    with open(output_csv, mode='w', newline='') as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerow(['source_table', 'date', 'reactor', 'value', 'units', 'calibration'])  # Header
+        writer.writerows(all_rows)
 
-if __name__ == "__main__":
-    export_all_tables_to_csv()
+    print(f"Exported data for experiment '{experiment_name}' with filter '{time_filter}' to {output_csv}'")
+
+    cur.close()
+    conn.close()
+
+# Example usage
+experiment_name = 'experiment_1'
+output_csv = 'experiment_1_filtered_data.csv'
+
+# Options: '24h', '7d', '1mo', 'all'
+time_filter = '7d'
+
+export_experiment_data(experiment_name, output_csv, time_filter)
