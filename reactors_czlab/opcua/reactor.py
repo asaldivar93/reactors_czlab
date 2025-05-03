@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import TYPE_CHECKING
 
 from asyncua import ua
 
 from reactors_czlab.core.reactor import Reactor
+from reactors_czlab.core.utils import Timer
 from reactors_czlab.opcua.actuator import ActuatorOpc
 from reactors_czlab.opcua.sensor import SensorOpc
 
@@ -32,10 +32,19 @@ class ReactorOpc:
         volume: float,
         sensors: list[Sensor],
         actuators: list[Actuator],
+        timer: Timer,
     ) -> None:
         """Initialize the OPC Reactor node."""
         self.id = identifier
-        self.reactor = Reactor(identifier, volume, sensors, actuators)
+        self.reactor = Reactor(identifier, volume, sensors, actuators, timer)
+        self.base_timer = timer
+        self.timers_dict = {timer.interval: timer}
+        for sensor in sensors:
+            interval = sensor.sensor_info.sample_interval
+            new_timer = self.timers_dict.get(interval, None)
+            if new_timer is None:
+                new_timer = Timer(interval)
+                self.timers_dict.update({interval: new_timer})
 
     async def init_node(self, server: Server, idx: int) -> None:
         """Create the Reactor nodes and add the sensor and actuator nodes."""
@@ -71,18 +80,25 @@ class ReactorOpc:
         # Add actuator nodes to the server
         await self._add_actuator_nodes(server, actuators)
 
-    async def _add_sensor_nodes(self, sensors: dict) -> None:
+    async def _add_sensor_nodes(self, sensors: dict[str, Sensor]) -> None:
         """Add sensor nodes."""
-        self.sensor_nodes = [SensorOpc(sensor) for sensor in sensors.values()]
+        self.sensor_nodes = []
+        for sensor in sensors.values():
+            interval = sensor.sensor_info.sample_interval
+            timer = self.timers_dict[interval]
+            self.sensor_nodes.append(SensorOpc(sensor, timer))
         for sensor in self.sensor_nodes:
             await sensor.init_node(self.node, self.idx)
 
     async def _add_actuator_nodes(
-        self, server: Server, actuators: dict
+        self,
+        server: Server,
+        actuators: dict,
     ) -> None:
         """Add actuator nodes."""
         self.actuator_nodes = [
-            ActuatorOpc(actuator) for actuator in actuators.values()
+            ActuatorOpc(actuator, self.base_timer)
+            for actuator in actuators.values()
         ]
         for actuator in self.actuator_nodes:
             await actuator.init_node(server, self.node, self.idx)
@@ -98,6 +114,11 @@ class ReactorOpc:
         self.reactor.update_actuators()
         for actuator_opc in self.actuator_nodes:
             await actuator_opc.update_value()
+
+    async def update(self) -> None:
+        """Call all timers and subscribers."""
+        for timer in self.timers_dict.values():
+            await timer.async_callback()
 
     def stop(self) -> None:
         """Kill all actuators."""

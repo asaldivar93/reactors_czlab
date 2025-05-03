@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING
 
 from asyncua import ua
 
+from reactors_czlab.core.utils import Timer
+
 if TYPE_CHECKING:
     from asyncua.common.node import Node
 
@@ -18,10 +20,33 @@ _logger = logging.getLogger("server.opcsensor")
 class SensorOpc:
     """Sensor node."""
 
-    def __init__(self, sensor: Sensor) -> None:
+    def __init__(self, sensor: Sensor, timer: Timer) -> None:
         """Initialize OPC sensor node."""
         self.sensor = sensor
         self.channels: list[Node] = []
+        self.timer = timer
+
+    def __eq__(self, other: object) -> bool:
+        """Test equality by senor id."""
+        this = self.sensor.id
+        return this == other
+
+    @property
+    def timer(self) -> Timer:
+        """Timer getter."""
+        return self._timer
+
+    @timer.setter
+    def timer(self, timer: Timer) -> None:
+        """Timer setter."""
+        if not isinstance(timer, Timer):
+            raise TypeError
+        timer.add_async_sensor(self)
+        self._timer = timer
+
+    async def async_timer_callback(self) -> None:
+        """Read sensor and update server."""
+        await self.update_value()
 
     async def init_node(self, parent: Node, idx: int) -> None:
         """Add node and variables for the sensor."""
@@ -46,6 +71,7 @@ class SensorOpc:
 
     async def update_value(self) -> None:
         """Get a new reading and update the server."""
+        self.sensor.read()
         for i, channel in enumerate(self.channels):
             new_val = self.sensor.channels[i].value
             if not isinstance(new_val, float | int):

@@ -13,7 +13,7 @@ from reactors_czlab.core.modbus import (
     valid_baudrates,
 )
 from reactors_czlab.core.reactor import IN_RASPBERRYPI
-from reactors_czlab.core.utils import Calibration, PhysicalInfo
+from reactors_czlab.core.utils import Calibration, PhysicalInfo, Timer
 
 if TYPE_CHECKING:
     from typing import ClassVar
@@ -34,52 +34,77 @@ class _RegisterInfo(NamedTuple):
 class Sensor(ABC):
     """Base sensor."""
 
-    def __init__(self, identifier: str, config: PhysicalInfo) -> None:
+    def __init__(
+        self,
+        identifier: str,
+        config: PhysicalInfo,
+        timer: Timer,
+    ) -> None:
         """Instance a Base sensor class.
 
         Parameters
         ----------
-        identifier: str
-            A unique identifier for the sensor
-        config: PhysicalInfo
-            A class with sensor information: model, address,
-            sample_interval, channels
+        identifier: A unique identifier for the sensor
+        config: A PhysicalInfo dataclass with sensor information
+        timer: A reactors_czlab.core.utils.Timer
 
         """
         self.id = identifier
         self.sensor_info = config
         self.address = config.address
         self.channels = config.channels
+        self.timer = timer
 
     def __repr__(self) -> str:
         """Print sensor id."""
         return f"Sensor(id: {self.id})"
 
-    @abstractmethod
-    def on_timer_callback(self) -> None:
-        """Set timer callback."""
+    def __eq__(self, other: object) -> bool:
+        """Test equality by senor id."""
+        this = self.id
+        return this == other
 
     @abstractmethod
     def read(self) -> None:
         """Read all sensor channels."""
 
+    @property
+    def timer(self) -> Timer:
+        """Timer getter."""
+        return self._timer
+
+    @timer.setter
+    def timer(self, timer: Timer) -> None:
+        """Timer setter."""
+        if not isinstance(timer, Timer):
+            raise TypeError
+        timer.add_sensor(self)
+        self._timer = timer
+
+    def on_timer_callback(self) -> None:
+        """Read sensor."""
+        self.read()
+
 
 class RandomSensor(Sensor):
     """Class used for testing."""
 
-    def __init__(self, identifier: str, config: PhysicalInfo) -> None:
+    def __init__(
+        self,
+        identifier: str,
+        config: PhysicalInfo,
+        timer: Timer,
+    ) -> None:
         """Instance a random sensor class used for testing.
 
         Parameters
         ----------
-        identifier: str
-            A unique identifier for the sensor
-        config: PhysicalInfo
-            A class with sensor information: model, address,
-            sample_interval, channels
+        - identifier: A unique identifier for the sensor
+        - config: A PhysicalInfo dataclass with sensor information
+        - timer: A reactors_czlab.core.utils.Timer
 
         """
-        super().__init__(identifier, config)
+        super().__init__(identifier, config, timer)
 
     def read(self) -> None:
         """Print values with a gaussian distribution."""
@@ -92,16 +117,16 @@ class HamiltonSensor(Sensor):
 
     Summary of relevant registers.
 
-    Common:
+    Common
     ----
-    Operator:
-        Start: 4288, No: 4, Reg1/Reg2: Operator Level Reg3/Reg4: password Level: password
-    Address:
-        Start: 4096, No: 2, Reg1/Reg2: device address Level: S
+    - Operator:
+    Start: 4288, No: 4, Reg1/Reg2: Operator Level Reg3/Reg4: password Level: password
+    - Address:
+    Start: 4096, No: 2, Reg1/Reg2: device address Level: S
     BaudRate:
-        Start: 4102, No: 2, Reg1/Reg2: baudrate Level: S
+    - Start: 4102, No: 2, Reg1/Reg2: baudrate Level: S
     PMC1: (Units Available in register 2408)
-        Start: 2090, No: 10, Reg1/Reg2: Selected Unit Reg3/Reg4: PMC1 Reg5/Reg4: Measurment Status
+    - Start: 2090, No: 10, Reg1/Reg2: Selected Unit Reg3/Reg4: PMC1 Reg5/Reg4: Measurment Status
         Reg7/Reg8:min_val Reg9/Reg10: max_val Level: U,A,S
     PMC6: (Units Available in register 2088)
         Start: 2410, No: 10, Reg1/Reg2: Selected Unit Reg3/Reg4: PMC1 Reg5/Reg4: Measurment Status
@@ -130,7 +155,7 @@ class HamiltonSensor(Sensor):
 
     Calibration procedure:
     ----
-        The Arc Sensor family has a unique calibration routine. When initiating
+    The Arc Sensor family has a unique calibration routine. When initiating
     the calibration, the data set of the sensor is automatically traced back
     within the last 3 minutes and a decision is made immediately if the
     calibration is successful or not. The criteria for a successful calibration
@@ -169,22 +194,21 @@ class HamiltonSensor(Sensor):
         self,
         identifier: str,
         config: PhysicalInfo,
+        timer: Timer,
         modbus_handler: ModbusHandler,
     ) -> None:
         """Instance a Base sensor class.
 
         Parameters
         ----------
-        identifier: str
-            A unique identifier for the sensor
-        config: PhysicalInfo
-            A class with sensor information: model, address,
-            sample_interval, channels
-        modbus_handler: ModbusHandles
-            A sentinel which handles modbus communications for all sensors
+        - identifier: A unique identifier for the sensor
+        - config: A class with sensor information
+        - timer: A reactors_czlab.core.utils.Timer
+        - modbus_handler: A sentinel which handles modbus communications
+        for all sensors
 
         """
-        super().__init__(identifier, config)
+        super().__init__(identifier, config, timer)
         self.modbus_handler = modbus_handler
 
     def __repr__(self) -> str:
@@ -265,7 +289,7 @@ class HamiltonSensor(Sensor):
             low, high = status_response[0], status_response[1]
             status = self.modbus_handler.decode((low, high), "int")
             low, high = status_response[4], status_response[5]
-            cp = self.modbus_handler.decode((low, high), "float")
+            cal_value = self.modbus_handler.decode((low, high), "float")
 
             quality_response = self.read_holding_registers("quality")
             low, high = quality_response[0], quality_response[1]
@@ -275,7 +299,7 @@ class HamiltonSensor(Sensor):
             low, high = ph_response[2], ph_response[3]
             ph = self.modbus_handler.decode((low, high), "float")
             info_message = f"Calibration at {self.id} - status: {status}, \
-                            cp: {cp}, quality: {quality}, pH: {ph}"
+                            cp: {cal_value}, quality: {quality}, pH: {ph}"
             _logger.info(info_message)
             self.set_operator_level("user")
         except ModbusError:
@@ -340,7 +364,12 @@ class HamiltonSensor(Sensor):
 class AnalogSensor(Sensor):
     """Class for reading analog channels from the Raspberry."""
 
-    def __init__(self, identifier: str, config: PhysicalInfo) -> None:
+    def __init__(
+        self,
+        identifier: str,
+        config: PhysicalInfo,
+        timer: Timer,
+    ) -> None:
         """Analog sensor class. Analog input pins Range(0, 4095) (0-10V).
 
         Parameters
@@ -354,7 +383,7 @@ class AnalogSensor(Sensor):
             A sentinel which handles modbus communications for all sensors
 
         """
-        super().__init__(identifier, config)
+        super().__init__(identifier, config, timer)
         self.cal = None
         if IN_RASPBERRYPI:
             for chn in self.channels:
@@ -378,7 +407,8 @@ class AnalogSensor(Sensor):
         return cal.a * analog + cal.b
 
     def set_calibration(
-        self, cal: list[tuple[str, tuple[float, float]]]
+        self,
+        cal: list[tuple[str, tuple[float, float]]],
     ) -> None:
         """Set calibration values for all the channels.
 

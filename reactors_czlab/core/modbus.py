@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, ClassVar
+from typing import ClassVar
 
 from pymodbus import FramerType
 from pymodbus.client import ModbusSerialClient
@@ -172,11 +172,10 @@ class ModbusHandler:
                 with code {result.exception_code}"
                 raise ModbusError(error_message)
 
-            _logger.debug(
-                f"Modbus success - unit: {request.address}, \
+            error_message = f"Modbus success - unit: {request.address}, \
                 operation: {request.operation}, value: {request.values}, \
-                result: {result.registers}",
-            )
+                result: {result.registers}"
+            _logger.debug(error_message)
         except ModbusException as err:
             error_message = f"Modbus error during {request.operation} \
                 on {request.address}: {err}"
@@ -205,7 +204,17 @@ class ModbusHandler:
 
         return builder.to_registers()
 
-    def decode(self, registers: tuple[int, int], cast_type: str) -> Any:
+    def decode(self, registers: tuple[int, int], cast_type: str) -> float | int:
+        """Translate register values to variables.
+
+        Parameters
+        ----------
+        registers: tuple[int, int]
+            A tuple of two 16bit register values
+        cast_type:
+            The type of the conversion. One of: int, float.
+
+        """
         decoder = BinaryPayloadDecoder(
             payload=registers,
             byteorder=Endian.LITTLE,
@@ -216,6 +225,10 @@ class ModbusHandler:
                 return decoder.decode_32bit_float()
             case "int":
                 return decoder.decode_32bit_uint()
+            case _:
+                error_message = "Only float or int are implemented \
+                                 in ModbusHandler.decode()"
+                raise ModbusError(error_message)
 
     def close(self) -> None:
         """Close the Modbus client connection."""

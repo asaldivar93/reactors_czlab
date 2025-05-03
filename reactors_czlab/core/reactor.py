@@ -5,6 +5,8 @@ from __future__ import annotations
 import platform
 from typing import TYPE_CHECKING
 
+from reactors_czlab.core.utils import Timer
+
 if TYPE_CHECKING:
     from reactors_czlab.core.actuator import Actuator
     from reactors_czlab.core.sensor import Sensor
@@ -26,6 +28,7 @@ class Reactor:
         volume: float,
         sensors: list[Sensor],
         actuators: list[Actuator],
+        timer: Timer,
     ) -> None:
         """Initialize the reactor.
 
@@ -45,9 +48,20 @@ class Reactor:
         self.sensors = sensors
         self.volume = volume
         self.actuators = actuators
+        self.base_timer = timer
+        self.timers_dict = {timer.interval: timer}
+        for sensor in sensors:
+            interval = sensor.sensor_info.sample_interval
+            new_timer = self.timers_dict.get(interval, None)
+            if new_timer is None:
+                new_timer = Timer(interval)
+                self.timers_dict.update({interval: new_timer})
+            sensor.timer = new_timer
+
         # Pass the available sensors to the actuators
         for actuator in self.actuators.values():
-            actuator.sensors = self.sensors
+            actuator.sensors = sensors
+            actuator.timer = self.base_timer
 
     @property
     def sensors(self) -> dict[str, Sensor]:

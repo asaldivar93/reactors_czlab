@@ -6,12 +6,10 @@ import logging
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
-from reactors_czlab.core.utils import Timer
+from reactors_czlab.core.utils import ControlConfig, ControlMethod, Timer
 
 if TYPE_CHECKING:
     from reactors_czlab.core.sensor import Sensor
-
-CONTROL_METHODS = ["manual", "timer", "on_boundaries", "pid"]
 
 _logger = logging.getLogger("server.control")
 
@@ -19,46 +17,28 @@ _logger = logging.getLogger("server.control")
 class ControlFactory:
     """Factory of the different control classes."""
 
-    def create_control(self, control_config: dict) -> _Control:
+    def create_control(self, config: ControlConfig) -> _Control:
         """Create a control class based on the control_config.
 
         Inputs:
         -------
-        control_config: dict
-            A dictionary with the parameters of the new configuration
-
-        Example:
-        -------
-        - {"method": "manual", "value": 255}
-        - {"method": "timer", "value": 255, "time_on": 5, "time_off": 10}
-        - {"method": "on_boundaries", "value": 255,
-           "lower_bound": 1.52, "upper_bound": 5.45}
-        - {"method": "pid", "setpoint": 35}
+        config: ControlConfig
+            A dataclass with the parameters of the new configuration
 
         """
         # Pattern matching to the new control config
-        match control_config:
-            case {"method": "manual", "value": value}:
-                return _ManualControl(value)
+        match config:
+            case ControlConfig("manual") as c:
+                return _ManualControl(c.value)
 
-            case {
-                "method": "timer",
-                "value": value,
-                "time_on": time_on,
-                "time_off": time_off,
-            }:
-                return _TimerControl(time_on, time_off, value)
+            case ControlConfig("timer") as c:
+                return _TimerControl(c.time_on, c.time_off, c.value)
 
-            case {
-                "method": "on_boundaries",
-                "lower_bound": lb,
-                "upper_bound": ub,
-                "value": value,
-            }:
-                return _OnBoundariesControl(lb, ub, value)
+            case ControlConfig("on_boundaries") as c:
+                return _OnBoundariesControl(c.lb, c.ub, c.value)
 
-            case {"method": "pid", "setpoint": setpoint}:
-                return _PidControl(setpoint)
+            case ControlConfig("pid") as c:
+                return _PidControl(c.setpoint)
 
             case _:
                 raise TypeError
@@ -75,8 +55,9 @@ class _Control(ABC):
     @value.setter
     def value(self, value: float) -> None:
         """Set the value of the actuator."""
+        error_message = "Expected Float type in ControlConfig"
         if not isinstance(value, float | int):
-            raise TypeError
+            raise TypeError(error_message)
         self._value = value
 
     @property
@@ -103,10 +84,6 @@ class _Control(ABC):
         self.min_val = limits[0]
         self.max_val = limits[1]
 
-    def on_timer_callback(self) -> None:
-        self._sampling_event = True
-        _logger.debug(f"Timer callback on {self}:{self._sampling_event}")
-
     @abstractmethod
     def get_value(self, sensor: Sensor | None = None) -> float:
         """Calculate the actuator output value."""
@@ -115,14 +92,13 @@ class _Control(ABC):
 class _ManualControl(_Control):
     """ManualControl class sets the output value based on user input."""
 
-    def __init__(self, value: int, limits: list[float] | None = None) -> None:
-        self.method = CONTROL_METHODS[0]
+    def __init__(self, value: float, limits: list[float] | None = None) -> None:
+        self.method = ControlMethod.manual
         self.value = value
         if limits is None:
             self.set_limits([0, 4095])
         else:
             self.set_limits(limits)
-        self._sampling_event = False
 
     def __repr__(self) -> str:
         return f"_ManualControl({self.value!r})"
@@ -142,10 +118,10 @@ class _TimerControl(_Control):
         self,
         time_on: float,
         time_off: float,
-        value_on: int,
+        value_on: float,
         limits: list[float] | None = None,
     ) -> None:
-        self.method = CONTROL_METHODS[1]
+        self.method = ControlMethod.timer
         self.time_on = time_on
         self.time_off = time_off
         self.value_on = value_on
@@ -190,7 +166,7 @@ class _TimerControl(_Control):
         self._time_off = time_off
 
     def get_value(self, sensor: Sensor | None = None) -> float:
-        self.timer.is_elapsed()
+        self.timer.callback()
         if self._sampling_event:
             self._sampling_event = False
             if self._is_on:
@@ -238,12 +214,11 @@ class _OnBoundariesControl(_Control):
             if backwards=True the output is reversed, if the reference sensor
             crosses the lower_bound the ouput is off and viceversa
         """
-        self.method = CONTROL_METHODS[2]
+        self.method = ControlMethod.on_boundaries
         self.lower_bound = lower_bound
         self.upper_bound = upper_bound
         self.value_on = value
         self.backwards = backwards
-        self._sampling_event = False
         if backwards:
             self.value = value
         else:
@@ -284,21 +259,19 @@ class _OnBoundariesControl(_Control):
         if sensor is None:
             raise AttributeError
 
-        if self._sampling_event:
-            self._sampling_event = False
-            variable = sensor.channels[0].value
-            if variable < self.lower_bound:
-                if self.backwards:
-                    self.value = 0
-                else:
-                    self.value = self.value_on
-            elif variable > self.upper_bound:
-                if self.backwards:
-                    self.value = self.value_on
-                else:
-                    self.value = 0
-            _logger.debug(f"lb: {self.lower_bound}, ub: {self.upper_bound}")
-            _logger.debug(f"var: {variable}, value: {self.value}")
+        variable = sensor.channels[0].value
+        if variable < self.lower_bound:
+            if self.backwards:
+                self.value = 0
+            else:
+                self.value = self.value_on
+        elif variable > self.upper_bound:
+            if self.backwards:
+                self.value = self.value_on
+            else:
+                self.value = 0
+        _logger.debug(f"lb: {self.lower_bound}, ub: {self.upper_bound}")
+        _logger.debug(f"var: {variable}, value: {self.value}")
 
         return self.value
 
@@ -312,7 +285,7 @@ class _PidControl(_Control):
         gains: list[float] | None = None,
         limits: list[float] | None = None,
     ) -> None:
-        self.method = CONTROL_METHODS[3]
+        self.method = ControlMethod.pid
         self.setpoint = setpoint
         if gains is None:
             self.set_gains([100, 0.01, 0])
@@ -386,36 +359,36 @@ class _PidControl(_Control):
         if sensor is None:
             raise AttributeError
 
-        if self._sampling_event:
-            self._sampling_event = False
-            variable = sensor.channels[0].value
-            dt = sensor.timer.elapsed_time
+        self._sampling_event = False
+        variable = sensor.channels[0].value
+        dt = sensor.timer.elapsed_time
 
-            # Get error
-            error = self.setpoint - variable
-            d_error = error - self._last_error
-            self._last_error = error
+        # Get error
+        error = self.setpoint - variable
+        d_error = error - self._last_error
+        self._last_error = error
 
-            # Get PID terms
-            p_term = self.kp * error
-            i_term = self.ki * error * dt
-            d_term = self.kd * d_error / dt
-            self._integral_sum += i_term
+        # Get PID terms
+        p_term = self.kp * error
+        i_term = self.ki * error * dt
+        d_term = self.kd * d_error / dt
+        self._integral_sum += i_term
 
-            # Anti-windup
-            self._integral_sum = max(
-                self.min_val, min(self._integral_sum, self.max_val)
-            )
-            # Sum all the PID terms
-            output = p_term + self._integral_sum + d_term
-            # Constraint the output to the allowable range
-            self.value = max(self.min_val, min(output, self.max_val))
-            _logger.debug(f"elapsed_time: {dt}, var: {variable}")
-            _logger.debug(
-                f"p_term: {p_term}, i_term: {i_term}, d_term: {d_term}"
-            )
-            _logger.debug(
-                f"error: {error}, _integral_sum: {self._integral_sum}, value: {self.value}"
-            )
+        # Anti-windup
+        self._integral_sum = max(
+            self.min_val,
+            min(self._integral_sum, self.max_val),
+        )
+        # Sum all the PID terms
+        output = p_term + self._integral_sum + d_term
+        # Constraint the output to the allowable range
+        self.value = max(self.min_val, min(output, self.max_val))
+        _logger.debug(f"elapsed_time: {dt}, var: {variable}")
+        _logger.debug(
+            f"p_term: {p_term}, i_term: {i_term}, d_term: {d_term}",
+        )
+        _logger.debug(
+            f"error: {error}, _integral_sum: {self._integral_sum}, value: {self.value}",
+        )
 
         return self.value

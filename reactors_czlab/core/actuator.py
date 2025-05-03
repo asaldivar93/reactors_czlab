@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, ClassVar
 from reactors_czlab.core.control import ControlFactory, _Control
 from reactors_czlab.core.reactor import IN_RASPBERRYPI
 from reactors_czlab.core.sensor import Sensor
+from reactors_czlab.core.utils import ControlConfig, ControlMethod, Timer
 
 if TYPE_CHECKING:
     from reactors_czlab.core.utils import PhysicalInfo
@@ -24,36 +25,40 @@ _logger = logging.getLogger("server.actuator")
 class Actuator(ABC):
     """Base Actuator class."""
 
-    def __init__(self, identifier: str, config: PhysicalInfo) -> None:
+    def __init__(
+        self,
+        identifier: str,
+        config: PhysicalInfo,
+    ) -> None:
         """Instance base actuator class.
 
         Parameters
         ----------
-        identifier: str
-            A unique identifier for the actuator
-        config: PhysicalInfo
-            A data class with config parameters for the actuator
+        identifier: A unique identifier for the actuator
+        config: A data class with config parameters for the actuator
+        timer: A reactors_czlab.core.utils.Timer
 
         """
         self.id = identifier
         self.info = config
         self.channel = config.channels[0]
+
         self.controller = ControlFactory().create_control(
-            {"method": "manual", "value": 0},
+            ControlConfig(method=ControlMethod.manual, value=0),
         )
         self.reference_sensor = None
 
     @property
-    def sensors(self) -> dict:
+    def sensors(self) -> dict[str, Sensor]:
         """Return a Dict of Sensors."""
         return self._sensors
 
     @sensors.setter
-    def sensors(self, sensors: dict) -> None:
+    def sensors(self, sensors: list[Sensor]) -> None:
         """Set available sensors."""
-        if not isinstance(sensors, dict):
+        if not isinstance(sensors, list):
             raise TypeError
-        self._sensors = sensors
+        self._sensors = {s.id: s for s in sensors}
 
     @property
     def reference_sensor(self) -> Sensor | None:
@@ -61,11 +66,37 @@ class Actuator(ABC):
         return self._reference_sensor
 
     @reference_sensor.setter
-    def reference_sensor(self, sensor: Sensor | None) -> None:
+    def reference_sensor(self, sensor: Sensor | str | None) -> None:
         """Set reference sensor."""
-        if not isinstance(sensor, Sensor | None):
+        if not isinstance(sensor, Sensor | None | str):
             raise TypeError
+        if isinstance(sensor, str):
+            sensor = self.sensors.get(sensor, None)
+        if sensor is None:
+            self.timer = self.base_timer
+        else:
+            self.timer = sensor.timer
         self._reference_sensor = sensor
+
+    @property
+    def timer(self) -> Timer | None:
+        """Timer getter."""
+        return self._timer
+
+    @timer.setter
+    def timer(self, timer: Timer | None) -> None:
+        """Timer setter."""
+        if not isinstance(timer, Timer | None):
+            raise TypeError
+
+        if self._timer is not None:
+            self._timer.remove_actuator(self)
+
+        if timer is None:
+            timer = self.base_timer
+        else:
+            timer.add_actuator(self)
+        self._timer = timer
 
     @property
     def controller(self) -> _Control:
@@ -78,13 +109,9 @@ class Actuator(ABC):
             raise TypeError
         self._controller = controller
 
-    def set_reference_sensor(self, sensor: str | Sensor) -> None:
-        """Set reference sensor."""
-        if isinstance(sensor, Sensor):
-            self.reference_sensor = sensor
-        else:
-            reference = self.sensors[sensor]
-            self.reference_sensor = reference
+    def on_timer_callback(self) -> None:
+        """Timer callback."""
+        self.write_output()
 
     def write_output(self) -> None:
         """Write the actuator values."""
@@ -93,47 +120,33 @@ class Actuator(ABC):
         except AttributeError:
             # Catch an exception when the user hasn't set a reference sensor
             # before setting _OnBoundaries or _PidControl classes
-            _logger.exception(f"reference sensor in {self.id} not set")
+            _logger.warning(f"reference sensor in {self.id} not set")
             _logger.warning(f"Setting output in {self.id} = 0")
             self.write(0)
 
-    def set_control_config(self, control_config: dict) -> None:
+    def set_control_config(self, config: ControlConfig) -> None:
         """Change the current configuration of the actuator outputs.
 
         Inputs:
         -------
-        control_config: dict
-            A dictionary with the parameters of the new configuration
+        config: ControlConfig
+            A dataclass with the parameters of the new controller
 
         """
         current_controller = self.controller
         try:
-            # Instance a new controller class
-            new_controller = ControlFactory().create_control(control_config)
+            new_controller = ControlFactory().create_control(config)
             # sets the new config only if it is different from the old config
             if current_controller != new_controller:
                 self.controller = new_controller
-                if self.reference_sensor is not None:
-                    # remove old controller form the timer sub
-                    self.reference_sensor.timer.remove_suscriber(
-                        self.controller,
-                    )
-                    # Add the new controller to the time subscription
-                    self.reference_sensor.timer.add_suscriber(new_controller)
-
                 _logger.info(
-                    f"Control config update - {self.id}:{new_controller}",
+                    f"Control config update - {self.id}:{self.controller}",
                 )
 
         except TypeError:
             # Each control class checks that the values
             # passed are of the correct type
-            _logger.exception(f"Wrong attributes in {self.id}:{control_config}")
-
-        except AttributeError:
-            # Catch an exception when the user hasn't set a reference sensor
-            # before setting _OnBoundaries or _PidControl classes
-            _logger.exception(f"reference sensor in {self.id} not set")
+            _logger.exception(f"Wrong attributes in {self.id}:{config}")
 
     @abstractmethod
     def write(self, value: float) -> None:
@@ -143,18 +156,22 @@ class Actuator(ABC):
 class RandomActuator(Actuator):
     """Class for testing."""
 
-    def __init__(self, identifier: str, config: PhysicalInfo) -> None:
-        """Instance a random actuator class for testing.
+    def __init__(
+        self,
+        identifier: str,
+        config: PhysicalInfo,
+        timer: Timer,
+    ) -> None:
+        """Instance base actuator class.
 
         Parameters
         ----------
-        identifier: str
-            A unique identifier for the actuator
-        config: PhysicalInfo
-            A data class with config parameters for the actuator
+        identifier: A unique identifier for the actuator
+        config: A data class with config parameters for the actuator
+        timer: A reactors_czlab.core.utils.Timer
 
         """
-        super().__init__(identifier, config)
+        super().__init__(identifier, config, timer)
 
     def write(self, value: float) -> None:
         """Write value."""
@@ -173,6 +190,7 @@ class PlcActuator(Actuator):
         self,
         identifier: str,
         config: PhysicalInfo,
+        timer: Timer,
         mode: str = "pwm",
     ) -> None:
         """Interface a pin as an actuator class.
@@ -187,7 +205,7 @@ class PlcActuator(Actuator):
             Sets the pin as PWM channel, else sets the pin as analog channel
 
         """
-        super().__init__(identifier, config)
+        super().__init__(identifier, config, timer)
         if IN_RASPBERRYPI:
             chn = self.channel
             rpiplc.pin_mode(chn.pin, rpiplc.OUTPUT)
