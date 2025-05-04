@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
 from time import perf_counter
 
 _logger = logging.getLogger("server.utils")
@@ -25,7 +24,17 @@ class Timer:
         """Initialize the timer."""
         self.interval = interval
         self.last_time = perf_counter()
-        self._subscribers = []
+        self.as_last_time = self.last_time
+        self._subscribers: list[object] = []
+        self._sensors: list[object] = []
+        self._actuators: list[object] = []
+        # async subscribers
+        self._as_subscribers: list[object] = []
+        self._as_sensors: list[object] = []
+        self._as_actuators: list[object] = []
+
+    def __repr__(self) -> str:
+        return f"Timer({self.interval})"
 
     @property
     def interval(self) -> float:
@@ -43,54 +52,103 @@ class Timer:
 
     def add_suscriber(self, subscriber: object) -> None:
         self._subscribers.append(subscriber)
-        _logger.debug(f"current subscribers: {self._subscribers}")
+        _logger.debug(f"Current subscribers: {self._subscribers}")
 
     def remove_suscriber(self, subscriber: object) -> None:
         try:
             self._subscribers.remove(subscriber)
         except ValueError:
             _logger.exception(f"{subscriber} not in self._subscribers")
-        _logger.debug(f"current subscribers: {self._subscribers}")
+        _logger.debug(f"Current subscribers: {self._subscribers}")
 
-    def is_elapsed(self) -> None:
+    def add_sensor(self, sensor: object) -> None:
+        self._sensors.append(sensor)
+        _logger.debug(f"Current sensors: {self._sensors}")
+
+    def remove_sensor(self, sensor: object) -> None:
+        try:
+            self._sensors.remove(sensor)
+        except ValueError:
+            _logger.exception(f"{sensor} not in self._sensors")
+        _logger.debug(f"Current sensors: {self._sensors}")
+
+    def add_actuator(self, actuator: object) -> None:
+        self._actuators.append(actuator)
+        _logger.debug(f"Current actuators: {self._actuators}")
+
+    def remove_actuator(self, actuator: object) -> None:
+        try:
+            self._actuators.remove(actuator)
+        except ValueError:
+            _logger.exception(f"{actuator} not in self._actuators")
+        _logger.debug(f"Current actuators: {self._actuators}")
+
+    def callback(self) -> None:
         """Evaluate if the elapsed time is higher than the interval."""
         this_time = perf_counter()
         self.elapsed_time = this_time - self.last_time
         if self.elapsed_time > self.interval:
-            # _logger.debug(
-            #     f"elapsed_time: {self.elapsed_time}, interval: {self.interval}"
-            # )
             self.last_time = this_time
+            for sensor in self._sensors:
+                sensor.on_timer_callback()
+            for actuator in self._actuators:
+                actuator.on_timer_callback()
             for subscriber in self._subscribers:
                 subscriber.on_timer_callback()
 
+    def add_async_suscriber(self, subscriber: object) -> None:
+        self._as_subscribers.append(subscriber)
+        _logger.debug(
+            f"Timer({self.interval}) Current as_subscribers: {self._as_subscribers}"
+        )
 
-@dataclass
-class PhysicalInfo:
-    """Class holding info for the sensors/actuators."""
+    def remove_async_suscriber(self, subscriber: object) -> None:
+        try:
+            self._as_subscribers.remove(subscriber)
+        except ValueError:
+            _logger.exception(f"{subscriber} not in self._as_subscribers")
+        _logger.debug(
+            f"Timer({self.interval}) Current as_subscribers: {self._as_subscribers}"
+        )
 
-    model: str
-    address: int
-    sample_interval: float
-    channels: list[Channel]
+    def add_async_sensor(self, sensor: object) -> None:
+        self._as_sensors.append(sensor)
+        _logger.debug(
+            f"Timer({self.interval}) Current as_sensors: {self._as_sensors}"
+        )
 
+    def remove_async_sensor(self, sensor: object) -> None:
+        try:
+            self._as_sensors.remove(sensor)
+        except ValueError:
+            _logger.exception(f"{sensor} not in self._sensors")
+        _logger.debug(
+            f"Timer({self.interval}) Current as_sensors: {self._as_sensors}"
+        )
 
-@dataclass
-class Channel:
-    """Class holding config info for sensor/actuator channels."""
+    def add_async_actuator(self, actuator: object) -> None:
+        self._as_actuators.append(actuator)
+        _logger.debug(
+            f"Timer({self.interval}) Current as_actuators: {self._as_actuators}"
+        )
 
-    units: str
-    description: str
-    register: str = "none"
-    pin: str = "none"
-    value: float = -0.111
-    calibration: Calibration | None = None
+    def remove_async_actuator(self, actuator: object) -> None:
+        try:
+            self._as_actuators.remove(actuator)
+        except ValueError:
+            _logger.exception(f"{actuator} not in self._actuators")
+        _logger.debug(
+            f"Timer({self.interval}) current as_actuators: {self._as_actuators}"
+        )
 
-
-@dataclass
-class Calibration:
-    """Class holding linear regression parameters y = a*x + b."""
-
-    file: str
-    a: float
-    b: float
+    async def async_callback(self) -> None:
+        this_time = perf_counter()
+        self.elapsed_time = this_time - self.as_last_time
+        if self.elapsed_time > self.interval:
+            self.as_last_time = this_time
+            for sensor in self._as_sensors:
+                await sensor.async_timer_callback()
+            for actuator in self._as_actuators:
+                await actuator.async_timer_callback()
+            for subscriber in self._as_subscribers:
+                await subscriber.async_timer_callback()

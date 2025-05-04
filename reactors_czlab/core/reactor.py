@@ -5,6 +5,8 @@ from __future__ import annotations
 import platform
 from typing import TYPE_CHECKING
 
+from reactors_czlab.core.utils import Timer
+
 if TYPE_CHECKING:
     from reactors_czlab.core.actuator import Actuator
     from reactors_czlab.core.sensor import Sensor
@@ -26,18 +28,19 @@ class Reactor:
         volume: float,
         sensors: list[Sensor],
         actuators: list[Actuator],
+        timer: Timer,
     ) -> None:
         """Initialize the reactor.
 
         Parameters
         ----------
-        identifier: str
+        identifier:
             A unique identifier for the reactor.
-        volume: float
+        volume:
             The initial volume of the reactor.
-        sensors: list[Sensor]
+        sensors:
             A list containig the Sensor instances.
-        actuators: list[Actuators]
+        actuators:
             A list cotaining the Actuator instances.
 
         """
@@ -45,9 +48,24 @@ class Reactor:
         self.sensors = sensors
         self.volume = volume
         self.actuators = actuators
-        # Pass the available sensors to the actuators
+        self.base_timer = timer
+
+        # Create timers and pass them to the sensors
+        self.timers = {timer.interval: timer}
+        for sensor in sensors:
+            interval = sensor.sensor_info.sample_interval
+            new_timer = self.timers.get(interval, None)
+            if new_timer is None:
+                new_timer = Timer(interval)
+                self.timers.update({interval: new_timer})
+            sensor.base_timer = new_timer
+            sensor.timer = new_timer
+
+        # Pass the base timer to the actuators
         for actuator in self.actuators.values():
-            actuator.sensors = self.sensors
+            actuator.sensors = sensors
+            actuator.base_timer = self.base_timer
+            actuator.timer = self.base_timer
 
     @property
     def sensors(self) -> dict[str, Sensor]:
@@ -80,3 +98,8 @@ class Reactor:
         """Write the outputs of all actuators."""
         for actuator in self.actuators.values():
             actuator.write_output()
+
+    def update(self) -> None:
+        """Call all timers and subscribers."""
+        for timer in self.timers.values():
+            timer.callback()

@@ -2,29 +2,96 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import TYPE_CHECKING
 
 from asyncua import ua
+
+from reactors_czlab.core.data import ControlConfig, ControlMethod
+from reactors_czlab.core.utils import Timer
+from reactors_czlab.server_info import VERBOSE
 
 if TYPE_CHECKING:
     from asyncua import Server
     from asyncua.common.node import Node
 
     from reactors_czlab.core.actuator import Actuator
+    from reactors_czlab.core.sensor import Sensor
 
 _logger = logging.getLogger("server.opcactuator")
 
-control_method = {0: "manual", 1: "timer", 2: "on_boundaries", 3: "pid"}
+control_method = {
+    0: ControlMethod.manual,
+    1: ControlMethod.timer,
+    2: ControlMethod.on_boundaries,
+    3: ControlMethod.pid,
+}
 
 
 class ActuatorOpc:
     """Actuator node."""
 
-    def __init__(self, actuator: Actuator) -> None:
+    def __init__(self, actuator: Actuator, timer: Timer) -> None:
         """Initialize the OPC actuator node."""
         self.actuator = actuator
+        self.base_timer = timer
+        self._timer = None
+        self.timer = self.base_timer
+
+    def __repr__(self) -> str:
+        """Print sensor id."""
+        return f"ActuatorOpc(id: {self.actuator.id})"
+
+    def __eq__(self, other: object) -> bool:
+        """Test equality by senor id."""
+        this = self.actuator.id
+        return this == other
+
+    @property
+    def timer(self) -> Timer | None:
+        """Timer getter."""
+        return self._timer
+
+    @timer.setter
+    def timer(self, timer: Timer | None) -> None:
+        """Timer setter."""
+        if not isinstance(timer, Timer | None):
+            raise TypeError
+        if self._timer is not None:
+            self._timer.remove_async_actuator(self)
+        if timer is not None:
+            timer.add_async_actuator(self)
+        else:
+            timer = self.base_timer
+        self._timer = timer
+
+    @property
+    def reference_sensor(self) -> Sensor | None:
+        """Sensor getter."""
+        return self._reference_sensor
+
+    @reference_sensor.setter
+    def reference_sensor(self, sensor: Sensor | None) -> None:
+        """Sensor setter."""
+        if sensor is None:
+            error_message = f"None sensor in actuator {self.actuator.id}"
+            self.timer = self.base_timer
+            _logger.warning(error_message)
+            _logger.warning(f"Available sensors: {self.sensors_dict}")
+        else:
+            self.timer = sensor.timer
+        self._reference_sensor = sensor
+
+    async def async_timer_callback(self) -> None:
+        """Update actuator values and push to server."""
+        await self.update_value()
+
+    async def update_value(self) -> None:
+        """Update the actuator state in the server."""
+        new_val = self.actuator.channel.value
+        await self.curr_value.write_value(float(new_val))
+        if VERBOSE:
+            _logger.debug(f"Updated {self.curr_value} with value {new_val}")
 
     async def init_node(self, server: Server, parent: Node, idx: int) -> None:
         """Add node and variables for the actuator."""
@@ -32,7 +99,6 @@ class ActuatorOpc:
 
         # Add actuator node to reactor
         self.node = await parent.add_object(idx, actuator.id)
-        _logger.info(f"New Actuator node {self.actuator.id}:{self.node}")
 
         # Add a node with variables holding the control config
         await self.init_control_node(idx)
@@ -46,68 +112,66 @@ class ActuatorOpc:
         await sub.subscribe_data_change(on_config)
 
     async def datachange_notification(
-        self, node: Node, val: float, data: object
+        self,
+        node: Node,
+        val: float,
+        data: object,
     ) -> None:
-        """Read the control configuration, and update the actuator accordingly."""
+        """Read the control configuration, and update the actuator."""
         _logger.debug(f"Config update: {self.actuator.id}:{node}:{val}")
         index = await self.method.get_value()
         try:
             method = control_method[index]
-            control_config = {"method": method}
+            value = await self.value.get_value()
+            config = ControlConfig(method, value=value)
+
             # Build a dictionary with the appropiate
             # parameters based on the method variable
             match method:
                 case "manual":
-                    control_config["value"] = await self.value.get_value()
-                    self.actuator.set_control_config(control_config)
-                    _logger.debug(f"Control config: {control_config}")
+                    self.actuator.set_control_config(config)
+                    self.timer = self.base_timer
+                    self.actuator.timer = self.base_timer
+                    _logger.debug(f"Control config: {config}")
 
                 case "timer":
-                    control_config["value"] = await self.value.get_value()
-                    control_config["time_on"] = await self.time_on.get_value()
-                    control_config["time_off"] = await self.time_off.get_value()
-                    self.actuator.set_control_config(control_config)
-                    _logger.debug(f"Control config: {control_config}")
+                    config.time_on = await self.time_on.get_value()
+                    config.time_off = await self.time_off.get_value()
+                    self.timer = self.base_timer
+                    self.actuator.timer = self.base_timer
+                    self.actuator.set_control_config(config)
+                    _logger.debug(f"Control config: {config}")
 
                 case "on_boundaries":
                     await self.update_reference_sensor()
-                    control_config["value"] = await self.value.get_value()
-                    control_config["lower_bound"] = await self.lb.get_value()
-                    control_config["upper_bound"] = await self.ub.get_value()
+                    config.lb = await self.lb.get_value()
+                    config.ub = await self.ub.get_value()
                     # There is a bug here, it will not update the actuator when
                     # there is a change in the value. It will update with
                     # changes in everything else
-                    self.actuator.set_control_config(control_config)
-                    _logger.debug(f"Control config: {control_config}")
+                    self.actuator.set_control_config(config)
+                    _logger.debug(f"Control config: {config}")
 
                 case "pid":
                     await self.update_reference_sensor()
-                    control_config["setpoint"] = await self.setpoint.get_value()
-                    self.actuator.set_control_config(control_config)
-                    _logger.debug(f"Control config: {control_config}")
+                    config.setpoint = await self.setpoint.get_value()
+                    self.actuator.set_control_config(config)
+                    _logger.debug(f"Control config: {config}")
         except KeyError:
             _logger.exception(f"{index} not a member of {control_method}")
 
-        # We need to find a way to register a custum callback
-        # to update the PID gains without resetting the controller
+    # We need to find a way to register a custum callback
+    # to update the PID gains without resetting the controller
 
     async def update_reference_sensor(self) -> None:
         """Find the reference sensor and pass it to the actuator."""
         sensor_idx = await self.curr_sensor.get_value()
-        try:
-            reference_sensor = self.sensors_dict[sensor_idx]
-            self.actuator.set_reference_sensor(reference_sensor)
-            _logger.debug(f"Available sensors: {self.sensors_dict}")
-            _logger.debug(f"Selected sensor: {sensor_idx}: {reference_sensor}")
-        except KeyError:
-            _logger.exception(
-                f"{sensor_idx} not a member of {self.sensors_dict}"
-            )
-
-    async def update_value(self) -> None:
-        """Update the actuator state in the server."""
-        new_val = self.actuator.channel.value
-        await self.curr_value.write_value(float(new_val))
+        new_sensor = self.sensors_dict.get(sensor_idx, None)
+        self.actuator.reference_sensor = new_sensor
+        self.reference_sensor = self.actuator.reference_sensor
+        _logger.debug(
+            f"Sensor {sensor_idx}: {new_sensor} set for {self.actuator.id}",
+        )
 
     async def init_control_node(self, idx: int) -> None:
         """Add configuration variables for the control method."""
@@ -187,21 +251,18 @@ class ActuatorOpc:
         )
         await self.curr_sensor.set_writable()
 
-        # The default sensor is none, user needs to set it
-        sensors_list = ["none"]
         # Get all avaliable sensors
-        for sensor in self.actuator.sensors.values():
-            sensors_list.append(sensor.id)
-        # Build ua.VariantType list
+        sensors_list = [sensor.id for sensor in self.actuator.sensors.values()]
+        # The default sensor is none, user needs to set it
+        sensors_list.insert(0, "none")
+        # Build a dict dict[sensor index, sensor id]
+        self.sensors_dict = dict(enumerate(sensors_list))
+
+        # Add sensor list to the opc server
         sensors_variant = ua.Variant(
             [ua.LocalizedText(sensor) for sensor in sensors_list],
             ua.VariantType.LocalizedText,
         )
-
-        # Build a dict to recover sensor name
-        # for datachange_notification callback
-        self.sensors_dict = dict(enumerate(sensors_list))
-        # Add sensor list to the opc server
         await self.curr_sensor.add_property(
             ua.ObjectIds.MultiStateDiscreteType_EnumStrings,
             "EnumStrings",

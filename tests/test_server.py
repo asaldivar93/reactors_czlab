@@ -6,9 +6,11 @@ import logging
 from asyncua import Server
 
 from reactors_czlab.core.actuator import RandomActuator
-from reactors_czlab.core.sensor import DO_SENSORS, PH_SENSORS, RandomSensor
-from reactors_czlab.core.utils import Channel, PhysicalInfo
+from reactors_czlab.core.data import Channel, PhysicalInfo
+from reactors_czlab.core.sensor import RandomSensor
+from reactors_czlab.core.utils import Timer
 from reactors_czlab.opcua import ReactorOpc
+from reactors_czlab.server_info import DO_SENSORS, PH_SENSORS
 
 _logger = logging.getLogger("server")
 _logger.setLevel(logging.DEBUG)
@@ -29,13 +31,13 @@ _logger.addHandler(_file_handler)
 _logger.addHandler(_stream_handler)
 
 actuators_dict = {
-    "pump_0": PhysicalInfo(
+    "R0:pump": PhysicalInfo(
         "any", 0, 0, [Channel("analog", "pump", pin="Q0.5")]
     ),
-    "pump_1": PhysicalInfo(
+    "R1:pump": PhysicalInfo(
         "any", 0, 0, [Channel("analog", "pump", pin="Q0.6")]
     ),
-    "pump_2": PhysicalInfo(
+    "R2:pump": PhysicalInfo(
         "any", 0, 0, [Channel("analog", "pump", pin="Q0.7")]
     ),
 }
@@ -55,7 +57,13 @@ for k, config in actuators_dict.items():
     actuators.append(RandomActuator(k, config))
 
 reactors = [
-    ReactorOpc(f"R_{i}", 5, [ph_sensors[i], do_sensors[i]], [actuators[i]])
+    ReactorOpc(
+        f"R{i}",
+        volume=5,
+        sensors=[ph_sensors[i], do_sensors[i]],
+        actuators=[actuators[i]],
+        timer=1,
+    )
     for i in range(3)
 ]
 
@@ -78,11 +86,12 @@ async def main() -> None:
     async with server:
         try:
             while True:
-                # Update reactors
-                for reactor_i in reactors:
-                    await reactor_i.update_sensors()
-                    await reactor_i.update_actuators()
-                await asyncio.sleep(1)
+                for r in reactors:
+                    # Read sensors, write actuators
+                    r.reactor.update()
+                    # Update server
+                    await r.update()
+                await asyncio.sleep(0.1)
         except KeyboardInterrupt:
             await server.stop()
 
