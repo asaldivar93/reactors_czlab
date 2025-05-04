@@ -32,29 +32,44 @@ class ReactorOpc:
         volume: float,
         sensors: list[Sensor],
         actuators: list[Actuator],
-        timer: Timer,
+        timer: float,
     ) -> None:
         """Initialize the OPC Reactor node."""
         self.id = identifier
-        self.reactor = Reactor(identifier, volume, sensors, actuators, timer)
-        self.base_timer = timer
-        self.timers_dict = {timer.interval: timer}
+        self.base_timer: Timer = Timer(timer)
+        self.reactor = Reactor(
+            identifier, volume, sensors, actuators, self.base_timer
+        )
+        self.sensor_nodes: list[SensorOpc] = []
+        self.actuator_nodes: list[ActuatorOpc] = []
+        _logger.debug(f"Creating nodes for {self.id}")
+        self.timers_dict = {self.base_timer.interval: self.base_timer}
         for sensor in sensors:
             interval = sensor.sensor_info.sample_interval
             new_timer = self.timers_dict.get(interval, None)
             if new_timer is None:
                 new_timer = Timer(interval)
                 self.timers_dict.update({interval: new_timer})
+        self.create_child_nodes()
+
+    def create_child_nodes(self):
+        sensors = self.reactor.sensors
+        actuators = self.reactor.actuators
+        for sensor in sensors.values():
+            interval = sensor.sensor_info.sample_interval
+            timer = self.timers_dict[interval]
+            self.sensor_nodes.append(SensorOpc(sensor, timer))
+        self.actuator_nodes = [
+            ActuatorOpc(actuator, self.base_timer)
+            for actuator in actuators.values()
+        ]
 
     async def init_node(self, server: Server, idx: int) -> None:
         """Create the Reactor nodes and add the sensor and actuator nodes."""
         self.idx = idx
-        sensors = self.reactor.sensors
-        actuators = self.reactor.actuators
 
         # Create a Reactor object in the server
         self.node = await server.nodes.objects.add_object(idx, self.id)
-        _logger.info(f"New Reactor node {self.reactor.id}:{self.node}")
 
         # Add variable to store the status from the reactor
         self.state = await self.node.add_variable(
@@ -75,31 +90,21 @@ class ReactorOpc:
         )
 
         # Add sensor nodes to the server
-        await self._add_sensor_nodes(sensors)
+        await self._add_sensor_nodes()
 
         # Add actuator nodes to the server
-        await self._add_actuator_nodes(server, actuators)
+        await self._add_actuator_nodes(server)
 
-    async def _add_sensor_nodes(self, sensors: dict[str, Sensor]) -> None:
+    async def _add_sensor_nodes(self) -> None:
         """Add sensor nodes."""
-        self.sensor_nodes = []
-        for sensor in sensors.values():
-            interval = sensor.sensor_info.sample_interval
-            timer = self.timers_dict[interval]
-            self.sensor_nodes.append(SensorOpc(sensor, timer))
         for sensor in self.sensor_nodes:
             await sensor.init_node(self.node, self.idx)
 
     async def _add_actuator_nodes(
         self,
         server: Server,
-        actuators: dict,
     ) -> None:
         """Add actuator nodes."""
-        self.actuator_nodes = [
-            ActuatorOpc(actuator, self.base_timer)
-            for actuator in actuators.values()
-        ]
         for actuator in self.actuator_nodes:
             await actuator.init_node(server, self.node, self.idx)
 

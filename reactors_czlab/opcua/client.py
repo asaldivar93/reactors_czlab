@@ -10,7 +10,7 @@ if TYPE_CHECKING:
     from asyncua import Client
     from asyncua.common import Node
 
-    from reactors_czlab.core.utils import PhysicalInfo
+    from reactors_czlab.core.data import PhysicalInfo
 
 _logger = logging.getLogger("client.client")
 

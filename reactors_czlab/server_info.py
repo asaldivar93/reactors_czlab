@@ -2,17 +2,19 @@
 
 from copy import deepcopy
 
-from reactors_czlab.core.utils import Calibration, Channel, PhysicalInfo
+from reactors_czlab.core.data import Calibration, Channel, PhysicalInfo
 
 # Hamilton sensors can have addresses from 1 to 32.
 # There are four types of hamilton sensors.
 # We'll divide the address space this way: 1-8: ph_sensors,
 # 9-16: oxygen_sensors, 17-24: incyte_sensors, 25-32: co2_sensors
+VERBOSE = False
+
 PH_SENSORS = {
     "R0:ph": PhysicalInfo(
         model="ArcPh",
         address=0x01,
-        sample_interval=3,
+        sample_interval=10,
         channels=[
             Channel("pH", "pH", register="pmc1"),
             Channel("oC", "degree_celsius", register="pmc6"),
@@ -21,7 +23,7 @@ PH_SENSORS = {
     "R1:ph": PhysicalInfo(
         model="ArcPh",
         address=0x02,
-        sample_interval=3,
+        sample_interval=10,
         channels=[
             Channel("pH", "pH", register="pmc1"),
             Channel("oC", "degree_celsius", register="pmc6"),
@@ -30,7 +32,7 @@ PH_SENSORS = {
     "R2:ph": PhysicalInfo(
         model="ArcPh",
         address=0x03,
-        sample_interval=3,
+        sample_interval=10,
         channels=[
             Channel("pH", "pH", register="pmc1"),
             Channel("oC", "degree_celsius", register="pmc6"),
@@ -42,7 +44,7 @@ DO_SENSORS = {
     "R0:do": PhysicalInfo(
         model="VisiFerm",
         address=0x09,
-        sample_interval=1,
+        sample_interval=10,
         channels=[
             Channel("ppm", "dissolved_oxygen", register="pmc1"),
             Channel("oC", "degree_celsius", register="pmc6"),
@@ -51,7 +53,7 @@ DO_SENSORS = {
     "R1:do": PhysicalInfo(
         model="VisiFerm",
         address=0x10,
-        sample_interval=1,
+        sample_interval=10,
         channels=[
             Channel("ppm", "dissolved_oxygen", register="pmc1"),
             Channel("oC", "degree_celsius", register="pmc6"),
@@ -60,7 +62,7 @@ DO_SENSORS = {
     "R2:ph": PhysicalInfo(
         model="VisiFerm",
         address=0x11,
-        sample_interval=1,
+        sample_interval=10,
         channels=[
             Channel("ppm", "dissolved_oxygen", register="pmc1"),
             Channel("oC", "degree_celsius", register="pmc6"),

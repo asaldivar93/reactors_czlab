@@ -7,8 +7,9 @@ from typing import TYPE_CHECKING
 
 from asyncua import ua
 
-from reactors_czlab.core.utils import ControlConfig, ControlMethod, Timer
-from reactors_czlab.core.
+from reactors_czlab.core.data import ControlConfig, ControlMethod
+from reactors_czlab.core.utils import Timer
+from reactors_czlab.server_info import VERBOSE
 
 if TYPE_CHECKING:
     from asyncua import Server
@@ -19,8 +20,12 @@ if TYPE_CHECKING:
 
 _logger = logging.getLogger("server.opcactuator")
 
-control_method = {0: ControlMethod.manual, 1: ControlMethod.timer,
-                  2: ControlMethod.on_boundaries, 3: ControlMethod.pid}
+control_method = {
+    0: ControlMethod.manual,
+    1: ControlMethod.timer,
+    2: ControlMethod.on_boundaries,
+    3: ControlMethod.pid,
+}
 
 
 class ActuatorOpc:
@@ -30,7 +35,12 @@ class ActuatorOpc:
         """Initialize the OPC actuator node."""
         self.actuator = actuator
         self.base_timer = timer
+        self._timer = None
         self.timer = self.base_timer
+
+    def __repr__(self) -> str:
+        """Print sensor id."""
+        return f"ActuatorOpc(id: {self.actuator.id})"
 
     def __eq__(self, other: object) -> bool:
         """Test equality by senor id."""
@@ -61,7 +71,7 @@ class ActuatorOpc:
         return self._reference_sensor
 
     @reference_sensor.setter
-    def reference_sensor(self, sensor) -> None:
+    def reference_sensor(self, sensor: Sensor | None) -> None:
         """Sensor setter."""
         if sensor is None:
             error_message = f"None sensor in actuator {self.actuator.id}"
@@ -78,9 +88,10 @@ class ActuatorOpc:
 
     async def update_value(self) -> None:
         """Update the actuator state in the server."""
-        self.actuator.write_output()
         new_val = self.actuator.channel.value
         await self.curr_value.write_value(float(new_val))
+        if VERBOSE:
+            _logger.debug(f"Updated {self.curr_value} with value {new_val}")
 
     async def init_node(self, server: Server, parent: Node, idx: int) -> None:
         """Add node and variables for the actuator."""
@@ -88,7 +99,6 @@ class ActuatorOpc:
 
         # Add actuator node to reactor
         self.node = await parent.add_object(idx, actuator.id)
-        _logger.info(f"New Actuator node {self.actuator.id}:{self.node}")
 
         # Add a node with variables holding the control config
         await self.init_control_node(idx)

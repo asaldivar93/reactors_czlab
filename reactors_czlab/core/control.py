@@ -6,7 +6,9 @@ import logging
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
-from reactors_czlab.core.utils import ControlConfig, ControlMethod, Timer
+from reactors_czlab.core.data import ControlConfig, ControlMethod
+from reactors_czlab.core.utils import Timer
+from reactors_czlab.server_info import VERBOSE
 
 if TYPE_CHECKING:
     from reactors_czlab.core.sensor import Sensor
@@ -270,8 +272,10 @@ class _OnBoundariesControl(_Control):
                 self.value = self.value_on
             else:
                 self.value = 0
-        _logger.debug(f"lb: {self.lower_bound}, ub: {self.upper_bound}")
-        _logger.debug(f"var: {variable}, value: {self.value}")
+
+        if VERBOSE:
+            _logger.debug(f"lb: {self.lower_bound}, ub: {self.upper_bound}")
+            _logger.debug(f"var: {variable}, value: {self.value}")
 
         return self.value
 
@@ -300,8 +304,6 @@ class _PidControl(_Control):
         self.value = 0
         self._last_error = 0
         self._integral_sum = 0
-        _logger.info(f"kp: {self.kp}, ki: {self.ki}, kd: {self.ki}")
-        _logger.info(f"lb: {self.min_val}, ub: {self.max_val}")
 
     def __repr__(self) -> str:
         return f"_PidControl(setpoint: {self.setpoint!r})"
@@ -358,6 +360,8 @@ class _PidControl(_Control):
     def get_value(self, sensor: Sensor | None = None) -> float:
         if sensor is None:
             raise AttributeError
+        if sensor.timer is None:
+            raise AttributeError
 
         self._sampling_event = False
         variable = sensor.channels[0].value
@@ -383,12 +387,13 @@ class _PidControl(_Control):
         output = p_term + self._integral_sum + d_term
         # Constraint the output to the allowable range
         self.value = max(self.min_val, min(output, self.max_val))
-        _logger.debug(f"elapsed_time: {dt}, var: {variable}")
-        _logger.debug(
-            f"p_term: {p_term}, i_term: {i_term}, d_term: {d_term}",
-        )
-        _logger.debug(
-            f"error: {error}, _integral_sum: {self._integral_sum}, value: {self.value}",
-        )
+        if VERBOSE:
+            _logger.debug(f"elapsed_time: {dt}, var: {variable}")
+            _logger.debug(
+                f"p_term: {p_term}, i_term: {i_term}, d_term: {d_term}",
+            )
+            _logger.debug(
+                f"error: {error}, _integral_sum: {self._integral_sum}, value: {self.value}",
+            )
 
         return self.value

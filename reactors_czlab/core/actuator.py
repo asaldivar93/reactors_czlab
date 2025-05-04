@@ -7,12 +7,14 @@ from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, ClassVar
 
 from reactors_czlab.core.control import ControlFactory, _Control
+from reactors_czlab.core.data import ControlConfig, ControlMethod
 from reactors_czlab.core.reactor import IN_RASPBERRYPI
 from reactors_czlab.core.sensor import Sensor
-from reactors_czlab.core.utils import ControlConfig, ControlMethod, Timer
+from reactors_czlab.core.utils import Timer
+from reactors_czlab.server_info import VERBOSE
 
 if TYPE_CHECKING:
-    from reactors_czlab.core.utils import PhysicalInfo
+    from reactors_czlab.core.data import PhysicalInfo
 
 if IN_RASPBERRYPI:
     from reactors_czlab.core.reactor import rpiplc
@@ -34,19 +36,30 @@ class Actuator(ABC):
 
         Parameters
         ----------
-        identifier: A unique identifier for the actuator
-        config: A data class with config parameters for the actuator
-        timer: A reactors_czlab.core.utils.Timer
+        identifier:
+            A unique identifier for the actuator
+        config:
+            A data class with config parameters for the actuator
 
         """
         self.id = identifier
         self.info = config
         self.channel = config.channels[0]
-
         self.controller = ControlFactory().create_control(
             ControlConfig(method=ControlMethod.manual, value=0),
         )
+        self.base_timer: Timer | None = None
+        self._timer = None
         self.reference_sensor = None
+
+    def __repr__(self) -> str:
+        """Print sensor id."""
+        return f"Actuator(id: {self.id})"
+
+    def __eq__(self, other: object) -> bool:
+        """Test equality by senor id."""
+        this = self.id
+        return this == other
 
     @property
     def sensors(self) -> dict[str, Sensor]:
@@ -77,6 +90,7 @@ class Actuator(ABC):
         else:
             self.timer = sensor.timer
         self._reference_sensor = sensor
+        _logger.info(f"Updated sensor {self._reference_sensor} in {self.id}")
 
     @property
     def timer(self) -> Timer | None:
@@ -116,11 +130,14 @@ class Actuator(ABC):
     def write_output(self) -> None:
         """Write the actuator values."""
         try:
-            self.write(self.controller.get_value(self.reference_sensor))
+            value = self.controller.get_value(self.reference_sensor)
+            self.write(value)
+            _logger.debug(f"Write {value} to {self.id}: {self.controller}")
+
         except AttributeError:
             # Catch an exception when the user hasn't set a reference sensor
             # before setting _OnBoundaries or _PidControl classes
-            _logger.warning(f"reference sensor in {self.id} not set")
+            _logger.warning(f"Reference sensor in {self.id} not set")
             _logger.warning(f"Setting output in {self.id} = 0")
             self.write(0)
 
@@ -160,18 +177,18 @@ class RandomActuator(Actuator):
         self,
         identifier: str,
         config: PhysicalInfo,
-        timer: Timer,
     ) -> None:
         """Instance base actuator class.
 
         Parameters
         ----------
-        identifier: A unique identifier for the actuator
-        config: A data class with config parameters for the actuator
-        timer: A reactors_czlab.core.utils.Timer
+        identifier:
+            A unique identifier for the actuator
+        config:
+            A data class with config parameters for the actuator
 
         """
-        super().__init__(identifier, config, timer)
+        super().__init__(identifier, config)
 
     def write(self, value: float) -> None:
         """Write value."""
@@ -190,25 +207,22 @@ class PlcActuator(Actuator):
         self,
         identifier: str,
         config: PhysicalInfo,
-        timer: Timer,
-        mode: str = "pwm",
     ) -> None:
         """Interface a pin as an actuator class.
 
         Parameters
         ----------
-        identifier: str
+        identifier:
             A unique identifier for the actuator
-        config: PhysicalInfo
+        config:
             A data class with config parameters for the actuator
-        mode: str
-            Sets the pin as PWM channel, else sets the pin as analog channel
 
         """
-        super().__init__(identifier, config, timer)
+        super().__init__(identifier, config)
         if IN_RASPBERRYPI:
             chn = self.channel
             rpiplc.pin_mode(chn.pin, rpiplc.OUTPUT)
+            mode = chn.type
             if mode == "pwm":
                 rpiplc.analog_write_set_frequency(chn.register, 24)
 

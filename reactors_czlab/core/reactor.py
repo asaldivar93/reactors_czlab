@@ -34,13 +34,13 @@ class Reactor:
 
         Parameters
         ----------
-        identifier: str
+        identifier:
             A unique identifier for the reactor.
-        volume: float
+        volume:
             The initial volume of the reactor.
-        sensors: list[Sensor]
+        sensors:
             A list containig the Sensor instances.
-        actuators: list[Actuators]
+        actuators:
             A list cotaining the Actuator instances.
 
         """
@@ -49,18 +49,22 @@ class Reactor:
         self.volume = volume
         self.actuators = actuators
         self.base_timer = timer
-        self.timers_dict = {timer.interval: timer}
+
+        # Create timers and pass them to the sensors
+        self.timers = {timer.interval: timer}
         for sensor in sensors:
             interval = sensor.sensor_info.sample_interval
-            new_timer = self.timers_dict.get(interval, None)
+            new_timer = self.timers.get(interval, None)
             if new_timer is None:
                 new_timer = Timer(interval)
-                self.timers_dict.update({interval: new_timer})
+                self.timers.update({interval: new_timer})
+            sensor.base_timer = new_timer
             sensor.timer = new_timer
 
-        # Pass the available sensors to the actuators
+        # Pass the base timer to the actuators
         for actuator in self.actuators.values():
             actuator.sensors = sensors
+            actuator.base_timer = self.base_timer
             actuator.timer = self.base_timer
 
     @property
@@ -94,3 +98,8 @@ class Reactor:
         """Write the outputs of all actuators."""
         for actuator in self.actuators.values():
             actuator.write_output()
+
+    def update(self) -> None:
+        """Call all timers and subscribers."""
+        for timer in self.timers.values():
+            timer.callback()
