@@ -12,7 +12,7 @@ DB_PARAMS = {
 CREATE TABLE experiment (
     id SERIAL PRIMARY KEY,
     name TEXT NOT NULL,
-    date DATE NOT NULL,
+    date TIMESTAMP(3) NOT NULL,
     volume FLOAT
 );
 
@@ -20,7 +20,7 @@ CREATE TABLE experiment (
 CREATE TABLE visiferm (
     id SERIAL PRIMARY KEY,
     experiment_id INTEGER NOT NULL REFERENCES experiment(id) ON DELETE CASCADE,
-    date DATE NOT NULL,
+    date TIMESTAMP(3) NOT NULL,
     reactor TEXT NOT NULL,
     value FLOAT NOT NULL,
     units TEXT NOT NULL
@@ -30,7 +30,7 @@ CREATE TABLE visiferm (
 CREATE TABLE arcph (
     id SERIAL PRIMARY KEY,
     experiment_id INTEGER NOT NULL REFERENCES experiment(id) ON DELETE CASCADE,
-    date DATE NOT NULL,
+    date TIMESTAMP(3) NOT NULL,
     reactor TEXT NOT NULL,
     value FLOAT NOT NULL,
     units TEXT NOT NULL
@@ -40,19 +40,31 @@ CREATE TABLE arcph (
 CREATE TABLE analog (
     id SERIAL PRIMARY KEY,
     experiment_id INTEGER NOT NULL REFERENCES experiment(id) ON DELETE CASCADE,
-    date DATE NOT NULL,
+    date TIMESTAMP(3) NOT NULL,
     reactor TEXT NOT NULL,
     calibration TEXT,
-    value FLOAT NOT NULL
+    value FLOAT NOT NULL,
+    units TEXT NOT NULL
 );
 
 -- Table: actuator
 CREATE TABLE actuator (
     id SERIAL PRIMARY KEY,
     experiment_id INTEGER NOT NULL REFERENCES experiment(id) ON DELETE CASCADE,
-    date DATE NOT NULL,
+    date TIMESTAMP(3) NOT NULL,
     reactor TEXT NOT NULL,
     calibration TEXT,
-    value FLOAT NOT NULL
+    value FLOAT NOT NULL,
+    units TEXT NOT NULL
 );
 
+-- Table: digital
+CREATE TABLE digital (
+    id SERIAL PRIMARY KEY,
+    experiment_id INTEGER NOT NULL REFERENCES experiment(id) ON DELETE CASCADE,
+    date TIMESTAMP(3) NOT NULL,
+    reactor TEXT NOT NULL,
+    calibration TEXT,
+    value FLOAT NOT NULL,
+    units TEXT NOT NULL
+);

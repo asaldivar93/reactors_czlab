@@ -10,6 +10,13 @@ from reactors_czlab.core.data import Calibration, Channel, PhysicalInfo
 # 9-16: oxygen_sensors, 17-24: incyte_sensors, 25-32: co2_sensors
 VERBOSE = False
 
+
+def copy_info(info: PhysicalInfo, channel: Channel) -> PhysicalInfo:
+    new_info = deepcopy(info)
+    new_info.channels.remove(channel)
+    return new_info
+
+
 PH_SENSORS = {
     "R0:ph": PhysicalInfo(
         model="ArcPh",
@@ -76,24 +83,14 @@ ANALOG_SENSORS = {
         address=0,
         sample_interval=1,
         channels=[
-            Channel(
-                "ph",
-                "ph",
-                calibration=Calibration("ph_250328.csv", 34, 5),
-            ),
+            Channel("mV", "pH"),
         ],
     ),
     "R3:do": PhysicalInfo(
         model="analog",
         address=0,
         sample_interval=1,
-        channels=[
-            Channel(
-                "%",
-                "dissolved_oxygen",
-                calibration=Calibration("do_250328.csv", 34, 5),
-            ),
-        ],
+        channels=[Channel("mV", "dissolved_oxygen")],
     ),
 }
 
@@ -102,43 +99,43 @@ PUMPS = {
         model="actuator",
         address=0,
         sample_interval=0,
-        channels=[Channel("analog", "pump", pin="Q0.5")],
+        channels=[Channel("pwm", "pump", pin="Q0.5")],
     ),
     "R0:pump_1": PhysicalInfo(
         model="actuator",
         address=0,
         sample_interval=0,
-        channels=[Channel("analog", "pump", pin="Q0.6")],
+        channels=[Channel("pwm", "pump", pin="Q0.6")],
     ),
     "R1:pump_0": PhysicalInfo(
         model="actuator",
         address=0,
         sample_interval=0,
-        channels=[Channel("analog", "pump", pin="Q0.7")],
+        channels=[Channel("pwm", "pump", pin="Q0.7")],
     ),
     "R1:pump_1": PhysicalInfo(
         model="actuator",
         address=0,
         sample_interval=0,
-        channels=[Channel("analog", "pump", pin="Q0.7")],
+        channels=[Channel("pwm", "pump", pin="Q0.7")],
     ),
     "R2:pump_0": PhysicalInfo(
         model="actuator",
         address=0,
         sample_interval=0,
-        channels=[Channel("analog", "pump", pin="Q0.7")],
+        channels=[Channel("pwm", "pump", pin="Q0.7")],
     ),
     "R2:pump_1": PhysicalInfo(
         model="actuator",
         address=0,
         sample_interval=0,
-        channels=[Channel("analog", "pump", pin="Q0.7")],
+        channels=[Channel("pwm", "pump", pin="Q0.7")],
     ),
 }
 
-# ~ server_vars = {
-# ~ "R_0": {
-# ~ "ns=2;i=7": deepcopy(DO_SENSORS["do_0"]).channels.pop(1),
-# ~ "ns=2;i=8": deepcopy(DO_SENSORS["do_0"]).channels.pop(0),
-# ~ },
-# ~ }
+server_vars = {
+    "R0": {
+        "ns=2;i=7": copy_info(DO_SENSORS["R0:do"], Channel("ppm")),
+        "ns=2;i=8": copy_info(DO_SENSORS["R0:do"], Channel("oC")),
+    },
+}

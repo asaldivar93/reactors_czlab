@@ -35,12 +35,15 @@ class Channel:
     """Class holding config info for sensor/actuator channels."""
 
     units: str
-    description: str
+    description: str = "none"
     register: str = "none"
     pin: str = "none"
     type: PlcOutput = PlcOutput.pwm
     value: float = -0.111
     calibration: Calibration | None = None
+
+    def __eq__(self, other: object) -> bool:
+        return self.units == other.units
 
 
 @dataclass

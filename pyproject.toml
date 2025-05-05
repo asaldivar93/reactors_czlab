@@ -12,12 +12,14 @@ authors = [
     { name = "Alexis Saldivar", email = "asaldivarg93@gmail.com" },
     { name = "Bhavana Palapati", email = "bpalapati0099@sdsu.edu" },
 ]
-dependencies = [
-    "asyncua>=1.1.5",
-    "ipykernel>=6.29.5",
- "pymodbus>=3.8.6",
- "pyserial>=3.5",
-]
+dependencies = ["asyncua>=1.1.5"]
 
 [project.optional-dependencies]
-opcua = ["opcua-client>=0.8.4"]
+server = ["pymodbus>=3.8.6", "pyserial>=3.5"]
+client = [
+    "opcua-client>=0.8.4",
+    "psycopg>=3.2.7",
+    "ipykernel>=6.29.5",
+    "polars>=1.29.0",
+    "matplotlib",
+]

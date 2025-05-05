@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
+from datetime import datetime
 
 from asyncua import Client
 
 from reactors_czlab.opcua.client import ReactorOpcClient
+from reactors_czlab.server_info import server_vars
+from reactors_czlab.sql.operations import create_experiment
 
 _logger = logging.getLogger("client")
 _logger.setLevel(logging.DEBUG)
@@ -28,26 +30,18 @@ _stream_handler.setFormatter(_formatter)
 _logger.addHandler(_file_handler)
 _logger.addHandler(_stream_handler)
 
-# We use the node ids to connect to the server
-
-# We need to know all the node ids of the variables we'll monitor
-# and group them based on the reactor they occupy.
-
-# The keys "model", "variable", "datetime", "value" are used
-# to commit to the sql database
-with open("server_vars.json") as file:
-    server_nodes = json.load(file)
-
 
 async def main():
-    reactor_nodes = [ReactorOpcClient(k) for k in server_nodes]
+    experiment = "test"
+    reactor_nodes = [ReactorOpcClient(k, experiment) for k in server_vars]
+    create_experiment(experiment, datetime.now(), 2)
     client = Client(url="opc.tcp://localhost:4840/")
     async with client:
         for reactor in reactor_nodes:
-            variables = server_nodes[reactor.id]
+            variables = server_vars[reactor.id]
             await reactor.connect_nodes(client, variables)
         while True:
-            await asyncio.sleep(1)
+            await asyncio.sleep(0.1)
             await client.check_connection()
 
 

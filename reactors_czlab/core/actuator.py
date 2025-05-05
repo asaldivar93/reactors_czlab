@@ -11,7 +11,6 @@ from reactors_czlab.core.data import ControlConfig, ControlMethod
 from reactors_czlab.core.reactor import IN_RASPBERRYPI
 from reactors_czlab.core.sensor import Sensor
 from reactors_czlab.core.utils import Timer
-from reactors_czlab.server_info import VERBOSE
 
 if TYPE_CHECKING:
     from reactors_czlab.core.data import PhysicalInfo
