@@ -1,12 +1,4 @@
-
--- Database connection parameters
-DB_PARAMS = {
-    "dbname": "bioreactor_db",
-    "user": "postgres",
-    "password": "password",
-    "host": "localhost",
-    "port": "5432"
-}
+CREATE DATABASE bioreactor_db;
 
 -- Table: experiment
 CREATE TABLE experiment (
@@ -19,7 +11,7 @@ CREATE TABLE experiment (
 -- Table: visiferm
 CREATE TABLE visiferm (
     id SERIAL PRIMARY KEY,
-    experiment_id INTEGER NOT NULL REFERENCES experiment(id) ON DELETE CASCADE,
+    experiment_id INTEGER NOT NULL REFERENCES experiment (id) ON DELETE CASCADE,
     date TIMESTAMP(3) NOT NULL,
     reactor TEXT NOT NULL,
     value FLOAT NOT NULL,
@@ -29,7 +21,7 @@ CREATE TABLE visiferm (
 -- Table: arcph
 CREATE TABLE arcph (
     id SERIAL PRIMARY KEY,
-    experiment_id INTEGER NOT NULL REFERENCES experiment(id) ON DELETE CASCADE,
+    experiment_id INTEGER NOT NULL REFERENCES experiment (id) ON DELETE CASCADE,
     date TIMESTAMP(3) NOT NULL,
     reactor TEXT NOT NULL,
     value FLOAT NOT NULL,
@@ -39,7 +31,7 @@ CREATE TABLE arcph (
 -- Table: analog
 CREATE TABLE analog (
     id SERIAL PRIMARY KEY,
-    experiment_id INTEGER NOT NULL REFERENCES experiment(id) ON DELETE CASCADE,
+    experiment_id INTEGER NOT NULL REFERENCES experiment (id) ON DELETE CASCADE,
     date TIMESTAMP(3) NOT NULL,
     reactor TEXT NOT NULL,
     calibration TEXT,
@@ -50,7 +42,7 @@ CREATE TABLE analog (
 -- Table: actuator
 CREATE TABLE actuator (
     id SERIAL PRIMARY KEY,
-    experiment_id INTEGER NOT NULL REFERENCES experiment(id) ON DELETE CASCADE,
+    experiment_id INTEGER NOT NULL REFERENCES experiment (id) ON DELETE CASCADE,
     date TIMESTAMP(3) NOT NULL,
     reactor TEXT NOT NULL,
     calibration TEXT,
@@ -61,7 +53,7 @@ CREATE TABLE actuator (
 -- Table: digital
 CREATE TABLE digital (
     id SERIAL PRIMARY KEY,
-    experiment_id INTEGER NOT NULL REFERENCES experiment(id) ON DELETE CASCADE,
+    experiment_id INTEGER NOT NULL REFERENCES experiment (id) ON DELETE CASCADE,
     date TIMESTAMP(3) NOT NULL,
     reactor TEXT NOT NULL,
     calibration TEXT,

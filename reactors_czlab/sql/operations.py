@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import csv
-import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -14,8 +13,13 @@ if TYPE_CHECKING:
 
     from reactors_czlab.core.data import PhysicalInfo
 
-# logging
-_logger = logging.getLogger("client.sql_insert")
+DB_PARAMS = {
+    "dbname": "bioreactor_db",
+    "user": "postgres",
+    "password": "password",
+    "host": "localhost",
+    "port": "5432",
+}
 
 
 class SqlError(Exception):
@@ -27,9 +31,6 @@ def connect_to_db() -> Connection:
     return psycopg.connect(
         dbname="bioreactor_db",
         user="postgres",
-        password="password",
-        host="localhost",
-        port="5432",
     )
 
 
