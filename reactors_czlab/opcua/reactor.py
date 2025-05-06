@@ -35,8 +35,9 @@ class ReactorOpc:
         timer: float,
     ) -> None:
         """Initialize the OPC Reactor node."""
-        self.id = identifier
+        self.id: str = identifier
         self.base_timer: Timer = Timer(timer)
+        _logger.info(f"Init Reactor {self.id}")
         self.reactor = Reactor(
             identifier,
             volume,
@@ -44,27 +45,69 @@ class ReactorOpc:
             actuators,
             self.base_timer,
         )
+        self.sensors = sensors
+        self.actuators = actuators
+        self.timers: dict[float, Timer] = {}
+        self.set_up_timers()
+        self.reactor.timers = self.timers
+
+        _logger.info(f"Creating nodes for {self.id}")
         self.sensor_nodes: list[SensorOpc] = []
         self.actuator_nodes: list[ActuatorOpc] = []
-        _logger.debug(f"Creating nodes for {self.id}")
-        self.timers_dict = {self.base_timer.interval: self.base_timer}
-        for sensor in sensors:
-            interval = sensor.sensor_info.sample_interval
-            new_timer = self.timers_dict.get(interval, None)
-            if new_timer is None:
-                new_timer = Timer(interval)
-                self.timers_dict.update({interval: new_timer})
         self.create_child_nodes()
         for actuator in self.actuator_nodes:
             actuator.sensors = sensors
 
+    @property
+    def sensors(self) -> dict[str, Sensor]:
+        """Get the sensors dict."""
+        return self._sensors
+
+    @sensors.setter
+    def sensors(self, sensors: list[Sensor]) -> None:
+        """Set the sensors as a dict."""
+        if not isinstance(sensors, list):
+            raise TypeError
+        self._sensors = {s.id: s for s in sensors}
+
+    @property
+    def actuators(self) -> dict[str, Actuator]:
+        """Get the actuators dict."""
+        return self._actuators
+
+    @actuators.setter
+    def actuators(self, actuators: list[Actuator]) -> None:
+        """Set the actuators as a dict."""
+        self._actuators = {a.id: a for a in actuators}
+
+    def set_up_timers(self) -> None:
+        """Create timers and pass them to childs."""
+        self.timers = {
+            self.base_timer.interval: self.base_timer,
+        }
+        for sensor in self.sensors.values():
+            interval = sensor.sensor_info.sample_interval
+            new_timer = self.timers.get(interval, None)
+            if new_timer is None:
+                new_timer = Timer(interval)
+                self.timers.update({interval: new_timer})
+            sensor.base_timer = new_timer
+            sensor.timer = new_timer
+
+        # Pass the base timer to the actuators
+        for actuator in self.actuators.values():
+            actuator.base_timer = self.base_timer
+            actuator.timer = self.base_timer
+
     def create_child_nodes(self):
+        """Create OPC nodes for sensors and actuators."""
         sensors = self.reactor.sensors
-        actuators = self.reactor.actuators
         for sensor in sensors.values():
             interval = sensor.sensor_info.sample_interval
-            timer = self.timers_dict[interval]
+            timer = self.timers[interval]
             self.sensor_nodes.append(SensorOpc(sensor, timer))
+
+        actuators = self.reactor.actuators
         self.actuator_nodes = [
             ActuatorOpc(actuator, self.base_timer)
             for actuator in actuators.values()
@@ -96,21 +139,10 @@ class ReactorOpc:
         )
 
         # Add sensor nodes to the server
-        await self._add_sensor_nodes()
-
-        # Add actuator nodes to the server
-        await self._add_actuator_nodes(server)
-
-    async def _add_sensor_nodes(self) -> None:
-        """Add sensor nodes."""
         for sensor in self.sensor_nodes:
             await sensor.init_node(self.node, self.idx)
 
-    async def _add_actuator_nodes(
-        self,
-        server: Server,
-    ) -> None:
-        """Add actuator nodes."""
+        # Add actuator nodes to the server
         for actuator in self.actuator_nodes:
             await actuator.init_node(server, self.node, self.idx)
 
@@ -128,7 +160,7 @@ class ReactorOpc:
 
     async def update(self) -> None:
         """Call all timers and subscribers."""
-        for timer in self.timers_dict.values():
+        for timer in self.timers.values():
             await timer.async_callback()
 
     def stop(self) -> None:

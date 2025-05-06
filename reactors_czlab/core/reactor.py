@@ -44,28 +44,15 @@ class Reactor:
             A list cotaining the Actuator instances.
 
         """
-        self.id = identifier
+        self.id: str = identifier
+        self.volume: float = volume
+        self.base_timer: Timer = timer
+        self.timers: dict[float, Timer] | None = None
+
         self.sensors = sensors
-        self.volume = volume
         self.actuators = actuators
-        self.base_timer = timer
-
-        # Create timers and pass them to the sensors
-        self.timers = {timer.interval: timer}
-        for sensor in sensors:
-            interval = sensor.sensor_info.sample_interval
-            new_timer = self.timers.get(interval, None)
-            if new_timer is None:
-                new_timer = Timer(interval)
-                self.timers.update({interval: new_timer})
-            sensor.base_timer = new_timer
-            sensor.timer = new_timer
-
-        # Pass the base timer to the actuators
-        for actuator in self.actuators.values():
+        for actuator in actuators:
             actuator.sensors = sensors
-            actuator.base_timer = self.base_timer
-            actuator.timer = self.base_timer
 
     @property
     def sensors(self) -> dict[str, Sensor]:
@@ -88,6 +75,24 @@ class Reactor:
     def actuators(self, actuators: list[Actuator]) -> None:
         """Set the actuators as a dict."""
         self._actuators = {a.id: a for a in actuators}
+
+    def set_up_timers(self) -> None:
+        """Create timers and pass them to the sensors."""
+        timer = self.base_timer
+        self.timers = {timer.interval: timer}
+        for sensor in self.sensors.values():
+            interval = sensor.sensor_info.sample_interval
+            new_timer = self.timers.get(interval, None)
+            if new_timer is None:
+                new_timer = Timer(interval)
+                self.timers.update({interval: new_timer})
+            sensor.base_timer = new_timer
+            sensor.timer = new_timer
+
+        # Pass the base timer to the actuators
+        for actuator in self.actuators.values():
+            actuator.base_timer = self.base_timer
+            actuator.timer = self.base_timer
 
     def update_sensors(self) -> None:
         """Read all the sensors."""

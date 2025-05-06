@@ -23,7 +23,7 @@ _file_handler.setFormatter(_formatter)
 _file_handler.setLevel(logging.DEBUG)
 
 _stream_handler = logging.StreamHandler()
-_stream_handler.setLevel(logging.DEBUG)
+_stream_handler.setLevel(logging.INFO)
 _stream_handler.setFormatter(_formatter)
 
 _logger.addHandler(_file_handler)
@@ -72,15 +72,16 @@ reactors = [
         actuators=[actuators[i]],
         timer=4,
     )
-    for i in range(3)
+    for i in range(1)
 ]
 
-reactors = [reactors.pop(0)]
+# reactors = [reactors.pop(0)]
 
 
 async def main() -> None:
     """Run the server."""
     # Init the server
+
     server = Server()
     await server.init()
     server.set_endpoint("opc.tcp://localhost:4840/")

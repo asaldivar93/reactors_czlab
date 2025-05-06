@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import csv
 import logging
+import os
+import pwd
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -16,13 +18,8 @@ if TYPE_CHECKING:
 
 _logger = logging.getLogger("client.sql")
 
-DB_PARAMS = {
-    "dbname": "bioreactor_db",
-    "user": "postgres",
-    "password": "password",
-    "host": "localhost",
-    "port": "5432",
-}
+username = pwd.getpwuid(os.getuid())[0]
+dbname = "bioreactor_db"
 
 
 class SqlError(Exception):
@@ -32,8 +29,8 @@ class SqlError(Exception):
 def connect_to_db() -> Connection:
     """Establish a connection to the PostgreSQL database."""
     return psycopg.connect(
-        dbname="bioreactor_db",
-        user="asaldivargarci1064",
+        dbname=dbname,
+        user=username,
     )
 
 
