@@ -6,12 +6,13 @@ import logging
 from asyncua import Server
 
 from reactors_czlab.core.actuator import PlcActuator
-from reactors_czlab.core.sensor import DO_SENSORS, PH_SENSORS, AnalogSensor
-from reactors_czlab.core.utils import Channel, PhysicalInfo
+from reactors_czlab.core.modbus import ModbusHandler
+from reactors_czlab.core.sensor import HamiltonSensor
 from reactors_czlab.opcua import ReactorOpc
+from reactors_czlab.server_info import DO_SENSORS, PH_SENSORS, PUMPS
 
 _logger = logging.getLogger("server")
-_logger.setLevel(logging.DEBUG)
+_logger.setLevel(logging.INFO)
 
 _formatter = logging.Formatter(
     "%(name)s: %(asctime)s %(levelname)s - %(message)s",
@@ -19,53 +20,56 @@ _formatter = logging.Formatter(
 
 _file_handler = logging.FileHandler("record.log")
 _file_handler.setFormatter(_formatter)
-_file_handler.setLevel(logging.DEBUG)
+_file_handler.setLevel(logging.INFO)
 
 _stream_handler = logging.StreamHandler()
-_stream_handler.setLevel(logging.DEBUG)
+_stream_handler.setLevel(logging.INFO)
 _stream_handler.setFormatter(_formatter)
 
 _logger.addHandler(_file_handler)
 _logger.addHandler(_stream_handler)
 
-actuators_dict = {
-    "pump_0": PhysicalInfo(
-        "any", 0, 0, [Channel("analog", "pump", pin="Q0.7")]
-    ),
-    "pump_1": PhysicalInfo(
-        "any", 0, 0, [Channel("analog", "pump", pin="Q0.6")]
-    ),
-    "pump_2": PhysicalInfo(
-        "any", 0, 0, [Channel("analog", "pump", pin="Q0.5")]
-    ),
-}
+serial_0 = "/dev/ttySC2"
 
-sensors_dict = {
-    "A0.12": PhysicalInfo("any", 0, 0, [Channel("analog", "a", pin="A0.12")]),
-    "A0.11": PhysicalInfo("any", 0, 0, [Channel("analog", "a", pin="A0.11")]),
-    "A0.10": PhysicalInfo("any", 0, 0, [Channel("analog", "a", pin="A0.10")]),
-}
+modbus_client = ModbusHandler(
+    port=serial_0,
+    baudrate=19200,
+    timeout=0.5,
+)
 
-sensors = []
-for k, config in sensors_dict.items():
-    sensor = AnalogSensor(k, config)
-    sensors.append(sensor)
+ph_sensors = []
+for k, config in PH_SENSORS.items():
+    sensor = HamiltonSensor(k, config, modbus_client)
+    ph_sensors.append(sensor)
+
+do_sensors = []
+for k, config in DO_SENSORS.items():
+    sensor = HamiltonSensor(k, config, modbus_client)
+    do_sensors.append(sensor)
 
 actuators = []
-for k, config in actuators_dict.items():
+for k, config in PUMPS.items():
     actuators.append(PlcActuator(k, config))
 
 reactors = [
-    ReactorOpc(f"R_{i}", 5, [sensors[i]], [actuators[i]]) for i in range(3)
+    ReactorOpc(
+        f"R{i}",
+        volume=5,
+        sensors=[ph_sensors[i]],
+        actuators=[actuators[i]],
+        timer=4,
+    )
+    for i in range(1)
 ]
 
 
 async def main() -> None:
     """Run the server."""
     # Init the server
+
     server = Server()
     await server.init()
-    server.set_endpoint("opc.tcp://0.0.0.0:55488/")
+    server.set_endpoint("opc.tcp://10.10.10.30:55488/")
 
     uri = "http://czlab/biocontroller"
     idx = await server.register_namespace(uri)
@@ -78,14 +82,13 @@ async def main() -> None:
     async with server:
         try:
             while True:
-                # Update reactors
-                for reactor_i in reactors:
-                    await reactor_i.update_sensors()
-                    await reactor_i.update_actuators()
-                await asyncio.sleep(1)
+                for r in reactors:
+                    # Read sensors, write actuators
+                    r.reactor.update()
+                    # Update server
+                    await r.update()
+                await asyncio.sleep(0.1)
         except KeyboardInterrupt:
-            for reactor_i in reactors:
-                reactor_i.stop()
             await server.stop()
 
 

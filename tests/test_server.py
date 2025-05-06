@@ -23,7 +23,7 @@ _file_handler.setFormatter(_formatter)
 _file_handler.setLevel(logging.DEBUG)
 
 _stream_handler = logging.StreamHandler()
-_stream_handler.setLevel(logging.INFO)
+_stream_handler.setLevel(logging.DEBUG)
 _stream_handler.setFormatter(_formatter)
 
 _logger.addHandler(_file_handler)
@@ -68,9 +68,9 @@ reactors = [
     ReactorOpc(
         f"R{i}",
         volume=5,
-        sensors=[ph_sensors[i], do_sensors[i]],
+        sensors=[ph_sensors[i]],
         actuators=[actuators[i]],
-        timer=4,
+        timer=0.5,
     )
     for i in range(1)
 ]
