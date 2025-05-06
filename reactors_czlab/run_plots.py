@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any
 
 import matplotlib.dates as mdates
@@ -68,24 +67,21 @@ class Plotter:
 def update(frame, plotter: Plotter):
     all_df = plotter.get_data()
     for table, (ax, line) in plotter.plots.items():
-        if table != "Temperature":
+        if table != "temperature":
             table_df = all_df.filter(pl.col("source_table") == table)
         else:
             table_df = all_df.filter(
-                pl.col("source_table") == "arcph",
+                pl.col("source_table") == "visiferm",
                 pl.col("units") == "oC",
             )
         if table_df.is_empty():
-            error_message = "Dataframe is empty"
-            raise ValueError(error_message)
+            error_message = f"{table} Dataframe is empty"
+            # print(error_message)
 
         # Ensuring date column is sorted
         table_df = table_df.sort("date")
         dates = table_df["date"].to_numpy()
         values = table_df["value"].to_numpy()
-
-        # Converting Polars Date to matplotlib date numbers
-        dates = [datetime.fromisoformat(d) for d in dates]
 
         # Update plot
         line.set_data(dates, values)

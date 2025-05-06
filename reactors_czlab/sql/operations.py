@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING
 import polars as pl
 import psycopg
 
+VERBOSE = True
+
 if TYPE_CHECKING:
     from psycopg import Connection, Cursor
 
@@ -130,6 +132,10 @@ def store_data(
         }
 
         query, values = insert_map[model]
+        if VERBOSE:
+            _logger.debug(data)
+            _logger.debug(query)
+            _logger.debug(values)
         cursor.execute(query, values)
         connection.commit()
 
@@ -199,11 +205,11 @@ def get_data(experiment_name: str, time_filter: tuple[float, str]) -> list:
     try:
         queries = {
             "visiferm": f"SELECT 'visiferm' \
-                AS source_table, date, reactor, value, units, NULL AS calibration \
+                AS source_table, date, reactor, value, units, 'null' AS calibration \
                 FROM visiferm \
                 WHERE {base_conditions}",
             "arcph": f"SELECT 'arcph' \
-                AS source_table, date, reactor, value, units, NULL AS calibration \
+                AS source_table, date, reactor, value, units, 'null' AS calibration \
                 FROM arcph \
                 WHERE {base_conditions}",
             "analog": f"SELECT 'analog' \
@@ -216,7 +222,7 @@ def get_data(experiment_name: str, time_filter: tuple[float, str]) -> list:
                 WHERE {base_conditions}",
             "digital": f"SELECT 'digital' \
                 AS source_table, date, reactor, value, units, calibration \
-                FROM actuator \
+                FROM digital \
                 WHERE {base_conditions}",
         }
         all_rows = []
@@ -258,5 +264,5 @@ def rows_to_polars(rows: list) -> pl.DataFrame:
         "units",
         "calibration",
     ]
-    schema = {col[i]: type(rows[0][i]) for i, col in enumerate(columns)}
+    schema = {col: type(rows[0][i]) for i, col in enumerate(columns)}
     return pl.DataFrame(rows, schema=schema)

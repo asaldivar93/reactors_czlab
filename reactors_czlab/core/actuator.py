@@ -140,7 +140,7 @@ class Actuator(ABC):
         except AttributeError:
             # Catch an exception when the user hasn't set a reference sensor
             # before setting _OnBoundaries or _PidControl classes
-            _logger.exception(f"Reference sensor in {self.id} not set")
+            _logger.error(f"Reference sensor in {self.id} not set")
             _logger.warning(f"Setting output in {self.id} = 0")
             self.write(0)
 

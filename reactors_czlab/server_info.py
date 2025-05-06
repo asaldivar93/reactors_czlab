@@ -8,10 +8,20 @@ from reactors_czlab.core.data import Calibration, Channel, PhysicalInfo
 # There are four types of hamilton sensors.
 # We'll divide the address space this way: 1-8: ph_sensors,
 # 9-16: oxygen_sensors, 17-24: incyte_sensors, 25-32: co2_sensors
-VERBOSE = True
+VERBOSE = False
 
 
 def copy_info(info: PhysicalInfo, channels: list[Channel]) -> PhysicalInfo:
+    """Copy sensor info and remove the channles in list.
+
+    Parameters
+    ----------
+    info:
+        Sensor info to copy
+    channels:
+        List of channels to remove
+
+    """
     new_info = deepcopy(info)
     for chn in channels:
         new_info.channels.remove(chn)
@@ -145,6 +155,6 @@ server_vars = {
     "R0": {
         "ns=2;i=7": copy_info(DO_SENSORS["R0:do"], [Channel("oC")]),
         "ns=2;i=8": copy_info(DO_SENSORS["R0:do"], [Channel("ppm")]),
-        "ns=2;i=11": copy_info(PUMPS["R0:pump_0"], []),
+        "ns=2;i=12": copy_info(PUMPS["R0:pump_0"], []),
     },
 }

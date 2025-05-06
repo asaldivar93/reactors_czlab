@@ -6,6 +6,7 @@ import logging
 from datetime import datetime
 from typing import TYPE_CHECKING
 
+from reactors_czlab.server_info import VERBOSE
 from reactors_czlab.sql.operations import store_data
 
 if TYPE_CHECKING:
@@ -69,6 +70,8 @@ class ReactorOpcClient:
         """Commit to the sql database."""
         nodeid = node.nodeid.to_string()
         info = self.variables.get(nodeid, None)
+        if VERBOSE:
+            _logger.debug(data)
         if info is not None:
             info.channels[0].value = val
             timestamp = datetime.now()
