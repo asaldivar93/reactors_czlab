@@ -6,7 +6,6 @@ import logging
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from reactors_czlab.server_info import VERBOSE
 from reactors_czlab.sql.operations import store_data
 
 if TYPE_CHECKING:
@@ -74,5 +73,4 @@ class ReactorOpcClient:
             info.channels[0].value = val
             timestamp = datetime.now()
             store_data(info, self.id, self.experiment, timestamp)
-            if VERBOSE:
-                _logger.debug(f"Data change in {self.id} - {info.model}: {val}")
+            _logger.debug(f"Data change in {self.id} - {info.model}: {val}")

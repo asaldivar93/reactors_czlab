@@ -167,6 +167,10 @@ class _TimerControl(_Control):
             raise TypeError
         self._time_off = time_off
 
+    def on_timer_callback(self) -> None:
+        """Invert the actuator state."""
+        self._sampling_event = True
+
     def get_value(self, sensor: Sensor | None = None) -> float:
         self.timer.callback()
         if self._sampling_event:
@@ -306,7 +310,7 @@ class _PidControl(_Control):
         self._integral_sum = 0
 
     def __repr__(self) -> str:
-        return f"_PidControl(setpoint: {self.setpoint!r})"
+        return f"_PidControl(SP: {self.setpoint!r})"
 
     def __eq__(self, other: object) -> bool:
         this = [self.setpoint]

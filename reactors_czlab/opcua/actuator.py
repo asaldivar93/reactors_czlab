@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from asyncua import ua
 
 from reactors_czlab.core.data import ControlConfig, ControlMethod
+from reactors_czlab.core.sensor import Sensor
 from reactors_czlab.core.utils import Timer
 from reactors_czlab.server_info import VERBOSE
 
@@ -16,7 +17,6 @@ if TYPE_CHECKING:
     from asyncua.common.node import Node
 
     from reactors_czlab.core.actuator import Actuator
-    from reactors_czlab.core.sensor import Sensor
 
 _logger = logging.getLogger("server.opcactuator")
 
@@ -34,9 +34,12 @@ class ActuatorOpc:
     def __init__(self, actuator: Actuator, timer: Timer) -> None:
         """Initialize the OPC actuator node."""
         self.actuator = actuator
+        self.id = actuator.id
         self.base_timer = timer
         self._timer = None
         self.timer = self.base_timer
+        self.sensors_enum = None
+        self.sensor = None
 
     def __repr__(self) -> str:
         """Print sensor id."""
@@ -66,21 +69,41 @@ class ActuatorOpc:
         self._timer = timer
 
     @property
+    def sensors(self) -> dict[str, Sensor] | None:
+        """Return a Dict of Sensors."""
+        return self._sensors
+
+    @sensors.setter
+    def sensors(self, sensors: list[Sensor] | None) -> None:
+        """Set available sensors."""
+        if not isinstance(sensors, list | None):
+            raise TypeError
+        if sensors is None:
+            self._sensors = None
+        else:
+            self._sensors = {s.id: s for s in sensors}
+
+    @property
     def reference_sensor(self) -> Sensor | None:
         """Sensor getter."""
         return self._reference_sensor
 
     @reference_sensor.setter
-    def reference_sensor(self, sensor: Sensor | None) -> None:
-        """Sensor setter."""
+    def reference_sensor(self, sensor: Sensor | str | None) -> None:
+        """Set reference sensor."""
+        if not isinstance(sensor, Sensor | None | str):
+            raise TypeError
+        if isinstance(sensor, str):
+            sensor = self.sensors.get(sensor, None)
         if sensor is None:
-            error_message = f"None sensor in actuator {self.actuator.id}"
             self.timer = self.base_timer
+            error_message = f"None sensor in actuator {self.actuator.id}"
             _logger.warning(error_message)
-            _logger.warning(f"Available sensors: {self.sensors_dict}")
+            _logger.warning(f"Available sensors: {self.sensors_enum}")
         else:
             self.timer = sensor.timer
         self._reference_sensor = sensor
+        _logger.info(f"Updated sensor {self._reference_sensor} in {self.id}")
 
     async def async_timer_callback(self) -> None:
         """Update actuator values and push to server."""
@@ -132,6 +155,7 @@ class ActuatorOpc:
                     self.actuator.set_control_config(config)
                     self.timer = self.base_timer
                     self.actuator.timer = self.base_timer
+                    self.reference_sensor = None
                     _logger.debug(f"Control config: {config}")
 
                 case "timer":
@@ -139,23 +163,24 @@ class ActuatorOpc:
                     config.time_off = await self.time_off.get_value()
                     self.timer = self.base_timer
                     self.actuator.timer = self.base_timer
+                    self.reference_sensor = None
                     self.actuator.set_control_config(config)
                     _logger.debug(f"Control config: {config}")
 
                 case "on_boundaries":
-                    await self.update_reference_sensor()
                     config.lb = await self.lb.get_value()
                     config.ub = await self.ub.get_value()
                     # There is a bug here, it will not update the actuator when
                     # there is a change in the value. It will update with
                     # changes in everything else
                     self.actuator.set_control_config(config)
+                    await self.update_reference_sensor()
                     _logger.debug(f"Control config: {config}")
 
                 case "pid":
-                    await self.update_reference_sensor()
                     config.setpoint = await self.setpoint.get_value()
                     self.actuator.set_control_config(config)
+                    await self.update_reference_sensor()
                     _logger.debug(f"Control config: {config}")
         except KeyError:
             _logger.exception(f"{index} not a member of {control_method}")
@@ -166,9 +191,9 @@ class ActuatorOpc:
     async def update_reference_sensor(self) -> None:
         """Find the reference sensor and pass it to the actuator."""
         sensor_idx = await self.curr_sensor.get_value()
-        new_sensor = self.sensors_dict.get(sensor_idx, None)
+        new_sensor = self.sensors_enum.get(sensor_idx, None)
         self.actuator.reference_sensor = new_sensor
-        self.reference_sensor = self.actuator.reference_sensor
+        self.reference_sensor = new_sensor
         _logger.debug(
             f"Sensor {sensor_idx}: {new_sensor} set for {self.actuator.id}",
         )
@@ -256,7 +281,7 @@ class ActuatorOpc:
         # The default sensor is none, user needs to set it
         sensors_list.insert(0, "none")
         # Build a dict dict[sensor index, sensor id]
-        self.sensors_dict = dict(enumerate(sensors_list))
+        self.sensors_enum = dict(enumerate(sensors_list))
 
         # Add sensor list to the opc server
         sensors_variant = ua.Variant(

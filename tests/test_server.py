@@ -8,7 +8,6 @@ from asyncua import Server
 from reactors_czlab.core.actuator import RandomActuator
 from reactors_czlab.core.data import Channel, PhysicalInfo
 from reactors_czlab.core.sensor import RandomSensor
-from reactors_czlab.core.utils import Timer
 from reactors_czlab.opcua import ReactorOpc
 from reactors_czlab.server_info import DO_SENSORS, PH_SENSORS
 
@@ -32,13 +31,22 @@ _logger.addHandler(_stream_handler)
 
 actuators_dict = {
     "R0:pump": PhysicalInfo(
-        "any", 0, 0, [Channel("analog", "pump", pin="Q0.5")]
+        "any",
+        0,
+        0,
+        [Channel("analog", "pump", pin="Q0.5")],
     ),
     "R1:pump": PhysicalInfo(
-        "any", 0, 0, [Channel("analog", "pump", pin="Q0.6")]
+        "any",
+        0,
+        0,
+        [Channel("analog", "pump", pin="Q0.6")],
     ),
     "R2:pump": PhysicalInfo(
-        "any", 0, 0, [Channel("analog", "pump", pin="Q0.7")]
+        "any",
+        0,
+        0,
+        [Channel("analog", "pump", pin="Q0.7")],
     ),
 }
 
@@ -62,10 +70,12 @@ reactors = [
         volume=5,
         sensors=[ph_sensors[i], do_sensors[i]],
         actuators=[actuators[i]],
-        timer=1,
+        timer=4,
     )
     for i in range(3)
 ]
+
+reactors = [reactors.pop(0)]
 
 
 async def main() -> None:

@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 from time import perf_counter
 
+from reactors_czlab.server_info import VERBOSE
+
 _logger = logging.getLogger("server.utils")
 
 
@@ -48,7 +50,6 @@ class Timer:
             raise TypeError
         self.last_time = perf_counter()
         self._interval = interval
-        _logger.debug(f"New interval: {self.interval}")
 
     def add_suscriber(self, subscriber: object) -> None:
         self._subscribers.append(subscriber)
@@ -89,6 +90,10 @@ class Timer:
         self.elapsed_time = this_time - self.last_time
         if self.elapsed_time > self.interval:
             self.last_time = this_time
+            if VERBOSE:
+                _logger.debug(
+                    f"Timer({self.interval}) call to {self._sensors, self._subscribers, self._actuators}",
+                )
             for sensor in self._sensors:
                 sensor.on_timer_callback()
             for actuator in self._actuators:
@@ -99,7 +104,7 @@ class Timer:
     def add_async_suscriber(self, subscriber: object) -> None:
         self._as_subscribers.append(subscriber)
         _logger.debug(
-            f"Timer({self.interval}) Current as_subscribers: {self._as_subscribers}"
+            f"Timer({self.interval}) Current as_subscribers: {self._as_subscribers}",
         )
 
     def remove_async_suscriber(self, subscriber: object) -> None:
@@ -108,13 +113,13 @@ class Timer:
         except ValueError:
             _logger.exception(f"{subscriber} not in self._as_subscribers")
         _logger.debug(
-            f"Timer({self.interval}) Current as_subscribers: {self._as_subscribers}"
+            f"Timer({self.interval}) Current as_subscribers: {self._as_subscribers}",
         )
 
     def add_async_sensor(self, sensor: object) -> None:
         self._as_sensors.append(sensor)
         _logger.debug(
-            f"Timer({self.interval}) Current as_sensors: {self._as_sensors}"
+            f"Timer({self.interval}) Current as_sensors: {self._as_sensors}",
         )
 
     def remove_async_sensor(self, sensor: object) -> None:
@@ -123,13 +128,13 @@ class Timer:
         except ValueError:
             _logger.exception(f"{sensor} not in self._sensors")
         _logger.debug(
-            f"Timer({self.interval}) Current as_sensors: {self._as_sensors}"
+            f"Timer({self.interval}) Current as_sensors: {self._as_sensors}",
         )
 
     def add_async_actuator(self, actuator: object) -> None:
         self._as_actuators.append(actuator)
         _logger.debug(
-            f"Timer({self.interval}) Current as_actuators: {self._as_actuators}"
+            f"Timer({self.interval}) Current as_actuators: {self._as_actuators}",
         )
 
     def remove_async_actuator(self, actuator: object) -> None:
@@ -138,7 +143,7 @@ class Timer:
         except ValueError:
             _logger.exception(f"{actuator} not in self._actuators")
         _logger.debug(
-            f"Timer({self.interval}) current as_actuators: {self._as_actuators}"
+            f"Timer({self.interval}) current as_actuators: {self._as_actuators}",
         )
 
     async def async_callback(self) -> None:
@@ -146,6 +151,10 @@ class Timer:
         self.elapsed_time = this_time - self.as_last_time
         if self.elapsed_time > self.interval:
             self.as_last_time = this_time
+            if VERBOSE:
+                _logger.debug(
+                    f"Timer({self.interval}) call to {self._as_sensors, self._as_subscribers, self._as_actuators}",
+                )
             for sensor in self._as_sensors:
                 await sensor.async_timer_callback()
             for actuator in self._as_actuators:

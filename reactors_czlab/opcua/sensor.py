@@ -23,6 +23,7 @@ class SensorOpc:
 
     def __init__(self, sensor: Sensor, timer: Timer) -> None:
         """Initialize OPC sensor node."""
+        self.id = sensor.id
         self.sensor = sensor
         self.channels: list[Node] = []
         self._timer = None

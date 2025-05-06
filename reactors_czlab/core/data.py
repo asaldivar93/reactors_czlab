@@ -51,8 +51,8 @@ class Calibration:
     """Class holding linear regression parameters y = a*x + b."""
 
     file: str
-    a: float
-    b: float
+    a: float = 1
+    b: float = 0
 
 
 class ControlMethod(StrEnum):

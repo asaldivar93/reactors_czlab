@@ -38,7 +38,11 @@ class ReactorOpc:
         self.id = identifier
         self.base_timer: Timer = Timer(timer)
         self.reactor = Reactor(
-            identifier, volume, sensors, actuators, self.base_timer
+            identifier,
+            volume,
+            sensors,
+            actuators,
+            self.base_timer,
         )
         self.sensor_nodes: list[SensorOpc] = []
         self.actuator_nodes: list[ActuatorOpc] = []
@@ -51,6 +55,8 @@ class ReactorOpc:
                 new_timer = Timer(interval)
                 self.timers_dict.update({interval: new_timer})
         self.create_child_nodes()
+        for actuator in self.actuator_nodes:
+            actuator.sensors = sensors
 
     def create_child_nodes(self):
         sensors = self.reactor.sensors

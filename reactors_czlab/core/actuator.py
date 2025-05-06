@@ -50,6 +50,7 @@ class Actuator(ABC):
         self.base_timer: Timer | None = None
         self._timer = None
         self.reference_sensor = None
+        self.sensors = None
 
     def __repr__(self) -> str:
         """Print sensor id."""
@@ -61,16 +62,19 @@ class Actuator(ABC):
         return this == other
 
     @property
-    def sensors(self) -> dict[str, Sensor]:
+    def sensors(self) -> dict[str, Sensor] | None:
         """Return a Dict of Sensors."""
         return self._sensors
 
     @sensors.setter
-    def sensors(self, sensors: list[Sensor]) -> None:
+    def sensors(self, sensors: list[Sensor] | None) -> None:
         """Set available sensors."""
-        if not isinstance(sensors, list):
+        if not isinstance(sensors, list | None):
             raise TypeError
-        self._sensors = {s.id: s for s in sensors}
+        if sensors is None:
+            self._sensors = None
+        else:
+            self._sensors = {s.id: s for s in sensors}
 
     @property
     def reference_sensor(self) -> Sensor | None:
@@ -136,7 +140,7 @@ class Actuator(ABC):
         except AttributeError:
             # Catch an exception when the user hasn't set a reference sensor
             # before setting _OnBoundaries or _PidControl classes
-            _logger.warning(f"Reference sensor in {self.id} not set")
+            _logger.exception(f"Reference sensor in {self.id} not set")
             _logger.warning(f"Setting output in {self.id} = 0")
             self.write(0)
 

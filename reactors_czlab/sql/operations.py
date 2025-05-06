@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -12,6 +13,8 @@ if TYPE_CHECKING:
     from psycopg import Connection, Cursor
 
     from reactors_czlab.core.data import PhysicalInfo
+
+_logger = logging.getLogger("client.sql")
 
 DB_PARAMS = {
     "dbname": "bioreactor_db",
@@ -30,7 +33,7 @@ def connect_to_db() -> Connection:
     """Establish a connection to the PostgreSQL database."""
     return psycopg.connect(
         dbname="bioreactor_db",
-        user="postgres",
+        user="asaldivargarci1064",
     )
 
 
@@ -44,11 +47,13 @@ def create_experiment(name: str, date: datetime, volume: float) -> None:
 
     cursor = connection.cursor()
     if not experiment_exist(cursor, name):
+        _logger.info(f"Creating experiment {name}")
         cursor.execute(
             "INSERT INTO experiment (name, date, volume) \
             VALUES (%s, %s, %s) RETURNING id",
             (name, date.isoformat(timespec="milliseconds"), volume),
         )
+        connection.commit()
 
 
 def experiment_exist(cursor: Cursor, name: str) -> bool:
@@ -65,7 +70,7 @@ def get_experiment_id(cursor: Cursor, name: str) -> str:
     )
     row = cursor.fetchone()
     if row is None:
-        raise psycopg.Error
+        raise SqlError("Experiment does not exist")
     return row[0]
 
 
@@ -110,19 +115,19 @@ def store_data(
             "analog": (
                 "INSERT INTO analog \
                 (experiment_id, date, reactor, calibration, value, units) \
-                VALUES (%s, %s, %s, %s, %s)",
+                VALUES (%s, %s, %s, %s, %s, %s)",
                 (exp_id, datetime, reactor_id, calibration, value, units),
             ),
             "actuator": (
                 "INSERT INTO actuator \
-                (experiment_id, date, reactor, calibration, value) \
-                VALUES (%s, %s, %s, %s, %s)",
+                (experiment_id, date, reactor, calibration, value, units) \
+                VALUES (%s, %s, %s, %s, %s, %s)",
                 (exp_id, datetime, reactor_id, calibration, value, units),
             ),
             "digital": (
                 "INSERT INTO digital \
-                (experiment_id, date, reactor, calibration, value) \
-                VALUES (%s, %s, %s, %s, %s)",
+                (experiment_id, date, reactor, calibration, value, units) \
+                VALUES (%s, %s, %s, %s, %s, %s)",
                 (exp_id, datetime, reactor_id, calibration, value, units),
             ),
         }
@@ -234,7 +239,14 @@ def row_to_csv(out_name: str, rows: list) -> None:
     with Path(out_name).open(mode="w", newline="") as csvfile:
         writer = csv.writer(csvfile)
         writer.writerow(
-            ["source_table", "date", "reactor", "value", "units", "calibration"]
+            [
+                "source_table",
+                "date",
+                "reactor",
+                "value",
+                "units",
+                "calibration",
+            ],
         )  # Header
         writer.writerows(rows)
 
