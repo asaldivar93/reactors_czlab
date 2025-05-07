@@ -36,22 +36,26 @@ def connect_to_db() -> Connection:
     )
 
 
-def create_experiment(name: str, date: datetime, volume: float) -> None:
+def create_experiment(
+    name: str,
+    date: datetime,
+    reactors: list[str],
+    volume: float,
+) -> None:
     """Create a record for the experiment."""
     try:
         connection = connect_to_db()
     except psycopg.Error as err:
         error_message = "Error connecting to database"
         raise SqlError(error_message) from err
-
+    date_str = date.isoformat(timespec="milliseconds")
+    query = "INSERT INTO experiment (name, date, reactors, volume) \
+             VALUES (%s, %s, %s, %s) RETURNING id"
+    values = (name, date_str, ",".join(reactors), volume)
     cursor = connection.cursor()
     if not experiment_exist(cursor, name):
         _logger.info(f"Creating experiment {name}")
-        cursor.execute(
-            "INSERT INTO experiment (name, date, volume) \
-            VALUES (%s, %s, %s) RETURNING id",
-            (name, date.isoformat(timespec="milliseconds"), volume),
-        )
+        cursor.execute(query, values)
         connection.commit()
 
 

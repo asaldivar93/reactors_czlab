@@ -33,8 +33,10 @@ _logger.addHandler(_stream_handler)
 
 async def main():
     experiment = "test"
-    reactor_nodes = [ReactorOpcClient(k, experiment) for k in server_vars]
-    create_experiment(experiment, datetime.now(), 2)
+    reactors = ["R0", "R1", "R3"]
+    volume = 2
+    reactor_nodes = [ReactorOpcClient(k, experiment) for k in reactors]
+    create_experiment(experiment, datetime.now(), reactors, volume)
     client = Client(url="opc.tcp://localhost:4840/")
     async with client:
         for reactor in reactor_nodes:
