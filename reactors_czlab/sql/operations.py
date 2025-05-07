@@ -73,6 +73,25 @@ def get_experiment_id(cursor: Cursor, name: str) -> str:
     return row[0]
 
 
+def get_reactors(name: str) -> list[str]:
+    """Return reactors in an experiment."""
+    try:
+        connection = connect_to_db()
+    except psycopg.Error as err:
+        error_message = "Error connecting to database"
+        raise SqlError(error_message) from err
+    cursor = connection.cursor()
+    cursor.execute(
+        "SELECT reactors FROM experiment WHERE name = %s",
+        (name,),
+    )
+    row = cursor.fetchone()
+    if row is None:
+        error_message = "Experiment has no reactors?"
+        raise SqlError(error_message)
+    return row[0].split(",")
+
+
 def store_data(
     data: PhysicalInfo,
     reactor_id: str,
