@@ -19,10 +19,10 @@ class Plotter:
     ) -> None:
         self.experiment_name = experiment_name
         self.time_filter = time_filter
+        self.reactors = get_reactors(experiment_name)
         figure, plots = self.setup_plots()
         self.figure = figure
         self.plots = plots
-        self.reactors = get_reactors(experiment_name)
 
     def setup_plots(self) -> tuple[Figure, dict[str, Any]]:
         """Initialize plots."""
@@ -39,9 +39,9 @@ class Plotter:
             "Temperature",
         ]
         plots = {}
-        lines = {}
 
         for ax, title in zip(axs, titles):
+            lines = {}
             # Date Formatter
             locator = mdates.AutoDateLocator(minticks=3, maxticks=7)
             formatter = mdates.ConciseDateFormatter(locator)
@@ -54,7 +54,7 @@ class Plotter:
             ax.set_ylabel("Value")
 
             for reactor in self.reactors:
-                (line,) = ax.plot([], [], label=title, marker=".")
+                (line,) = ax.plot([], [], label=reactor, marker=".")
                 lines[reactor] = line
             ax.legend(loc="upper left")
             plots[title.lower()] = (ax, lines)
@@ -67,12 +67,13 @@ class Plotter:
         all_rows = get_data(self.experiment_name, self.time_filter)
         return rows_to_polars(all_rows)
 
+
 def filter_df(all_df: pl.DataFrame, table: str, reactor: str) -> pl.DataFrame:
     """Filter the dataframe by source table and reactor."""
     units_map = {"arcph": "pH", "visiferm": "ppm"}
     if table != "temperature":
-        units = units_map.get(table, None)
-        if units is not None
+        units = units_map.get(table)
+        if units is not None:
             table_df = all_df.filter(
                 pl.col("source_table") == table,
                 pl.col("reactor") == reactor,
@@ -85,11 +86,11 @@ def filter_df(all_df: pl.DataFrame, table: str, reactor: str) -> pl.DataFrame:
             )
     else:
         table_df = all_df.filter(
-            pl.col("source_table") == "visiferm",
-            pl.col("source_table") == "arcph",
+            pl.col("source_table").is_in(["visiferm", "arcph"]),
             pl.col("units") == "oC",
         )
     return table_df.sort("date")
+
 
 def update(frame, plotter: Plotter):
     all_df = plotter.get_data()
@@ -102,8 +103,8 @@ def update(frame, plotter: Plotter):
 
             # Update plot
             line.set_data(dates, values)
-        ax.relim()
-        ax.autoscale_view()
+            ax.relim()
+            ax.autoscale_view()
 
 
 if __name__ == "__main__":
@@ -111,5 +112,5 @@ if __name__ == "__main__":
     time_filter = (24, "h")
     plotter = Plotter(experiment_name, time_filter)
 
-    ani = FuncAnimation(plotter.figure, update, fargs=(plotter,), interval=3000)
+    ani = FuncAnimation(plotter.figure, update, fargs=(plotter,), interval=1000)
     plt.show()

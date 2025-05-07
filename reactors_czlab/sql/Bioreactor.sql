@@ -1,4 +1,4 @@
--- CREATE DATABASE bioreactor_db;
+CREATE DATABASE bioreactor_db;
 \c bioreactor_db
 -- Table: experiment
 CREATE TABLE experiment (

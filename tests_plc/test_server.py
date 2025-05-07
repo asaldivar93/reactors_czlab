@@ -5,14 +5,14 @@ import logging
 
 from asyncua import Server
 
-from reactors_czlab.core.actuator import PlcActuator
+from reactors_czlab.core.actuator import RandomActuator
 from reactors_czlab.core.modbus import ModbusHandler
 from reactors_czlab.core.sensor import HamiltonSensor
 from reactors_czlab.opcua import ReactorOpc
-from reactors_czlab.server_info import DO_SENSORS, PH_SENSORS, PUMPS
+from reactors_czlab.server_info import ACTUATORS, REACTORS, SENSORS
 
 _logger = logging.getLogger("server")
-_logger.setLevel(logging.INFO)
+_logger.setLevel(logging.DEBUG)
 
 _formatter = logging.Formatter(
     "%(name)s: %(asctime)s %(levelname)s - %(message)s",
@@ -20,10 +20,10 @@ _formatter = logging.Formatter(
 
 _file_handler = logging.FileHandler("record.log")
 _file_handler.setFormatter(_formatter)
-_file_handler.setLevel(logging.INFO)
+_file_handler.setLevel(logging.DEBUG)
 
 _stream_handler = logging.StreamHandler()
-_stream_handler.setLevel(logging.INFO)
+_stream_handler.setLevel(logging.DEBUG)
 _stream_handler.setFormatter(_formatter)
 
 _logger.addHandler(_file_handler)
@@ -37,29 +37,29 @@ modbus_client = ModbusHandler(
     timeout=0.5,
 )
 
-ph_sensors = []
-for k, config in PH_SENSORS.items():
-    sensor = HamiltonSensor(k, config, modbus_client)
-    ph_sensors.append(sensor)
+sensors = {}
+for r in REACTORS:
+    sens = [
+        HamiltonSensor(k, config, modbus_client)
+        for k, config in SENSORS[r].items()
+    ]
+    sensors.update({r: sens})
 
-do_sensors = []
-for k, config in DO_SENSORS.items():
-    sensor = HamiltonSensor(k, config, modbus_client)
-    do_sensors.append(sensor)
+actuators = {}
+for r in REACTORS:
+    acts = [RandomActuator(k, config) for k, config in ACTUATORS[r].items()]
+    actuators.update({r: acts})
 
-actuators = []
-for k, config in PUMPS.items():
-    actuators.append(PlcActuator(k, config))
-
+REACTORS = ["R0"]
 reactors = [
     ReactorOpc(
-        f"R{i}",
+        r,
         volume=5,
-        sensors=[ph_sensors[i]],
-        actuators=[actuators[i]],
-        timer=4,
+        sensors=sensors[r],
+        actuators=actuators[r],
+        timer=0.5,
     )
-    for i in range(1)
+    for r in REACTORS
 ]
 
 
@@ -69,7 +69,7 @@ async def main() -> None:
 
     server = Server()
     await server.init()
-    server.set_endpoint("opc.tcp://10.10.10.30:55488/")
+    server.set_endpoint("opc.tcp://10.10.10.20:55488")
 
     uri = "http://czlab/biocontroller"
     idx = await server.register_namespace(uri)
