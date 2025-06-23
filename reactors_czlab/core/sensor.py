@@ -26,6 +26,7 @@ if IN_RASPBERRYPI:
     from reactors_czlab.core.reactor import rpiplc
 
 _logger = logging.getLogger("server.sensors")
+ERROR_VAL = -0.111
 
 
 class _RegisterInfo(NamedTuple):
@@ -374,7 +375,7 @@ class HamiltonSensor(Sensor):
             error_message = f"Error during read of unit {self.id}\n {err}"
             _logger.error(error_message)
             for chn in self.channels:
-                chn.value = -0.111
+                chn.value = ERROR_VAL
 
 
 class AnalogSensor(Sensor):
@@ -436,3 +437,12 @@ class AnalogSensor(Sensor):
                 chn.value = value
                 if VERBOSE:
                     _logger.debug(f"In {self.id} {chn.description}: {value}")
+
+
+class SpectralSensor(Sensor):
+    def __init__(self, identifier: str, config: PhysicalInfo) -> None:
+        super().__init__(identifier, config)
+
+    def read(self):
+        for chn in self.channels:
+            chn.value = ERROR_VAL

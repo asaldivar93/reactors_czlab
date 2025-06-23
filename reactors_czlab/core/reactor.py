@@ -48,7 +48,6 @@ class Reactor:
         self.volume: float = volume
         self.base_timer: Timer = timer
         self.timers: dict[float, Timer] | None = None
-
         self.sensors = sensors
         self.actuators = actuators
         for actuator in actuators:

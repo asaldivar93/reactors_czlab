@@ -6,9 +6,15 @@ import logging
 from asyncua import Server
 
 from reactors_czlab.core.actuator import RandomActuator
-from reactors_czlab.core.sensor import RandomSensor
+from reactors_czlab.core.modbus import ModbusHandler
+from reactors_czlab.core.sensor import HamiltonSensor, SpectralSensor
 from reactors_czlab.opcua import ReactorOpc
-from reactors_czlab.server_info import ACTUATORS, REACTORS, SENSORS
+from reactors_czlab.server_info import (
+    ANALOG_ACTUATORS,
+    BIOMASS_SENSORS,
+    HAMILTON_SENSORS,
+    MFC_ACTUATORS,
+)
 
 _logger = logging.getLogger("server")
 _logger.setLevel(logging.DEBUG)
@@ -28,24 +34,50 @@ _stream_handler.setFormatter(_formatter)
 _logger.addHandler(_file_handler)
 _logger.addHandler(_stream_handler)
 
-sensors = {}
-for r in REACTORS:
-    sens = [RandomSensor(k, config) for k, config in SENSORS[r].items()]
-    sensors.update({r: sens})
+serial_0 = "/dev/ttySC2"
 
-actuators = {}
-for r in REACTORS:
-    acts = [RandomActuator(k, config) for k, config in ACTUATORS[r].items()]
-    actuators.update({r: acts})
+modbus_client = ModbusHandler(
+    port=serial_0,
+    baudrate=19200,
+    timeout=0.5,
+)
 
-REACTORS = ["R0"]
+REACTORS = ["R0", "R1", "R2"]
+
+hamilton = {}
+for r in REACTORS:
+    sens = [
+        HamiltonSensor(k, config, modbus_client)
+        for k, config in HAMILTON_SENSORS[r].items()
+    ]
+    hamilton.update({r: sens})
+
+biomass = {}
+for r in REACTORS:
+    sens = [
+        SpectralSensor(k, config) for k, config in BIOMASS_SENSORS[r].items()
+    ]
+    biomass.update({r: sens})
+
+analog = {}
+for r in REACTORS:
+    acts = [
+        RandomActuator(k, config) for k, config in ANALOG_ACTUATORS[r].items()
+    ]
+    analog.update({r: acts})
+
+mfc = {}
+for r in REACTORS:
+    acts = [RandomActuator(k, config) for k, config in MFC_ACTUATORS[r].items()]
+    mfc.update({r: acts})
+
 reactors = [
     ReactorOpc(
         r,
         volume=5,
-        sensors=sensors[r],
-        actuators=actuators[r],
-        timer=0.5,
+        sensors=[*hamilton[r], *biomass[r]],
+        actuators=[*analog[r], *mfc[r]],
+        timer=7,
     )
     for r in REACTORS
 ]
@@ -57,7 +89,7 @@ async def main() -> None:
 
     server = Server()
     await server.init()
-    server.set_endpoint("opc.tcp://10.10.10.20:55488")
+    server.set_endpoint("opc.tcp://10.10.10.20:55488/")
 
     uri = "http://czlab/biocontroller"
     idx = await server.register_namespace(uri)
