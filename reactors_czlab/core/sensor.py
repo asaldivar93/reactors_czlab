@@ -7,7 +7,7 @@ import random
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, NamedTuple
 
-from reactors_czlab.core.data import Calibration, PhysicalInfo
+from reactors_czlab.core.data import Calibration, CalibrationInfo, PhysicalInfo
 from reactors_czlab.core.modbus import (
     ModbusError,
     ModbusRequest,
@@ -57,6 +57,7 @@ class Sensor(ABC):
         self.channels = config.channels
         self.base_timer: Timer | None = None
         self._timer = None
+        self.calibration_status = CalibrationInfo(0, 0, 0, 0, 0)
 
     def __repr__(self) -> str:
         """Print sensor id."""
@@ -95,6 +96,10 @@ class Sensor(ABC):
     def read(self) -> None:
         """Read all sensor channels."""
 
+    @abstractmethod
+    def write_calibration(self, cp: str, value: float) -> None:
+        """Write value to calibration points."""
+
 
 class RandomSensor(Sensor):
     """Class used for testing."""
@@ -115,6 +120,11 @@ class RandomSensor(Sensor):
 
         """
         super().__init__(identifier, config)
+        self.calibration_status = CalibrationInfo(1, 2, 3, 4, 5)
+
+    def write_calibration(self, cp: str, value: float) -> None:
+        """Write value to calibration points."""
+        print(f"{self.id} calibrated {cp}: {value}")
 
     def read(self) -> None:
         """Print values with a gaussian distribution."""
@@ -223,6 +233,7 @@ class HamiltonSensor(Sensor):
         """
         super().__init__(identifier, config)
         self.modbus_handler = modbus_handler
+        self.calibration_status = self.read_calibration()
 
     def __repr__(self) -> str:
         """Print sensor id."""
@@ -335,27 +346,36 @@ class HamiltonSensor(Sensor):
             self.set_operator_level("specialist")
 
             self.write_registers(cp, [value])
+            self.calibration_status = self.read_calibration()
 
-            status_response = self.read_holding_registers(cp + "_status")
-            low, high = status_response[0], status_response[1]
-            status = self.modbus_handler.decode((low, high), "int")
-            low, high = status_response[4], status_response[5]
-            cal_value = self.modbus_handler.decode((low, high), "float")
-
-            quality_response = self.read_holding_registers("quality")
-            low, high = quality_response[0], quality_response[1]
-            quality = self.modbus_handler.decode((low, high), "float")
-
-            ph_response = self.read_holding_registers("pmc1")
-            low, high = ph_response[2], ph_response[3]
-            ph = self.modbus_handler.decode((low, high), "float")
-            info_message = f"Calibration at {self.id} - status: {status}, \
-                            cp: {cal_value}, quality: {quality}, pH: {ph}"
-            _logger.info(info_message)
             self.set_operator_level("user")
         except ModbusError:
             error_message = f"Error during calibration of unit {self.id}"
             _logger.exception(error_message)
+
+    def read_calibration(self) -> CalibrationInfo:
+        """Read calibration status."""
+        status_response = self.read_holding_registers("cp1_status")
+        low, high = status_response[0], status_response[1]
+        cp1_status = self.modbus_handler.decode((low, high), "int")
+        low, high = status_response[4], status_response[5]
+        cp1 = self.modbus_handler.decode((low, high), "float")
+
+        status_response = self.read_holding_registers("cp2_status")
+        low, high = status_response[0], status_response[1]
+        cp2_status = self.modbus_handler.decode((low, high), "int")
+        low, high = status_response[4], status_response[5]
+        cp2 = self.modbus_handler.decode((low, high), "float")
+
+        quality_response = self.read_holding_registers("quality")
+        low, high = quality_response[0], quality_response[1]
+        quality = self.modbus_handler.decode((low, high), "float")
+
+        info = CalibrationInfo(cp1, cp1_status, cp2, cp2_status, quality)
+        info_message = f"Calibration at {self.id}: {info}"
+        _logger.info(info_message)
+
+        return info
 
     def read(self) -> None:
         """Read all available channels in the sensor."""

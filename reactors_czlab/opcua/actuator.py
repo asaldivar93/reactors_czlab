@@ -205,11 +205,11 @@ class ActuatorOpc:
         # Add Node to store the control settings
         self.control_method = await self.node.add_object(idx, "ControlMethod")
 
-        # Add variable to set the desired status
+        # Add variable to set the desired output
         self.value = await self.control_method.add_variable(idx, "value", 0.0)
         await self.value.set_writable()
 
-        # Add variable to record the current status
+        # Add variable to record the current output
         self.curr_value = await self.node.add_variable(idx, "curr_value", 0.0)
         await self.curr_value.set_writable()
 

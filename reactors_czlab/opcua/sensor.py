@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import astuple
 from typing import TYPE_CHECKING
 
 from asyncua import ua
@@ -71,6 +72,44 @@ class SensorOpc:
                 ua.DataValue(ua.LocalizedText(Text=channel.description)),
             )
             self.channels.append(var)
+
+        # Add an array to hold calibration status
+        status = list(astuple(self.sensor.calibration_status))
+        self.calibration_array = await self.node.add_variable(
+            idx,
+            "calibration_status",
+            ua.Variant(status, ua.VariantType.Float),
+        )
+        await self.calibration_array.set_writable()
+
+        async def calibrate(parent, cp: str, value: float) -> None:
+            self.sensor.write_calibration(cp, value)
+            status = list(astuple(self.sensor.calibration_status))
+            await self.calibration_array.write_value(status)
+
+        # Add calibration method
+        # Argument 1
+        inarg_cp = ua.Argument()
+        inarg_cp.Name = "CP"
+        inarg_cp.DataType = ua.NodeId(ua.ObjectIds.String)
+        inarg_cp.ValueRank = -1
+        inarg_cp.ArrayDimensions = []
+        inarg_cp.Description = ua.LocalizedText("Calibration Point")
+        # Argument 2
+        inarg_val = ua.Argument()
+        inarg_val.Name = "Value"
+        inarg_val.DataType = ua.NodeId(ua.ObjectIds.Float)
+        inarg_val.ValueRank = -1
+        inarg_val.ArrayDimensions = []
+        inarg_val.Description = ua.LocalizedText("Calibration Point Value")
+
+        await self.node.add_method(
+            idx,
+            "write_calibration",
+            calibrate,
+            [inarg_cp, inarg_val],
+            [],
+        )
 
     async def update_value(self) -> None:
         """Update the server."""

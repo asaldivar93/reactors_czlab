@@ -153,8 +153,7 @@ PUMPS = {
 
 server_vars = {
     "R0": {
-        "ns=2;i=7": copy_info(DO_SENSORS["R0:do"], [Channel("oC")]),
-        "ns=2;i=8": copy_info(DO_SENSORS["R0:do"], [Channel("ppm")]),
-        "ns=2;i=12": copy_info(PUMPS["R0:pump_0"], []),
+        "ns=2;i=4": copy_info(PH_SENSORS["R0:ph"], [Channel("pH")]),
+        "ns=2;i=5": copy_info(PH_SENSORS["R0:ph"], [Channel("oC")]),
     },
 }

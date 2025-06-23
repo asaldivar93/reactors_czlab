@@ -12,7 +12,7 @@ authors = [
     { name = "Alexis Saldivar", email = "asaldivarg93@gmail.com" },
     { name = "Bhavana Palapati", email = "bpalapati0099@sdsu.edu" },
 ]
-dependencies = ["asyncua>=1.1.5"]
+dependencies = ["asyncua>=1.1.5", "nicegui"]
 
 [project.optional-dependencies]
 server = ["pymodbus>=3.8.6", "pyserial>=3.5"]

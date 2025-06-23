@@ -75,5 +75,10 @@ class ReactorOpcClient:
         if info is not None:
             info.channels[0].value = val
             timestamp = datetime.now()
-            store_data(info, self.id, self.experiment, timestamp)
+            # store_data(info, self.id, self.experiment, timestamp)
             _logger.debug(f"Data change in {self.id} - {info.model}: {val}")
+
+
+class SensorOpcClient:
+    def __init__(self) -> None:
+        pass

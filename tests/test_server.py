@@ -70,9 +70,9 @@ reactors = [
         volume=5,
         sensors=[ph_sensors[i]],
         actuators=[actuators[i]],
-        timer=0.5,
+        timer=10,
     )
-    for i in range(1)
+    for i in range(3)
 ]
 
 # reactors = [reactors.pop(0)]

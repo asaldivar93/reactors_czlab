@@ -55,6 +55,17 @@ class Calibration:
     b: float = 0
 
 
+@dataclass
+class CalibrationInfo:
+    """Class holding last calibration parameters."""
+
+    cp1: float
+    cp1_status: float
+    cp2: float
+    cp2_status: float
+    quality: float
+
+
 class ControlMethod(StrEnum):
     """Available control methods.
 
