@@ -19,6 +19,7 @@ if __name__ == "__main__":
         )
         # Your sensor should have the default address 0x01
         sensor_0 = HamiltonSensor("R0:ph", PH_SENSORS["R0:ph"], modbus_client)
+        sensor_0.address = 0x01
         try:
             while True:
                 sensor_0.read()

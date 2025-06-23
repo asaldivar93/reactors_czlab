@@ -240,7 +240,7 @@ class HamiltonSensor(Sensor):
         try:
             register = self.REGISTERS[param]
             request = ModbusRequest(
-                operation="read",
+                operation="read_holding",
                 address=self.address,
                 register=register.address,
                 count=register.num,

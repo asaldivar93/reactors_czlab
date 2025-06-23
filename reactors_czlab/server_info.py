@@ -32,7 +32,7 @@ PH_SENSORS = {
     "R0:ph": PhysicalInfo(
         model="ArcPh",
         address=0x01,
-        sample_interval=5,
+        sample_interval=10,
         channels=[
             Channel("pH", "pH", register="pmc1"),
             Channel("oC", "degree_celsius", register="pmc6"),

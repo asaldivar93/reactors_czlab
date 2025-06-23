@@ -47,16 +47,16 @@ for k, config in DO_SENSORS.items():
     sensor = HamiltonSensor(k, config, modbus_client)
     do_sensors.append(sensor)
 
-actuators = []
-for k, config in PUMPS.items():
-    actuators.append(PlcActuator(k, config))
+#actuators = []
+#for k, config in PUMPS.items():
+#    actuators.append(PlcActuator(k, config))
 
 reactors = [
     ReactorOpc(
         f"R{i}",
         volume=5,
         sensors=[ph_sensors[i]],
-        actuators=[actuators[i]],
+        actuators=[],
         timer=4,
     )
     for i in range(1)
@@ -69,7 +69,7 @@ async def main() -> None:
 
     server = Server()
     await server.init()
-    server.set_endpoint("opc.tcp://10.10.10.30:55488/")
+    server.set_endpoint("opc.tcp://10.10.10.20:55488/")
 
     uri = "http://czlab/biocontroller"
     idx = await server.register_namespace(uri)
