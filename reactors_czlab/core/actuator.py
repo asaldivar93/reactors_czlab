@@ -227,7 +227,7 @@ class PlcActuator(Actuator):
             rpiplc.pin_mode(chn.pin, rpiplc.OUTPUT)
             mode = chn.type
             if mode == "pwm":
-                rpiplc.analog_write_set_frequency(chn.register, 24)
+                rpiplc.analog_write_set_frequency(chn.pin, 24)
 
     def write(self, value: float) -> None:
         """Write to physical pin."""

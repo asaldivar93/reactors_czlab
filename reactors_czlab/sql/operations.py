@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 import polars as pl
 import psycopg
 
-VERBOSE = True
+from reactors_czlab.server_info import VERBOSE
 
 if TYPE_CHECKING:
     from psycopg import Connection, Cursor
@@ -36,22 +36,26 @@ def connect_to_db() -> Connection:
     )
 
 
-def create_experiment(name: str, date: datetime, volume: float) -> None:
+def create_experiment(
+    name: str,
+    date: datetime,
+    reactors: list[str],
+    volume: float,
+) -> None:
     """Create a record for the experiment."""
     try:
         connection = connect_to_db()
     except psycopg.Error as err:
         error_message = "Error connecting to database"
         raise SqlError(error_message) from err
-
+    date_str = date.isoformat(timespec="milliseconds")
+    query = "INSERT INTO experiment (name, date, reactors, volume) \
+             VALUES (%s, %s, %s, %s) RETURNING id"
+    values = (name, date_str, ",".join(reactors), volume)
     cursor = connection.cursor()
     if not experiment_exist(cursor, name):
         _logger.info(f"Creating experiment {name}")
-        cursor.execute(
-            "INSERT INTO experiment (name, date, volume) \
-            VALUES (%s, %s, %s) RETURNING id",
-            (name, date.isoformat(timespec="milliseconds"), volume),
-        )
+        cursor.execute(query, values)
         connection.commit()
 
 
@@ -71,6 +75,25 @@ def get_experiment_id(cursor: Cursor, name: str) -> str:
     if row is None:
         raise SqlError("Experiment does not exist")
     return row[0]
+
+
+def get_reactors(name: str) -> list[str]:
+    """Return reactors in an experiment."""
+    try:
+        connection = connect_to_db()
+    except psycopg.Error as err:
+        error_message = "Error connecting to database"
+        raise SqlError(error_message) from err
+    cursor = connection.cursor()
+    cursor.execute(
+        "SELECT reactors FROM experiment WHERE name = %s",
+        (name,),
+    )
+    row = cursor.fetchone()
+    if row is None:
+        error_message = "Experiment has no reactors?"
+        raise SqlError(error_message)
+    return row[0].split(",")
 
 
 def store_data(

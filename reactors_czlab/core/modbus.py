@@ -62,7 +62,7 @@ class ModbusHandler:
         self,
         port: str = "/dev/ttyUSB0",
         baudrate: int = 19200,
-        timeout: float = 0.5,
+        timeout: float = 0.1,
     ):
         """Initialize the Modbus handler.
 
@@ -88,7 +88,7 @@ class ModbusHandler:
         )
 
         if not self.client.connect():
-            error_message = "Failed to connect to Modbus device"
+            error_message = f"Failed to connect to Modbus device at port {port}"
             raise ModbusError(error_message)
         self._last_result = None
         _logger.info(f"Initialized ModbusHandler at port: {port}")
@@ -167,7 +167,7 @@ class ModbusHandler:
 
             if result.isError():
                 error_message = f"\
-                Error during {request.operation} \
+                ModbusError: Error during {request.operation} \
                 on {request.register} on unit {request.address} \
                 with code {result.exception_code}"
                 raise ModbusError(error_message)

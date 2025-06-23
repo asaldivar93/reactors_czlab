@@ -1,10 +1,11 @@
--- CREATE DATABASE bioreactor_db;
+CREATE DATABASE bioreactor_db;
 \c bioreactor_db
 -- Table: experiment
 CREATE TABLE experiment (
     id SERIAL PRIMARY KEY,
     name TEXT NOT NULL,
     date TIMESTAMP(3) NOT NULL,
+    reactors TEXT NOT NULL,
     volume FLOAT
 );
 

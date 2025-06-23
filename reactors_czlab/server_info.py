@@ -4,11 +4,7 @@ from copy import deepcopy
 
 from reactors_czlab.core.data import Calibration, Channel, PhysicalInfo
 
-# Hamilton sensors can have addresses from 1 to 32.
-# There are four types of hamilton sensors.
-# We'll divide the address space this way: 1-8: ph_sensors,
-# 9-16: oxygen_sensors, 17-24: incyte_sensors, 25-32: co2_sensors
-VERBOSE = False
+VERBOSE = True
 
 
 def copy_info(info: PhysicalInfo, channels: list[Channel]) -> PhysicalInfo:
@@ -58,103 +54,112 @@ PH_SENSORS = {
     ),
 }
 
-DO_SENSORS = {
-    "R0:do": PhysicalInfo(
-        model="VisiFerm",
-        address=0x09,
-        sample_interval=5,
-        channels=[
-            Channel("ppm", "dissolved_oxygen", register="pmc1"),
-            Channel("oC", "degree_celsius", register="pmc6"),
-        ],
-    ),
-    "R1:do": PhysicalInfo(
-        model="VisiFerm",
-        address=0x10,
-        sample_interval=5,
-        channels=[
-            Channel("ppm", "dissolved_oxygen", register="pmc1"),
-            Channel("oC", "degree_celsius", register="pmc6"),
-        ],
-    ),
-    "R2:ph": PhysicalInfo(
-        model="VisiFerm",
-        address=0x11,
-        sample_interval=5,
-        channels=[
-            Channel("ppm", "dissolved_oxygen", register="pmc1"),
-            Channel("oC", "degree_celsius", register="pmc6"),
-        ],
-    ),
+ACTUATORS = {
+    "R0": {
+        "R0:pump_0": PhysicalInfo(
+            model="actuator",
+            address=0,
+            sample_interval=0,
+            channels=[
+                Channel(
+                    "pwm",
+                    "pump",
+                    pin="Q0.5",
+                    calibration=Calibration("R0:pump_0"),
+                ),
+            ],
+        ),
+        "R0:pump_1": PhysicalInfo(
+            model="actuator",
+            address=0,
+            sample_interval=0,
+            channels=[
+                Channel(
+                    "pwm",
+                    "pump",
+                    pin="Q0.5",
+                    calibration=Calibration("R0:pump_1"),
+                ),
+            ],
+        ),
+    },
+    "R1": {
+        "R1:pump_0": PhysicalInfo(
+            model="actuator",
+            address=0,
+            sample_interval=0,
+            channels=[
+                Channel(
+                    "pwm",
+                    "pump",
+                    pin="Q0.5",
+                    calibration=Calibration("R1:pump_0"),
+                ),
+            ],
+        ),
+        "R1:pump_1": PhysicalInfo(
+            model="actuator",
+            address=0,
+            sample_interval=0,
+            channels=[
+                Channel(
+                    "pwm",
+                    "pump",
+                    pin="Q0.5",
+                    calibration=Calibration("R1:pump_1"),
+                ),
+            ],
+        ),
+    },
+    "R2": {
+        "R2:pump_0": PhysicalInfo(
+            model="actuator",
+            address=0,
+            sample_interval=0,
+            channels=[
+                Channel(
+                    "pwm",
+                    "pump",
+                    pin="Q0.5",
+                    calibration=Calibration("R2:pump_0"),
+                ),
+            ],
+        ),
+        "R2:pump_1": PhysicalInfo(
+            model="actuator",
+            address=0,
+            sample_interval=0,
+            channels=[
+                Channel(
+                    "pwm",
+                    "pump",
+                    pin="Q0.5",
+                    calibration=Calibration("R2:pump_1"),
+                ),
+            ],
+        ),
+    },
+    "R3": {},
 }
 
-ANALOG_SENSORS = {
-    "R3:ph": PhysicalInfo(
-        model="analog",
-        address=0,
-        sample_interval=5,
-        channels=[
-            Channel("mV", "pH"),
-        ],
-    ),
-    "R3:do": PhysicalInfo(
-        model="analog",
-        address=0,
-        sample_interval=5,
-        channels=[Channel("mV", "dissolved_oxygen")],
-    ),
-}
-
-PUMPS = {
-    "R0:pump_0": PhysicalInfo(
-        model="actuator",
-        address=0,
-        sample_interval=0,
-        channels=[
-            Channel(
-                "pwm",
-                "pump",
-                pin="Q0.5",
-                calibration=Calibration("pump0"),
-            ),
-        ],
-    ),
-    "R0:pump_1": PhysicalInfo(
-        model="actuator",
-        address=0,
-        sample_interval=0,
-        channels=[Channel("pwm", "pump", pin="Q0.6")],
-    ),
-    "R1:pump_0": PhysicalInfo(
-        model="actuator",
-        address=0,
-        sample_interval=0,
-        channels=[Channel("pwm", "pump", pin="Q0.7")],
-    ),
-    "R1:pump_1": PhysicalInfo(
-        model="actuator",
-        address=0,
-        sample_interval=0,
-        channels=[Channel("pwm", "pump", pin="Q0.7")],
-    ),
-    "R2:pump_0": PhysicalInfo(
-        model="actuator",
-        address=0,
-        sample_interval=0,
-        channels=[Channel("pwm", "pump", pin="Q0.7")],
-    ),
-    "R2:pump_1": PhysicalInfo(
-        model="actuator",
-        address=0,
-        sample_interval=0,
-        channels=[Channel("pwm", "pump", pin="Q0.7")],
-    ),
-}
 
 server_vars = {
     "R0": {
-        "ns=2;i=7": copy_info(DO_SENSORS["R0:do"], [Channel("oC")]),
-        "ns=2;i=8": copy_info(DO_SENSORS["R0:do"], [Channel("ppm")]),
-        "ns=2;i=12": copy_info(PUMPS["R0:pump_0"], []),
+        "ns=2;i=7": copy_info(SENSORS["R0"]["R0:do"], [Channel("oC")]),
+        "ns=2;i=8": copy_info(SENSORS["R0"]["R0:do"], [Channel("ppm")]),
+        "ns=2;i=12": copy_info(ACTUATORS["R0"]["R0:pump_0"], []),
+    },
+}
+
+server_test = {
+    "R0": {
+        "ns=2;i=7": copy_info(SENSORS["R0"]["R0:do"], [Channel("oC")]),
+        "ns=2;i=8": copy_info(SENSORS["R0"]["R0:do"], [Channel("ppm")]),
+        "ns=2;i=12": copy_info(ACTUATORS["R0"]["R0:pump_0"], []),
+    },
+    "R2": {
+        "ns=2;i=67": copy_info(SENSORS["R2"]["R2:do"], [Channel("oC")]),
+        "ns=2;i=68": copy_info(SENSORS["R2"]["R2:do"], [Channel("ppm")]),
+        "ns=2;i=72": copy_info(ACTUATORS["R2"]["R2:pump_0"], []),
     },
 }
