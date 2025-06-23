@@ -45,19 +45,23 @@ for r in REACTORS:
     ]
     sensors.update({r: sens})
 
-actuators = {}
-for r in REACTORS:
-    acts = [RandomActuator(k, config) for k, config in ACTUATORS[r].items()]
-    actuators.update({r: acts})
+do_sensors = []
+for k, config in DO_SENSORS.items():
+    sensor = HamiltonSensor(k, config, modbus_client)
+    do_sensors.append(sensor)
+
+#actuators = []
+#for k, config in PUMPS.items():
+#    actuators.append(PlcActuator(k, config))
 
 REACTORS = ["R0"]
 reactors = [
     ReactorOpc(
         r,
         volume=5,
-        sensors=sensors[r],
-        actuators=actuators[r],
-        timer=0.5,
+        sensors=[ph_sensors[i]],
+        actuators=[],
+        timer=4,
     )
     for r in REACTORS
 ]
@@ -69,7 +73,7 @@ async def main() -> None:
 
     server = Server()
     await server.init()
-    server.set_endpoint("opc.tcp://10.10.10.20:55488")
+    server.set_endpoint("opc.tcp://10.10.10.20:55488/")
 
     uri = "http://czlab/biocontroller"
     idx = await server.register_namespace(uri)

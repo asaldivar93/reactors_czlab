@@ -24,83 +24,34 @@ def copy_info(info: PhysicalInfo, channels: list[Channel]) -> PhysicalInfo:
     return new_info
 
 
-hamilton_sample_interval = 10
-REACTORS = ["R0", "R1", "R2", "R3"]
-SENSORS = {
-    "R0": {
-        "R0:ph": PhysicalInfo(
-            model="ArcPh",
-            address=0x01,
-            sample_interval=hamilton_sample_interval,
-            channels=[
-                Channel("pH", "pH", register="pmc1"),
-                Channel("oC", "degree_celsius", register="pmc6"),
-            ],
-        ),
-        "R0:do": PhysicalInfo(
-            model="VisiFerm",
-            address=0x04,
-            sample_interval=hamilton_sample_interval,
-            channels=[
-                Channel("ppm", "dissolved_oxygen", register="pmc1"),
-                Channel("oC", "degree_celsius", register="pmc6"),
-            ],
-        ),
-    },
-    "R1": {
-        "R1:ph": PhysicalInfo(
-            model="ArcPh",
-            address=0x02,
-            sample_interval=hamilton_sample_interval,
-            channels=[
-                Channel("pH", "pH", register="pmc1"),
-                Channel("oC", "degree_celsius", register="pmc6"),
-            ],
-        ),
-        "R1:do": PhysicalInfo(
-            model="VisiFerm",
-            address=0x05,
-            sample_interval=hamilton_sample_interval,
-            channels=[
-                Channel("ppm", "dissolved_oxygen", register="pmc1"),
-                Channel("oC", "degree_celsius", register="pmc6"),
-            ],
-        ),
-    },
-    "R2": {
-        "R2:ph": PhysicalInfo(
-            model="ArcPh",
-            address=0x03,
-            sample_interval=hamilton_sample_interval,
-            channels=[
-                Channel("pH", "pH", register="pmc1"),
-                Channel("oC", "degree_celsius", register="pmc6"),
-            ],
-        ),
-        "R2:do": PhysicalInfo(
-            model="VisiFerm",
-            address=0x06,
-            sample_interval=hamilton_sample_interval,
-            channels=[
-                Channel("ppm", "dissolved_oxygen", register="pmc1"),
-                Channel("oC", "degree_celsius", register="pmc6"),
-            ],
-        ),
-    },
-    "R3": {
-        "R3:ph": PhysicalInfo(
-            model="analog",
-            address=0,
-            sample_interval=5,
-            channels=[Channel("mV", "pH")],
-        ),
-        "R3:do": PhysicalInfo(
-            model="analog",
-            address=0,
-            sample_interval=5,
-            channels=[Channel("mV", "dissolved_oxygen")],
-        ),
-    },
+PH_SENSORS = {
+    "R0:ph": PhysicalInfo(
+        model="ArcPh",
+        address=0x01,
+        sample_interval=10,
+        channels=[
+            Channel("pH", "pH", register="pmc1"),
+            Channel("oC", "degree_celsius", register="pmc6"),
+        ],
+    ),
+    "R1:ph": PhysicalInfo(
+        model="ArcPh",
+        address=0x02,
+        sample_interval=5,
+        channels=[
+            Channel("pH", "pH", register="pmc1"),
+            Channel("oC", "degree_celsius", register="pmc6"),
+        ],
+    ),
+    "R2:ph": PhysicalInfo(
+        model="ArcPh",
+        address=0x03,
+        sample_interval=5,
+        channels=[
+            Channel("pH", "pH", register="pmc1"),
+            Channel("oC", "degree_celsius", register="pmc6"),
+        ],
+    ),
 }
 
 ACTUATORS = {
