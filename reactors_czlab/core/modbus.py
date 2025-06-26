@@ -12,6 +12,7 @@ from pymodbus.constants import Endian
 from pymodbus.exceptions import ModbusException
 from pymodbus.payload import BinaryPayloadBuilder, BinaryPayloadDecoder
 
+# logging.getLogger("pymodbus.client").setLevel(logging.CRITICAL)
 _logger = logging.getLogger("server.modbus_handler")
 
 valid_baudrates = {4800: 2, 9600: 3, 19200: 4, 38400: 5, 57600: 6, 115200: 7}
@@ -82,6 +83,7 @@ class ModbusHandler:
             port=port,
             baudrate=self.baudrate,
             timeout=timeout,
+            retries=0,
             stopbits=1,
             bytesize=8,
             parity="N",
