@@ -15,7 +15,13 @@ authors = [
 dependencies = ["asyncua>=1.1.5"]
 
 [project.optional-dependencies]
-server = ["pymodbus>=3.8.6", "pyserial>=3.5"]
+server = [
+    "pymodbus>=3.8.6",
+    "pyserial>=3.5",
+    "adafruit-circuitpython-busdevice",
+    "adafruit-circuitpython-tca9548a",
+    "adafruit-circuitpython-as7341",
+]
 client = [
     "opcua-client>=0.8.4",
     "psycopg>=3.2.7",

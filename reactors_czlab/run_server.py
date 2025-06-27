@@ -3,6 +3,8 @@
 import asyncio
 import logging
 
+import adafruit_tca9548a
+import board
 from asyncua import Server
 
 from reactors_czlab.core.actuator import RandomActuator
@@ -34,14 +36,19 @@ _stream_handler.setFormatter(_formatter)
 _logger.addHandler(_file_handler)
 _logger.addHandler(_stream_handler)
 
+# Modbus RS485 configuration
 serial_0 = "/dev/ttySC2"
-
 modbus_client = ModbusHandler(
     port=serial_0,
     baudrate=19200,
     timeout=0.5,
 )
 
+# I2C configuration
+i2c = board.I2C()
+tca = adafruit_tca9548a.TCA9548A(i2c)
+
+# Server configuration
 REACTORS = ["R0", "R1", "R2"]
 
 hamilton = {}

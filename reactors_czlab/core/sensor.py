@@ -20,6 +20,8 @@ from reactors_czlab.server_info import VERBOSE
 if TYPE_CHECKING:
     from typing import ClassVar
 
+    import board
+
     from reactors_czlab.core.modbus import ModbusHandler
 
 if IN_RASPBERRYPI:
@@ -440,8 +442,28 @@ class AnalogSensor(Sensor):
 
 
 class SpectralSensor(Sensor):
-    def __init__(self, identifier: str, config: PhysicalInfo) -> None:
+    def __init__(
+        self,
+        identifier: str,
+        config: PhysicalInfo,
+        i2c: board.i2c,
+        led_pin: str,
+    ) -> None:
+        """Analog sensor class. Analog input pins Range(0, 4095) (0-10V).
+
+        Parameters
+        ----------
+        identifier:
+            A unique identifier for the sensor
+        config:
+            PhysicalInfo sensor information: model, address,
+            sample_interval, channels
+        i2c:
+            The I2C bus device
+
+        """
         super().__init__(identifier, config)
+        self.bus = AS7341(i2c)
 
     def read(self):
         for chn in self.channels:

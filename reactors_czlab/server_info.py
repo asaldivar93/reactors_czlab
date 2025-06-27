@@ -280,59 +280,59 @@ MFC_ACTUATORS = {
 }
 
 
-server_vars = {
-    "R0": {
-        "ns=2;i=10": copy_info(BIOMASS_SENSORS["R0"]["R0:biomass"], []),
-        "ns=2;i=7": copy_info(HAMILTON_SENSORS["R0"]["R0:do"], [Channel("oC")]),
-        "ns=2;i=8": copy_info(
-            HAMILTON_SENSORS["R0"]["R0:do"], [Channel("ppm")]
-        ),
-        "ns=2;i=36": copy_info(ANALOG_ACTUATORS["R0"]["R0:light"], []),
-        "ns=2;i=47": copy_info(MFC_ACTUATORS["R0"]["R0:mfc"], []),
-        "ns=2;i=4": copy_info(HAMILTON_SENSORS["R0"]["R0:ph"], [Channel("oC")]),
-        "ns=2;i=5": copy_info(HAMILTON_SENSORS["R0"]["R0:do"], [Channel("pH")]),
-        "ns=2;i=14": copy_info(ANALOG_ACTUATORS["R0"]["R0:pump_0"], []),
-        "ns=2;i=25": copy_info(ANALOG_ACTUATORS["R0"]["R0:pump_0"], []),
-    },
-    "R1": {
-        "ns=2;i=64": copy_info(BIOMASS_SENSORS["R1"]["R1:biomass"], []),
-        "ns=2;i=61": copy_info(
-            HAMILTON_SENSORS["R1"]["R1:do"], [Channel("oC")]
-        ),
-        "ns=2;i=62": copy_info(
-            HAMILTON_SENSORS["R1"]["R1:do"], [Channel("ppm")]
-        ),
-        "ns=2;i=90": copy_info(ANALOG_ACTUATORS["R1"]["R1:light"], []),
-        "ns=2;i=101": copy_info(MFC_ACTUATORS["R1"]["R1:mfc"], []),
-        "ns=2;i=58": copy_info(
-            HAMILTON_SENSORS["R1"]["R1:ph"], [Channel("oC")]
-        ),
-        "ns=2;i=59": copy_info(
-            HAMILTON_SENSORS["R1"]["R1:do"], [Channel("pH")]
-        ),
-        "ns=2;i=68": copy_info(ANALOG_ACTUATORS["R1"]["R1:pump_0"], []),
-        "ns=2;i=79": copy_info(ANALOG_ACTUATORS["R1"]["R1:pump_0"], []),
-    },
-    "R2": {
-        "ns=2;i=118": copy_info(BIOMASS_SENSORS["R2"]["R0:biomass"], []),
-        "ns=2;i=115": copy_info(
-            HAMILTON_SENSORS["R0"]["R0:do"], [Channel("oC")]
-        ),
-        "ns=2;i=116": copy_info(
-            HAMILTON_SENSORS["R0"]["R0:do"], [Channel("ppm")]
-        ),
-        "ns=2;i=144": copy_info(ANALOG_ACTUATORS["R0"]["R0:light"], []),
-        "ns=2;i=155": copy_info(MFC_ACTUATORS["R0"]["R0:mfc"], []),
-        "ns=2;i=112": copy_info(
-            HAMILTON_SENSORS["R0"]["R0:ph"], [Channel("oC")]
-        ),
-        "ns=2;i=113": copy_info(
-            HAMILTON_SENSORS["R0"]["R0:do"], [Channel("pH")]
-        ),
-        "ns=2;i=122": copy_info(ANALOG_ACTUATORS["R0"]["R0:pump_0"], []),
-        "ns=2;i=133": copy_info(ANALOG_ACTUATORS["R0"]["R0:pump_0"], []),
-    },
-}
+# server_vars = {
+#     "R0": {
+#         "ns=2;i=10": copy_info(BIOMASS_SENSORS["R0"]["R0:biomass"], []),
+#         "ns=2;i=7": copy_info(HAMILTON_SENSORS["R0"]["R0:do"], [Channel("oC")]),
+#         "ns=2;i=8": copy_info(
+#             HAMILTON_SENSORS["R0"]["R0:do"], [Channel("ppm")]
+#         ),
+#         "ns=2;i=36": copy_info(ANALOG_ACTUATORS["R0"]["R0:light"], []),
+#         "ns=2;i=47": copy_info(MFC_ACTUATORS["R0"]["R0:mfc"], []),
+#         "ns=2;i=4": copy_info(HAMILTON_SENSORS["R0"]["R0:ph"], [Channel("oC")]),
+#         "ns=2;i=5": copy_info(HAMILTON_SENSORS["R0"]["R0:do"], [Channel("pH")]),
+#         "ns=2;i=14": copy_info(ANALOG_ACTUATORS["R0"]["R0:pump_0"], []),
+#         "ns=2;i=25": copy_info(ANALOG_ACTUATORS["R0"]["R0:pump_0"], []),
+#     },
+#     "R1": {
+#         "ns=2;i=64": copy_info(BIOMASS_SENSORS["R1"]["R1:biomass"], []),
+#         "ns=2;i=61": copy_info(
+#             HAMILTON_SENSORS["R1"]["R1:do"], [Channel("oC")]
+#         ),
+#         "ns=2;i=62": copy_info(
+#             HAMILTON_SENSORS["R1"]["R1:do"], [Channel("ppm")]
+#         ),
+#         "ns=2;i=90": copy_info(ANALOG_ACTUATORS["R1"]["R1:light"], []),
+#         "ns=2;i=101": copy_info(MFC_ACTUATORS["R1"]["R1:mfc"], []),
+#         "ns=2;i=58": copy_info(
+#             HAMILTON_SENSORS["R1"]["R1:ph"], [Channel("oC")]
+#         ),
+#         "ns=2;i=59": copy_info(
+#             HAMILTON_SENSORS["R1"]["R1:do"], [Channel("pH")]
+#         ),
+#         "ns=2;i=68": copy_info(ANALOG_ACTUATORS["R1"]["R1:pump_0"], []),
+#         "ns=2;i=79": copy_info(ANALOG_ACTUATORS["R1"]["R1:pump_0"], []),
+#     },
+#     "R2": {
+#         "ns=2;i=118": copy_info(BIOMASS_SENSORS["R2"]["R0:biomass"], []),
+#         "ns=2;i=115": copy_info(
+#             HAMILTON_SENSORS["R0"]["R0:do"], [Channel("oC")]
+#         ),
+#         "ns=2;i=116": copy_info(
+#             HAMILTON_SENSORS["R0"]["R0:do"], [Channel("ppm")]
+#         ),
+#         "ns=2;i=144": copy_info(ANALOG_ACTUATORS["R0"]["R0:light"], []),
+#         "ns=2;i=155": copy_info(MFC_ACTUATORS["R0"]["R0:mfc"], []),
+#         "ns=2;i=112": copy_info(
+#             HAMILTON_SENSORS["R0"]["R0:ph"], [Channel("oC")]
+#         ),
+#         "ns=2;i=113": copy_info(
+#             HAMILTON_SENSORS["R0"]["R0:do"], [Channel("pH")]
+#         ),
+#         "ns=2;i=122": copy_info(ANALOG_ACTUATORS["R0"]["R0:pump_0"], []),
+#         "ns=2;i=133": copy_info(ANALOG_ACTUATORS["R0"]["R0:pump_0"], []),
+#     },
+# }
 
 # server_test = {
 #     "R0": {
