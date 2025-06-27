@@ -18,6 +18,8 @@ from reactors_czlab.server_info import (
     MFC_ACTUATORS,
 )
 
+logging.getLogger("asyncio").setLevel(logging.CRITICAL)
+
 _logger = logging.getLogger("server")
 _logger.setLevel(logging.DEBUG)
 
@@ -27,10 +29,10 @@ _formatter = logging.Formatter(
 
 _file_handler = logging.FileHandler("record.log")
 _file_handler.setFormatter(_formatter)
-_file_handler.setLevel(logging.DEBUG)
+_file_handler.setLevel(logging.INFO)
 
 _stream_handler = logging.StreamHandler()
-_stream_handler.setLevel(logging.DEBUG)
+_stream_handler.setLevel(logging.INFO)
 _stream_handler.setFormatter(_formatter)
 
 _logger.addHandler(_file_handler)
@@ -41,7 +43,7 @@ serial_0 = "/dev/ttySC2"
 modbus_client = ModbusHandler(
     port=serial_0,
     baudrate=19200,
-    timeout=0.5,
+    timeout=0.1,
 )
 
 # I2C configuration
@@ -114,7 +116,7 @@ async def main() -> None:
                     r.reactor.update()
                     # Update server
                     await r.update()
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(1)
         except KeyboardInterrupt:
             await server.stop()
 

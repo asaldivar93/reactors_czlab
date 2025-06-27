@@ -6,7 +6,7 @@ import time
 from reactors_czlab.core.modbus import ModbusHandler
 from reactors_czlab.core.reactor import IN_RASPBERRYPI
 from reactors_czlab.core.sensor import HamiltonSensor
-from reactors_czlab.server_info import PH_SENSORS
+from reactors_czlab.server_info import HAMILTON_SENSORS
 
 port = "/dev/ttySC2"
 
@@ -15,11 +15,11 @@ if __name__ == "__main__":
         modbus_client = ModbusHandler(
             port=port,
             baudrate=19200,
-            timeout=0.5,
+            timeout=0.05,
         )
         # Your sensor should have the default address 0x01
-        sensor_0 = HamiltonSensor("R0:ph", PH_SENSORS["R0:ph"], modbus_client)
-        sensor_0.address = 0x01
+        sensor_0 = HamiltonSensor("R0:ph", HAMILTON_SENSORS["R0"]["R0:ph"], modbus_client)
+        sensor_0.address = 0x02
         try:
             while True:
                 sensor_0.read()

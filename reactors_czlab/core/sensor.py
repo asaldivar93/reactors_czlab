@@ -375,7 +375,7 @@ class HamiltonSensor(Sensor):
 
         except ModbusError as err:
             error_message = f"Error during read of unit {self.id}\n {err}"
-            _logger.error(error_message)
+            _logger.debug(error_message)
             for chn in self.channels:
                 chn.value = ERROR_VAL
 
