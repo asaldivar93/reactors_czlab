@@ -4,11 +4,7 @@ from copy import deepcopy
 
 from reactors_czlab.core.data import Calibration, Channel, PhysicalInfo
 
-# Hamilton sensors can have addresses from 1 to 32.
-# There are four types of hamilton sensors.
-# We'll divide the address space this way: 1-8: ph_sensors,
-# 9-16: oxygen_sensors, 17-24: incyte_sensors, 25-32: co2_sensors
-VERBOSE = False
+VERBOSE = True
 
 
 def copy_info(info: PhysicalInfo, channels: list[Channel]) -> PhysicalInfo:
@@ -28,132 +24,325 @@ def copy_info(info: PhysicalInfo, channels: list[Channel]) -> PhysicalInfo:
     return new_info
 
 
-PH_SENSORS = {
-    "R0:ph": PhysicalInfo(
-        model="ArcPh",
-        address=0x01,
-        sample_interval=5,
-        channels=[
-            Channel("pH", "pH", register="pmc1"),
-            Channel("oC", "degree_celsius", register="pmc6"),
-        ],
-    ),
-    "R1:ph": PhysicalInfo(
-        model="ArcPh",
-        address=0x02,
-        sample_interval=5,
-        channels=[
-            Channel("pH", "pH", register="pmc1"),
-            Channel("oC", "degree_celsius", register="pmc6"),
-        ],
-    ),
-    "R2:ph": PhysicalInfo(
-        model="ArcPh",
-        address=0x03,
-        sample_interval=5,
-        channels=[
-            Channel("pH", "pH", register="pmc1"),
-            Channel("oC", "degree_celsius", register="pmc6"),
-        ],
-    ),
+HAMILTON_SENSORS = {
+    "R0": {
+        "R0:ph": PhysicalInfo(
+            model="ArcPh",
+            address=0x01,
+            sample_interval=7,
+            channels=[
+                Channel("pH", "pH", register="pmc1"),
+                Channel("oC", "degree_celsius", register="pmc6"),
+            ],
+        ),
+        "R0:do": PhysicalInfo(
+            model="VisiFerm",
+            address=0x04,
+            sample_interval=7,
+            channels=[
+                Channel("ppm", "dissolved_oxygen", register="pmc1"),
+                Channel("oC", "degree_celsius", register="pmc6"),
+            ],
+        ),
+    },
+    "R1": {
+        "R1:ph": PhysicalInfo(
+            model="ArcPh",
+            address=0x02,
+            sample_interval=7,
+            channels=[
+                Channel("pH", "pH", register="pmc1"),
+                Channel("oC", "degree_celsius", register="pmc6"),
+            ],
+        ),
+        "R1:do": PhysicalInfo(
+            model="VisiFerm",
+            address=0x05,
+            sample_interval=7,
+            channels=[
+                Channel("ppm", "dissolved_oxygen", register="pmc1"),
+                Channel("oC", "degree_celsius", register="pmc6"),
+            ],
+        ),
+    },
+    "R2": {
+        "R2:ph": PhysicalInfo(
+            model="ArcPh",
+            address=0x03,
+            sample_interval=7,
+            channels=[
+                Channel("pH", "pH", register="pmc1"),
+                Channel("oC", "degree_celsius", register="pmc6"),
+            ],
+        ),
+        "R2:do": PhysicalInfo(
+            model="VisiFerm",
+            address=0x06,
+            sample_interval=7,
+            channels=[
+                Channel("ppm", "dissolved_oxygen", register="pmc1"),
+                Channel("oC", "degree_celsius", register="pmc6"),
+            ],
+        ),
+    },
 }
 
-DO_SENSORS = {
-    "R0:do": PhysicalInfo(
-        model="VisiFerm",
-        address=0x09,
-        sample_interval=5,
-        channels=[
-            Channel("ppm", "dissolved_oxygen", register="pmc1"),
-            Channel("oC", "degree_celsius", register="pmc6"),
-        ],
-    ),
-    "R1:do": PhysicalInfo(
-        model="VisiFerm",
-        address=0x10,
-        sample_interval=5,
-        channels=[
-            Channel("ppm", "dissolved_oxygen", register="pmc1"),
-            Channel("oC", "degree_celsius", register="pmc6"),
-        ],
-    ),
-    "R2:ph": PhysicalInfo(
-        model="VisiFerm",
-        address=0x11,
-        sample_interval=5,
-        channels=[
-            Channel("ppm", "dissolved_oxygen", register="pmc1"),
-            Channel("oC", "degree_celsius", register="pmc6"),
-        ],
-    ),
+BIOMASS_SENSORS = {
+    "R0": {
+        "R0:biomass": PhysicalInfo(
+            model="biomass",
+            address=0x32,
+            sample_interval=7,
+            channels=[
+                Channel("light", "dimensionles", register="all"),
+            ],
+        ),
+    },
+    "R1": {
+        "R1:biomass": PhysicalInfo(
+            model="biomass",
+            address=0x32,
+            sample_interval=7,
+            channels=[
+                Channel("light", "dimensionles", register="all"),
+            ],
+        ),
+    },
+    "R2": {
+        "R2:biomass": PhysicalInfo(
+            model="biomass",
+            address=0x32,
+            sample_interval=7,
+            channels=[
+                Channel("light", "dimensionles", register="all"),
+            ],
+        ),
+    },
 }
 
-ANALOG_SENSORS = {
-    "R3:ph": PhysicalInfo(
-        model="analog",
-        address=0,
-        sample_interval=5,
-        channels=[
-            Channel("mV", "pH"),
-        ],
-    ),
-    "R3:do": PhysicalInfo(
-        model="analog",
-        address=0,
-        sample_interval=5,
-        channels=[Channel("mV", "dissolved_oxygen")],
-    ),
+ANALOG_ACTUATORS = {
+    "R0": {
+        "R0:pump_0": PhysicalInfo(
+            model="pump",
+            address=0,
+            sample_interval=0,
+            channels=[
+                Channel(
+                    "pwm",
+                    "pump_pwm",
+                    pin="Q0.5",
+                    calibration=Calibration("pump_0"),
+                ),
+            ],
+        ),
+        "R0:pump_1": PhysicalInfo(
+            model="pump",
+            address=0,
+            sample_interval=0,
+            channels=[
+                Channel(
+                    "pwm",
+                    "pump_pwm",
+                    pin="Q0.5",
+                    calibration=Calibration("pump_1"),
+                ),
+            ],
+        ),
+        "R0:light": PhysicalInfo(
+            model="light",
+            address=0,
+            sample_interval=0,
+            channels=[
+                Channel(
+                    "pwm",
+                    "led_pwm",
+                    pin="Q0.5",
+                    calibration=Calibration("pump_1"),
+                ),
+            ],
+        ),
+    },
+    "R1": {
+        "R1:pump_0": PhysicalInfo(
+            model="pump",
+            address=0,
+            sample_interval=0,
+            channels=[
+                Channel(
+                    "pwm",
+                    "pump_pwm",
+                    pin="Q0.5",
+                    calibration=Calibration("pump_0"),
+                ),
+            ],
+        ),
+        "R1:pump_1": PhysicalInfo(
+            model="pump",
+            address=0,
+            sample_interval=0,
+            channels=[
+                Channel(
+                    "pwm",
+                    "pump_pwm",
+                    pin="Q0.5",
+                    calibration=Calibration("pump_1"),
+                ),
+            ],
+        ),
+        "R1:light": PhysicalInfo(
+            model="light",
+            address=0,
+            sample_interval=0,
+            channels=[
+                Channel(
+                    "pwm",
+                    "led_pwm",
+                    pin="Q0.5",
+                    calibration=Calibration("pump_1"),
+                ),
+            ],
+        ),
+    },
+    "R2": {
+        "R2:pump_0": PhysicalInfo(
+            model="pump",
+            address=0,
+            sample_interval=0,
+            channels=[
+                Channel(
+                    "pwm",
+                    "pump_pwm",
+                    pin="Q0.5",
+                    calibration=Calibration("pump_0"),
+                ),
+            ],
+        ),
+        "R2:pump_1": PhysicalInfo(
+            model="pump",
+            address=0,
+            sample_interval=0,
+            channels=[
+                Channel(
+                    "pwm",
+                    "pump_pwm",
+                    pin="Q0.5",
+                    calibration=Calibration("pump_1"),
+                ),
+            ],
+        ),
+        "R2:light": PhysicalInfo(
+            model="light",
+            address=0,
+            sample_interval=0,
+            channels=[
+                Channel(
+                    "pwm",
+                    "led_pwm",
+                    pin="Q0.5",
+                    calibration=Calibration("pump_1"),
+                ),
+            ],
+        ),
+    },
 }
 
-PUMPS = {
-    "R0:pump_0": PhysicalInfo(
-        model="actuator",
-        address=0,
-        sample_interval=0,
-        channels=[
-            Channel(
-                "pwm",
-                "pump",
-                pin="Q0.5",
-                calibration=Calibration("pump0"),
-            ),
-        ],
-    ),
-    "R0:pump_1": PhysicalInfo(
-        model="actuator",
-        address=0,
-        sample_interval=0,
-        channels=[Channel("pwm", "pump", pin="Q0.6")],
-    ),
-    "R1:pump_0": PhysicalInfo(
-        model="actuator",
-        address=0,
-        sample_interval=0,
-        channels=[Channel("pwm", "pump", pin="Q0.7")],
-    ),
-    "R1:pump_1": PhysicalInfo(
-        model="actuator",
-        address=0,
-        sample_interval=0,
-        channels=[Channel("pwm", "pump", pin="Q0.7")],
-    ),
-    "R2:pump_0": PhysicalInfo(
-        model="actuator",
-        address=0,
-        sample_interval=0,
-        channels=[Channel("pwm", "pump", pin="Q0.7")],
-    ),
-    "R2:pump_1": PhysicalInfo(
-        model="actuator",
-        address=0,
-        sample_interval=0,
-        channels=[Channel("pwm", "pump", pin="Q0.7")],
-    ),
+MFC_ACTUATORS = {
+    "R0": {
+        "R0:mfc": PhysicalInfo(
+            model="mfc",
+            address=0,
+            sample_interval=0,
+            channels=[
+                Channel("lpm", "liters_per_minute", register="pmc1"),
+            ],
+        ),
+    },
+    "R1": {
+        "R1:mfc": PhysicalInfo(
+            model="mfc",
+            address=0,
+            sample_interval=0,
+            channels=[
+                Channel("lpm", "liters_per_minute", register="pmc1"),
+            ],
+        ),
+    },
+    "R2": {
+        "R2:mfc": PhysicalInfo(
+            model="mfc",
+            address=0,
+            sample_interval=0,
+            channels=[
+                Channel("lpm", "liters_per_minute", register="pmc1"),
+            ],
+        ),
+    },
 }
+
 
 server_vars = {
     "R0": {
-        "ns=2;i=4": copy_info(PH_SENSORS["R0:ph"], [Channel("pH")]),
-        "ns=2;i=5": copy_info(PH_SENSORS["R0:ph"], [Channel("oC")]),
+        "ns=2;i=10": copy_info(BIOMASS_SENSORS["R0"]["R0:biomass"], []),
+        "ns=2;i=7": copy_info(HAMILTON_SENSORS["R0"]["R0:do"], [Channel("oC")]),
+        "ns=2;i=8": copy_info(
+            HAMILTON_SENSORS["R0"]["R0:do"], [Channel("ppm")]
+        ),
+        "ns=2;i=36": copy_info(ANALOG_ACTUATORS["R0"]["R0:light"], []),
+        "ns=2;i=47": copy_info(MFC_ACTUATORS["R0"]["R0:mfc"], []),
+        "ns=2;i=4": copy_info(HAMILTON_SENSORS["R0"]["R0:ph"], [Channel("oC")]),
+        "ns=2;i=5": copy_info(HAMILTON_SENSORS["R0"]["R0:ph"], [Channel("pH")]),
+        "ns=2;i=14": copy_info(ANALOG_ACTUATORS["R0"]["R0:pump_0"], []),
+        "ns=2;i=25": copy_info(ANALOG_ACTUATORS["R0"]["R0:pump_0"], []),
+    },
+    "R1": {
+        "ns=2;i=64": copy_info(BIOMASS_SENSORS["R1"]["R1:biomass"], []),
+        "ns=2;i=61": copy_info(
+            HAMILTON_SENSORS["R1"]["R1:do"], [Channel("oC")]
+        ),
+        "ns=2;i=62": copy_info(
+            HAMILTON_SENSORS["R1"]["R1:do"], [Channel("ppm")]
+        ),
+        "ns=2;i=90": copy_info(ANALOG_ACTUATORS["R1"]["R1:light"], []),
+        "ns=2;i=101": copy_info(MFC_ACTUATORS["R1"]["R1:mfc"], []),
+        "ns=2;i=58": copy_info(
+            HAMILTON_SENSORS["R1"]["R1:ph"], [Channel("oC")]
+        ),
+        "ns=2;i=59": copy_info(
+            HAMILTON_SENSORS["R1"]["R1:ph"], [Channel("pH")]
+        ),
+        "ns=2;i=68": copy_info(ANALOG_ACTUATORS["R1"]["R1:pump_0"], []),
+        "ns=2;i=79": copy_info(ANALOG_ACTUATORS["R1"]["R1:pump_0"], []),
+    },
+    "R2": {
+        "ns=2;i=118": copy_info(BIOMASS_SENSORS["R2"]["R2:biomass"], []),
+        "ns=2;i=115": copy_info(
+            HAMILTON_SENSORS["R2"]["R2:do"], [Channel("oC")]
+        ),
+        "ns=2;i=116": copy_info(
+            HAMILTON_SENSORS["R2"]["R2:do"], [Channel("ppm")]
+        ),
+        "ns=2;i=144": copy_info(ANALOG_ACTUATORS["R2"]["R2:light"], []),
+        "ns=2;i=155": copy_info(MFC_ACTUATORS["R2"]["R2:mfc"], []),
+        "ns=2;i=112": copy_info(
+            HAMILTON_SENSORS["R2"]["R2:ph"], [Channel("oC")]
+        ),
+        "ns=2;i=113": copy_info(
+            HAMILTON_SENSORS["R2"]["R2:ph"], [Channel("pH")]
+        ),
+        "ns=2;i=122": copy_info(ANALOG_ACTUATORS["R2"]["R2:pump_0"], []),
+        "ns=2;i=133": copy_info(ANALOG_ACTUATORS["R2"]["R2:pump_0"], []),
     },
 }
+
+# server_test = {
+#     "R0": {
+#         "ns=2;i=7": copy_info(SENSORS["R0"]["R0:do"], [Channel("oC")]),
+#         "ns=2;i=8": copy_info(SENSORS["R0"]["R0:do"], [Channel("ppm")]),
+#         "ns=2;i=12": copy_info(ACTUATORS["R0"]["R0:pump_0"], []),
+#     },
+#     "R2": {
+#         "ns=2;i=67": copy_info(SENSORS["R2"]["R2:do"], [Channel("oC")]),
+#         "ns=2;i=68": copy_info(SENSORS["R2"]["R2:do"], [Channel("ppm")]),
+#         "ns=2;i=72": copy_info(ACTUATORS["R2"]["R2:pump_0"], []),
+#     },
+# }

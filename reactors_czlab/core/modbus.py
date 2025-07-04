@@ -12,6 +12,7 @@ from pymodbus.constants import Endian
 from pymodbus.exceptions import ModbusException
 from pymodbus.payload import BinaryPayloadBuilder, BinaryPayloadDecoder
 
+# logging.getLogger("pymodbus.client").setLevel(logging.CRITICAL)
 _logger = logging.getLogger("server.modbus_handler")
 
 valid_baudrates = {4800: 2, 9600: 3, 19200: 4, 38400: 5, 57600: 6, 115200: 7}
@@ -62,7 +63,7 @@ class ModbusHandler:
         self,
         port: str = "/dev/ttyUSB0",
         baudrate: int = 19200,
-        timeout: float = 0.5,
+        timeout: float = 0.1,
     ):
         """Initialize the Modbus handler.
 
@@ -82,13 +83,14 @@ class ModbusHandler:
             port=port,
             baudrate=self.baudrate,
             timeout=timeout,
+            retries=0,
             stopbits=1,
             bytesize=8,
             parity="N",
         )
 
         if not self.client.connect():
-            error_message = "Failed to connect to Modbus device"
+            error_message = f"Failed to connect to Modbus device at port {port}"
             raise ModbusError(error_message)
         self._last_result = None
         _logger.info(f"Initialized ModbusHandler at port: {port}")
@@ -167,7 +169,7 @@ class ModbusHandler:
 
             if result.isError():
                 error_message = f"\
-                Error during {request.operation} \
+                ModbusError: Error during {request.operation} \
                 on {request.register} on unit {request.address} \
                 with code {result.exception_code}"
                 raise ModbusError(error_message)

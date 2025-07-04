@@ -6,10 +6,14 @@ import logging
 from asyncua import Server
 
 from reactors_czlab.core.actuator import RandomActuator
-from reactors_czlab.core.data import Channel, PhysicalInfo
 from reactors_czlab.core.sensor import RandomSensor
 from reactors_czlab.opcua import ReactorOpc
-from reactors_czlab.server_info import DO_SENSORS, PH_SENSORS
+from reactors_czlab.server_info import (
+    ANALOG_ACTUATORS,
+    BIOMASS_SENSORS,
+    HAMILTON_SENSORS,
+    MFC_ACTUATORS,
+)
 
 _logger = logging.getLogger("server")
 _logger.setLevel(logging.DEBUG)
@@ -29,53 +33,42 @@ _stream_handler.setFormatter(_formatter)
 _logger.addHandler(_file_handler)
 _logger.addHandler(_stream_handler)
 
-actuators_dict = {
-    "R0:pump": PhysicalInfo(
-        "any",
-        0,
-        0,
-        [Channel("analog", "pump", pin="Q0.5")],
-    ),
-    "R1:pump": PhysicalInfo(
-        "any",
-        0,
-        0,
-        [Channel("analog", "pump", pin="Q0.6")],
-    ),
-    "R2:pump": PhysicalInfo(
-        "any",
-        0,
-        0,
-        [Channel("analog", "pump", pin="Q0.7")],
-    ),
-}
+REACTORS = ["R0", "R1", "R2"]
 
-ph_sensors = []
-for k, config in PH_SENSORS.items():
-    sensor = RandomSensor(k, config)
-    ph_sensors.append(sensor)
+hamilton = {}
+for r in REACTORS:
+    sens = [
+        RandomSensor(k, config) for k, config in HAMILTON_SENSORS[r].items()
+    ]
+    hamilton.update({r: sens})
 
-do_sensors = []
-for k, config in DO_SENSORS.items():
-    sensor = RandomSensor(k, config)
-    do_sensors.append(sensor)
+biomass = {}
+for r in REACTORS:
+    sens = [RandomSensor(k, config) for k, config in BIOMASS_SENSORS[r].items()]
+    biomass.update({r: sens})
 
-actuators = []
-for k, config in actuators_dict.items():
-    actuators.append(RandomActuator(k, config))
+analog = {}
+for r in REACTORS:
+    acts = [
+        RandomActuator(k, config) for k, config in ANALOG_ACTUATORS[r].items()
+    ]
+    analog.update({r: acts})
+
+mfc = {}
+for r in REACTORS:
+    acts = [RandomActuator(k, config) for k, config in MFC_ACTUATORS[r].items()]
+    mfc.update({r: acts})
 
 reactors = [
     ReactorOpc(
-        f"R{i}",
+        r,
         volume=5,
-        sensors=[ph_sensors[i]],
-        actuators=[actuators[i]],
-        timer=10,
+        sensors=[*hamilton[r], *biomass[r]],
+        actuators=[*analog[r], *mfc[r]],
+        timer=7,
     )
-    for i in range(3)
+    for r in REACTORS
 ]
-
-# reactors = [reactors.pop(0)]
 
 
 async def main() -> None:

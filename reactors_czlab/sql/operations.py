@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 import polars as pl
 import psycopg
 
-VERBOSE = True
+from reactors_czlab.server_info import VERBOSE
 
 if TYPE_CHECKING:
     from psycopg import Connection, Cursor
