@@ -21,6 +21,7 @@ server = [
     "adafruit-circuitpython-busdevice",
     "adafruit-circuitpython-tca9548a",
     "adafruit-circuitpython-as7341",
+    "adafruit-circuitpython-tlc59711",
 ]
 client = [
     "opcua-client>=0.8.4",

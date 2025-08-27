@@ -20,15 +20,23 @@ from reactors_czlab.server_info import VERBOSE
 if TYPE_CHECKING:
     from typing import ClassVar
 
-    import board
-
     from reactors_czlab.core.modbus import ModbusHandler
 
 if IN_RASPBERRYPI:
+    import board
+    import busio
+    from adafruit_as7341 import AS7341
+    from adafruit_tlc59711 import TLC59711
+
     from reactors_czlab.core.reactor import rpiplc
 
-_logger = logging.getLogger("server.sensors")
+    spi = busio.SPI(board.SCK, MOSI=board.MOSI)
+    led_driver = TLC59711(spi, pixel_count=16)
+    current_led = -1
+
 ERROR_VAL = -0.111
+
+_logger = logging.getLogger("server.sensors")
 
 
 class _RegisterInfo(NamedTuple):
@@ -446,10 +454,9 @@ class SpectralSensor(Sensor):
         self,
         identifier: str,
         config: PhysicalInfo,
-        i2c: board.i2c,
-        led_pin: str,
+        i2c: busio.I2C,
     ) -> None:
-        """Analog sensor class. Analog input pins Range(0, 4095) (0-10V).
+        """AS7341 spectral sensor.
 
         Parameters
         ----------
@@ -464,7 +471,24 @@ class SpectralSensor(Sensor):
         """
         super().__init__(identifier, config)
         self.bus = AS7341(i2c)
+        if current_led == led_driver.channel_count:
+            raise AttributeError("All led channels are used")
+        self.led = current_led + 1
+        led_driver.set_channel(self.led, 65535)
 
-    def read(self):
+    def read(self) -> None:
+        """Read spectral sensor."""
+        values = {
+            "415": self.bus.channel_415nm,
+            "445": self.bus.channel_445nm,
+            "480": self.bus.channel_480nm,
+            "515": self.bus.channel_515nm,
+            "555": self.bus.channel_555nm,
+            "590": self.bus.channel_590nm,
+            "630": self.bus.channel_630nm,
+            "680": self.bus.channel_680nm,
+            "clear": self.bus.channel_clear,
+            "nir": self.bus.channel_nir,
+        }
         for chn in self.channels:
-            chn.value = ERROR_VAL
+            chn.value = values[chn.units]

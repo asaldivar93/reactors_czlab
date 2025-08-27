@@ -24,25 +24,28 @@ def copy_info(info: PhysicalInfo, channels: list[Channel]) -> PhysicalInfo:
     return new_info
 
 
+ph_channels = [
+    Channel("pH", "pH", register="pmc1"),
+    Channel("oC", "degree_celsius", register="pmc6"),
+]
+do_channels = [
+    Channel("ppm", "dissolved_oxygen", register="pmc1"),
+    Channel("oC", "degree_celsius", register="pmc6"),
+]
+
 HAMILTON_SENSORS = {
     "R0": {
         "R0:ph": PhysicalInfo(
             model="ArcPh",
             address=0x01,
             sample_interval=7,
-            channels=[
-                Channel("pH", "pH", register="pmc1"),
-                Channel("oC", "degree_celsius", register="pmc6"),
-            ],
+            channels=ph_channels,
         ),
         "R0:do": PhysicalInfo(
             model="VisiFerm",
             address=0x04,
             sample_interval=7,
-            channels=[
-                Channel("ppm", "dissolved_oxygen", register="pmc1"),
-                Channel("oC", "degree_celsius", register="pmc6"),
-            ],
+            channels=do_channels,
         ),
     },
     "R1": {
@@ -50,19 +53,13 @@ HAMILTON_SENSORS = {
             model="ArcPh",
             address=0x02,
             sample_interval=7,
-            channels=[
-                Channel("pH", "pH", register="pmc1"),
-                Channel("oC", "degree_celsius", register="pmc6"),
-            ],
+            channels=ph_channels,
         ),
         "R1:do": PhysicalInfo(
             model="VisiFerm",
             address=0x05,
             sample_interval=7,
-            channels=[
-                Channel("ppm", "dissolved_oxygen", register="pmc1"),
-                Channel("oC", "degree_celsius", register="pmc6"),
-            ],
+            channels=do_channels,
         ),
     },
     "R2": {
@@ -70,32 +67,38 @@ HAMILTON_SENSORS = {
             model="ArcPh",
             address=0x03,
             sample_interval=7,
-            channels=[
-                Channel("pH", "pH", register="pmc1"),
-                Channel("oC", "degree_celsius", register="pmc6"),
-            ],
+            channels=ph_channels,
         ),
         "R2:do": PhysicalInfo(
             model="VisiFerm",
             address=0x06,
             sample_interval=7,
-            channels=[
-                Channel("ppm", "dissolved_oxygen", register="pmc1"),
-                Channel("oC", "degree_celsius", register="pmc6"),
-            ],
+            channels=do_channels,
         ),
     },
 }
 
+as7341_channels = [
+    Channel("415", "dimensionles", register="all"),
+    Channel("445", "dimensionles", register="all"),
+    Channel("480", "dimensionles", register="all"),
+    Channel("515", "dimensionles", register="all"),
+    Channel("555", "dimensionles", register="all"),
+    Channel("590", "dimensionles", register="all"),
+    Channel("630", "dimensionles", register="all"),
+    Channel("680", "dimensionles", register="all"),
+    Channel("415", "dimensionles", register="all"),
+    Channel("415", "dimensionles", register="all"),
+    Channel("clear", "dimensionles", register="all"),
+    Channel("nir", "dimensionles", register="all"),
+]
 BIOMASS_SENSORS = {
     "R0": {
         "R0:biomass": PhysicalInfo(
             model="biomass",
             address=0x32,
             sample_interval=7,
-            channels=[
-                Channel("light", "dimensionles", register="all"),
-            ],
+            channels=as7341_channels,
         ),
     },
     "R1": {
@@ -103,9 +106,7 @@ BIOMASS_SENSORS = {
             model="biomass",
             address=0x32,
             sample_interval=7,
-            channels=[
-                Channel("light", "dimensionles", register="all"),
-            ],
+            channels=as7341_channels,
         ),
     },
     "R2": {
@@ -113,9 +114,7 @@ BIOMASS_SENSORS = {
             model="biomass",
             address=0x32,
             sample_interval=7,
-            channels=[
-                Channel("light", "dimensionles", register="all"),
-            ],
+            channels=as7341_channels,
         ),
     },
 }

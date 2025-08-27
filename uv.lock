@@ -107,6 +107,18 @@ wheels = [
 ]
 
 [[package]]
+name = "adafruit-circuitpython-tlc59711"
+version = "2.0.17"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "adafruit-blinka" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/6a/0c/8720ade9bc807306d9d86022900f81e7b53d5792768c4380fd96940ea113/adafruit_circuitpython_tlc59711-2.0.17.tar.gz", hash = "sha256:1056119606fbdf44c475bee156aa679d0cfbb0a9d4a5c93137bd9503c7ee6e4f", size = 33684 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b1/ae/0c2edcab62a63faccbac108dcc544e33a2988b1bb895aae948087c389250/adafruit_circuitpython_tlc59711-2.0.17-py3-none-any.whl", hash = "sha256:b3aabc573ad038d47de2e0adae4d12d51ec71e9ead24006536837feaffdc525b", size = 11803 },
+]
+
+[[package]]
 name = "adafruit-circuitpython-typing"
 version = "1.12.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1330,6 +1342,7 @@ server = [
     { name = "adafruit-circuitpython-as7341" },
     { name = "adafruit-circuitpython-busdevice" },
     { name = "adafruit-circuitpython-tca9548a" },
+    { name = "adafruit-circuitpython-tlc59711" },
     { name = "pymodbus" },
     { name = "pyserial" },
 ]
@@ -1339,6 +1352,7 @@ requires-dist = [
     { name = "adafruit-circuitpython-as7341", marker = "extra == 'server'" },
     { name = "adafruit-circuitpython-busdevice", marker = "extra == 'server'" },
     { name = "adafruit-circuitpython-tca9548a", marker = "extra == 'server'" },
+    { name = "adafruit-circuitpython-tlc59711", marker = "extra == 'server'" },
     { name = "asyncua", specifier = ">=1.1.5" },
     { name = "ipykernel", marker = "extra == 'client'", specifier = ">=6.29.5" },
     { name = "matplotlib", marker = "extra == 'client'" },
