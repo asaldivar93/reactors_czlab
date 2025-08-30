@@ -1,5 +1,3 @@
-"""OPC server."""
-
 import asyncio
 import logging
 
@@ -65,40 +63,40 @@ reactors = [
         volume=5,
         sensors=[*hamilton[r], *biomass[r]],
         actuators=[*analog[r], *mfc[r]],
-        timer=7,
+        period=10,
     )
     for r in REACTORS
 ]
 
 
-async def main() -> None:
-    """Run the server."""
-    # Init the server
-
+async def main():
     server = Server()
     await server.init()
     server.set_endpoint("opc.tcp://localhost:4840/")
-
     uri = "http://czlab/biocontroller"
     idx = await server.register_namespace(uri)
-
     # Create reactors, sensor and actuator nodes
-    for reactor_i in reactors:
-        await reactor_i.init_node(server, idx)
+    tasks = []
+    for r_i in reactors:
+        await r_i.init_node(server, idx)
+        tasks.extend(
+            [
+                asyncio.create_task(r_i.reactor.slow_loop()),
+                asyncio.create_task(r_i.reactor.fast_loop()),
+                asyncio.create_task(r_i.update()),
+            ],
+        )
 
+    await server.start()
     _logger.info("Server Started")
-    async with server:
-        try:
-            while True:
-                for r in reactors:
-                    # Read sensors, write actuators
-                    r.reactor.update()
-                    # Update server
-                    await r.update()
-                await asyncio.sleep(0.1)
-        except KeyboardInterrupt:
-            await server.stop()
+    try:
+        await asyncio.gather(*tasks)
+    except KeyboardInterrupt:
+        for r_i in reactors:
+            r_i.stop()
+    finally:
+        await server.stop()
 
 
 if __name__ == "__main__":
-    asyncio.run(main(), debug=True)
+    asyncio.run(main())

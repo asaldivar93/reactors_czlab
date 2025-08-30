@@ -9,11 +9,9 @@ from typing import TYPE_CHECKING, ClassVar
 from reactors_czlab.core.control import ControlFactory, _Control
 from reactors_czlab.core.data import ControlConfig, ControlMethod
 from reactors_czlab.core.reactor import IN_RASPBERRYPI
-from reactors_czlab.core.sensor import Sensor
-from reactors_czlab.core.utils import Timer
 
 if TYPE_CHECKING:
-    from reactors_czlab.core.data import PhysicalInfo
+    from reactors_czlab.core.data import ControlConfig, PhysicalInfo
 
 if IN_RASPBERRYPI:
     from reactors_czlab.core.reactor import rpiplc
@@ -47,10 +45,6 @@ class Actuator(ABC):
         self.controller = ControlFactory().create_control(
             ControlConfig(method=ControlMethod.manual, value=0),
         )
-        self.base_timer: Timer | None = None
-        self._timer = None
-        self.reference_sensor = None
-        self.sensors = None
 
     def __repr__(self) -> str:
         """Print sensor id."""
@@ -60,60 +54,6 @@ class Actuator(ABC):
         """Test equality by senor id."""
         this = self.id
         return this == other
-
-    @property
-    def sensors(self) -> dict[str, Sensor] | None:
-        """Return a Dict of Sensors."""
-        return self._sensors
-
-    @sensors.setter
-    def sensors(self, sensors: list[Sensor] | None) -> None:
-        """Set available sensors."""
-        if not isinstance(sensors, list | None):
-            raise TypeError
-        if sensors is None:
-            self._sensors = None
-        else:
-            self._sensors = {s.id: s for s in sensors}
-
-    @property
-    def reference_sensor(self) -> Sensor | None:
-        """Sensor instance used as a reference."""
-        return self._reference_sensor
-
-    @reference_sensor.setter
-    def reference_sensor(self, sensor: Sensor | str | None) -> None:
-        """Set reference sensor."""
-        if not isinstance(sensor, Sensor | None | str):
-            raise TypeError
-        if isinstance(sensor, str):
-            sensor = self.sensors.get(sensor, None)
-        if sensor is None:
-            self.timer = self.base_timer
-        else:
-            self.timer = sensor.timer
-        self._reference_sensor = sensor
-        _logger.info(f"Updated sensor {self._reference_sensor} in {self.id}")
-
-    @property
-    def timer(self) -> Timer | None:
-        """Timer getter."""
-        return self._timer
-
-    @timer.setter
-    def timer(self, timer: Timer | None) -> None:
-        """Timer setter."""
-        if not isinstance(timer, Timer | None):
-            raise TypeError
-
-        if self._timer is not None:
-            self._timer.remove_actuator(self)
-
-        if timer is None:
-            timer = self.base_timer
-        else:
-            timer.add_actuator(self)
-        self._timer = timer
 
     @property
     def controller(self) -> _Control:
@@ -126,23 +66,14 @@ class Actuator(ABC):
             raise TypeError
         self._controller = controller
 
-    def on_timer_callback(self) -> None:
-        """Timer callback."""
-        self.write_output()
-
-    def write_output(self) -> None:
+    def write_output(self, sens_value: float) -> None:
         """Write the actuator values."""
-        try:
-            value = self.controller.get_value(self.reference_sensor)
+        value = self.controller.get_value(sens_value)
+        old_value = self.channel.old_value
+        if value != old_value:
+            self.channel.old_value = value
             self.write(value)
             _logger.debug(f"Write {value} to {self.id}: {self.controller}")
-
-        except AttributeError:
-            # Catch an exception when the user hasn't set a reference sensor
-            # before setting _OnBoundaries or _PidControl classes
-            _logger.error(f"None sensor in {self.id}")
-            _logger.warning(f"Setting output in {self.id} = 0")
-            self.write(0)
 
     def set_control_config(self, config: ControlConfig) -> None:
         """Change the current configuration of the actuator outputs.
@@ -227,7 +158,7 @@ class PlcActuator(Actuator):
             rpiplc.pin_mode(chn.pin, rpiplc.OUTPUT)
             mode = chn.type
             if mode == "pwm":
-                rpiplc.analog_write_set_frequency(chn.pin, 24)
+                rpiplc.analog_write_set_frequency(chn.pin, 100)
 
     def write(self, value: float) -> None:
         """Write to physical pin."""
@@ -235,6 +166,7 @@ class PlcActuator(Actuator):
             chn = self.channel
             rpiplc.analog_write(chn.register, value)
             chn.value = value
+            _logger.debug(f"Actuator {self.id} - {value}")
 
 
 class ModbusActuator(Actuator):

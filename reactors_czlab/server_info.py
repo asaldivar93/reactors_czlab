@@ -38,13 +38,13 @@ HAMILTON_SENSORS = {
         "R0:ph": PhysicalInfo(
             model="ArcPh",
             address=0x01,
-            sample_interval=7,
             channels=ph_channels,
+            type="digital",
         ),
         "R0:do": PhysicalInfo(
             model="VisiFerm",
             address=0x04,
-            sample_interval=7,
+            type="digital",
             channels=do_channels,
         ),
     },
@@ -52,13 +52,13 @@ HAMILTON_SENSORS = {
         "R1:ph": PhysicalInfo(
             model="ArcPh",
             address=0x02,
-            sample_interval=7,
+            type="digital",
             channels=ph_channels,
         ),
         "R1:do": PhysicalInfo(
             model="VisiFerm",
             address=0x05,
-            sample_interval=7,
+            type="digital",
             channels=do_channels,
         ),
     },
@@ -66,13 +66,13 @@ HAMILTON_SENSORS = {
         "R2:ph": PhysicalInfo(
             model="ArcPh",
             address=0x03,
-            sample_interval=7,
+            type="digital",
             channels=ph_channels,
         ),
         "R2:do": PhysicalInfo(
             model="VisiFerm",
             address=0x06,
-            sample_interval=7,
+            type="digital",
             channels=do_channels,
         ),
     },
@@ -97,7 +97,7 @@ BIOMASS_SENSORS = {
         "R0:biomass": PhysicalInfo(
             model="biomass",
             address=0x32,
-            sample_interval=7,
+            type="digital",
             channels=as7341_channels,
         ),
     },
@@ -105,7 +105,7 @@ BIOMASS_SENSORS = {
         "R1:biomass": PhysicalInfo(
             model="biomass",
             address=0x32,
-            sample_interval=7,
+            type="digital",
             channels=as7341_channels,
         ),
     },
@@ -113,7 +113,7 @@ BIOMASS_SENSORS = {
         "R2:biomass": PhysicalInfo(
             model="biomass",
             address=0x32,
-            sample_interval=7,
+            type="digital",
             channels=as7341_channels,
         ),
     },
@@ -121,10 +121,10 @@ BIOMASS_SENSORS = {
 
 ANALOG_ACTUATORS = {
     "R0": {
-        "R0:pump_0": PhysicalInfo(
-            model="pump",
+        "R0:pwm0": PhysicalInfo(
+            model="pwm",
             address=0,
-            sample_interval=0,
+            type="pwm",
             channels=[
                 Channel(
                     "pwm",
@@ -134,10 +134,10 @@ ANALOG_ACTUATORS = {
                 ),
             ],
         ),
-        "R0:pump_1": PhysicalInfo(
-            model="pump",
+        "R0:pwm1": PhysicalInfo(
+            model="pwm",
             address=0,
-            sample_interval=0,
+            type="pwm",
             channels=[
                 Channel(
                     "pwm",
@@ -147,10 +147,23 @@ ANALOG_ACTUATORS = {
                 ),
             ],
         ),
-        "R0:light": PhysicalInfo(
-            model="light",
+        "R0:pwm2": PhysicalInfo(
+            model="pwm",
             address=0,
-            sample_interval=0,
+            type="pwm",
+            channels=[
+                Channel(
+                    "pwm",
+                    "led_pwm",
+                    pin="Q0.5",
+                    calibration=Calibration("pump_1"),
+                ),
+            ],
+        ),
+        "R0:pwm3": PhysicalInfo(
+            model="pwm",
+            address=0,
+            type="pwm",
             channels=[
                 Channel(
                     "pwm",
@@ -162,10 +175,10 @@ ANALOG_ACTUATORS = {
         ),
     },
     "R1": {
-        "R1:pump_0": PhysicalInfo(
-            model="pump",
+        "R1:pwm0": PhysicalInfo(
+            model="pwm",
             address=0,
-            sample_interval=0,
+            type="pwm",
             channels=[
                 Channel(
                     "pwm",
@@ -175,10 +188,10 @@ ANALOG_ACTUATORS = {
                 ),
             ],
         ),
-        "R1:pump_1": PhysicalInfo(
-            model="pump",
+        "R1:pwm1": PhysicalInfo(
+            model="pwm",
             address=0,
-            sample_interval=0,
+            type="pwm",
             channels=[
                 Channel(
                     "pwm",
@@ -188,10 +201,23 @@ ANALOG_ACTUATORS = {
                 ),
             ],
         ),
-        "R1:light": PhysicalInfo(
-            model="light",
+        "R1:pwm2": PhysicalInfo(
+            model="pwm",
             address=0,
-            sample_interval=0,
+            type="pwm",
+            channels=[
+                Channel(
+                    "pwm",
+                    "led_pwm",
+                    pin="Q0.5",
+                    calibration=Calibration("pump_1"),
+                ),
+            ],
+        ),
+        "R1:pwm3": PhysicalInfo(
+            model="pwm",
+            address=0,
+            type="pwm",
             channels=[
                 Channel(
                     "pwm",
@@ -203,10 +229,10 @@ ANALOG_ACTUATORS = {
         ),
     },
     "R2": {
-        "R2:pump_0": PhysicalInfo(
-            model="pump",
+        "R2:pwm0": PhysicalInfo(
+            model="pwm",
             address=0,
-            sample_interval=0,
+            type="pwm",
             channels=[
                 Channel(
                     "pwm",
@@ -216,10 +242,10 @@ ANALOG_ACTUATORS = {
                 ),
             ],
         ),
-        "R2:pump_1": PhysicalInfo(
-            model="pump",
+        "R2:pwm1": PhysicalInfo(
+            model="pwm",
             address=0,
-            sample_interval=0,
+            type="pwm",
             channels=[
                 Channel(
                     "pwm",
@@ -229,10 +255,23 @@ ANALOG_ACTUATORS = {
                 ),
             ],
         ),
-        "R2:light": PhysicalInfo(
-            model="light",
+        "R2:pwm2": PhysicalInfo(
+            model="pwm",
             address=0,
-            sample_interval=0,
+            type="pwm",
+            channels=[
+                Channel(
+                    "pwm",
+                    "led_pwm",
+                    pin="Q0.5",
+                    calibration=Calibration("pump_1"),
+                ),
+            ],
+        ),
+        "R2:pwm3": PhysicalInfo(
+            model="pwm",
+            address=0,
+            type="pwm",
             channels=[
                 Channel(
                     "pwm",
@@ -250,7 +289,7 @@ MFC_ACTUATORS = {
         "R0:mfc": PhysicalInfo(
             model="mfc",
             address=0,
-            sample_interval=0,
+            type="ANALOG",
             channels=[
                 Channel("lpm", "liters_per_minute", register="pmc1"),
             ],
@@ -260,7 +299,7 @@ MFC_ACTUATORS = {
         "R1:mfc": PhysicalInfo(
             model="mfc",
             address=0,
-            sample_interval=0,
+            type="ANALOG",
             channels=[
                 Channel("lpm", "liters_per_minute", register="pmc1"),
             ],
@@ -270,7 +309,7 @@ MFC_ACTUATORS = {
         "R2:mfc": PhysicalInfo(
             model="mfc",
             address=0,
-            sample_interval=0,
+            type="ANALOG",
             channels=[
                 Channel("lpm", "liters_per_minute", register="pmc1"),
             ],

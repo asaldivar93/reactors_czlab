@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import platform
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
-
-from reactors_czlab.core.utils import Timer
 
 if TYPE_CHECKING:
     from reactors_czlab.core.actuator import Actuator
@@ -16,7 +17,20 @@ if platform.machine().startswith("aarch64"):
 
     rpiplc.init("RPIPLC_V6", "RPIPLC_58")
 
+_logger = logging.getLogger("server.sensors")
 IN_RASPBERRYPI = platform.machine().startswith("aarch64")
+
+
+@dataclass
+class ReactorState:
+    """Shared state of the reactor."""
+
+    pairings: dict[str, list[tuple[str, int]]] = field(default_factory=dict)
+    sensors: list[str] = field(default_factory=list)
+    actuators: list[str] = field(default_factory=list)
+    fast_actuators: list[str] = field(default_factory=list)
+    slow_actuators: list[str] = field(default_factory=list)
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
 class Reactor:
@@ -28,7 +42,7 @@ class Reactor:
         volume: float,
         sensors: list[Sensor],
         actuators: list[Actuator],
-        timer: Timer,
+        period: float,
     ) -> None:
         """Initialize the reactor.
 
@@ -46,12 +60,17 @@ class Reactor:
         """
         self.id: str = identifier
         self.volume: float = volume
-        self.base_timer: Timer = timer
-        self.timers: dict[float, Timer] | None = None
+        self.period: float = period
         self.sensors = sensors
         self.actuators = actuators
-        for actuator in actuators:
-            actuator.sensors = sensors
+        self.reactor_state = ReactorState()
+        for actuator in self.actuators.values():
+            if actuator.info.type == "digital":
+                self.reactor_state.slow_actuators.append(actuator)
+            else:
+                self.reactor_state.fast_actuators.append(actuator)
+        self.reactor_state.sensors = list(self.sensors.keys())
+        self.reactor_state.actuators = list(self.actuators.keys())
 
     @property
     def sensors(self) -> dict[str, Sensor]:
@@ -75,35 +94,47 @@ class Reactor:
         """Set the actuators as a dict."""
         self._actuators = {a.id: a for a in actuators}
 
-    def set_up_timers(self) -> None:
-        """Create timers and pass them to the sensors."""
-        timer = self.base_timer
-        self.timers = {timer.interval: timer}
-        for sensor in self.sensors.values():
-            interval = sensor.sensor_info.sample_interval
-            new_timer = self.timers.get(interval, None)
-            if new_timer is None:
-                new_timer = Timer(interval)
-                self.timers.update({interval: new_timer})
-            sensor.base_timer = new_timer
-            sensor.timer = new_timer
+    async def slow_loop(self) -> None:
+        """Read sensors and update paired actuators."""
+        loop = asyncio.get_running_loop()
+        next_tick = loop.time()
+        while True:
+            next_tick += self.period
+            # Read all sensors
+            for sensor in self.sensors.values():
+                await sensor.read()
 
-        # Pass the base timer to the actuators
-        for actuator in self.actuators.values():
-            actuator.base_timer = self.base_timer
-            actuator.timer = self.base_timer
+            # Get pairings
+            async with self.reactor_state.lock:
+                # Update paired actuators
+                for sensor_id in self.reactor_state.pairings:
+                    sensor = self.sensors[sensor_id]  # get the sensor
+                    for aid, chn in self.reactor_state.pairings[sensor_id]:
+                        actuator = self.actuators[aid]  # get the actuator
+                        # Verify that the selected chn exist
+                        try:
+                            value = sensor.channels[chn].value
+                        except IndexError:
+                            _logger.error(f"{chn} not a channel in {sensor.id}")
+                        else:
+                            if actuator.info.type == "digital":
+                                await actuator.write_output(value)
+                            else:
+                                actuator.write_output(value)
 
-    def update_sensors(self) -> None:
-        """Read all the sensors."""
-        for sensor in self.sensors.values():
-            sensor.read()
+                # Update other digital actuators (MODBUS, I2C)
+                for actuator in self.reactor_state.slow_actuators:
+                    await actuator.write_output(0)
 
-    def update_actuators(self) -> None:
-        """Write the outputs of all actuators."""
-        for actuator in self.actuators.values():
-            actuator.write_output()
+            now = loop.time()
+            delay = max(0.0, next_tick - now)
+            await asyncio.sleep(delay)
 
-    def update(self) -> None:
-        """Call all timers and subscribers."""
-        for timer in self.timers.values():
-            timer.callback()
+    async def fast_loop(self) -> None:
+        """Update fast acting actuators."""
+        while True:
+            async with self.reactor_state.lock:
+                for actuator in self.reactor_state.fast_actuators:
+                    actuator.write_output(0)
+
+            await asyncio.sleep(0.1)

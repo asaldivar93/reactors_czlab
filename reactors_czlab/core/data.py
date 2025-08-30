@@ -12,7 +12,7 @@ class PhysicalInfo:
 
     model: str
     address: int
-    sample_interval: float
+    type: str
     channels: list[Channel]
 
 
@@ -40,6 +40,7 @@ class Channel:
     pin: str = "none"
     type: PlcOutput = PlcOutput.pwm
     value: float = -0.111
+    old_value: float = -0.111
     calibration: Calibration | None = None
 
     def __eq__(self, other: object) -> bool:

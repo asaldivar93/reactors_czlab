@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from typing import ClassVar
@@ -88,6 +89,7 @@ class ModbusHandler:
             bytesize=8,
             parity="N",
         )
+        self.lock = asyncio.Lock()
 
         if not self.client.connect():
             error_message = f"Failed to connect to Modbus device at port {port}"
@@ -107,7 +109,7 @@ class ModbusHandler:
             raise ModbusError(error_message)
         self._baudrate = baudrate
 
-    def process_request(self, request: ModbusRequest) -> list[int]:
+    async def process_request(self, request: ModbusRequest) -> list[int]:
         """Process a Modbus request.
 
         Parameters
@@ -128,11 +130,12 @@ class ModbusHandler:
                     register=address,
                     count=count,
                 ):
-                    result = self.client.read_holding_registers(
-                        address=address,
-                        count=count,
-                        slave=slave,
-                    )
+                    async with self.lock:
+                        result = self.client.read_holding_registers(
+                            address=address,
+                            count=count,
+                            slave=slave,
+                        )
 
                 case ModbusRequest(
                     operation="read_input",
@@ -140,11 +143,12 @@ class ModbusHandler:
                     register=address,
                     count=count,
                 ):
-                    result = self.client.read_input_registers(
-                        address=address,
-                        count=count,
-                        slave=slave,
-                    )
+                    async with self.lock:
+                        result = self.client.read_input_registers(
+                            address=address,
+                            count=count,
+                            slave=slave,
+                        )
 
                 case ModbusRequest(
                     operation="write",
@@ -157,11 +161,12 @@ class ModbusHandler:
                                           list of values in: {request}"
                         raise ModbusError(error_message)
                     payload = self._build_payload(values)
-                    result = self.client.write_registers(
-                        address=address,
-                        values=payload,
-                        slave=slave,
-                    )
+                    async with self.lock:
+                        result = self.client.write_registers(
+                            address=address,
+                            values=payload,
+                            slave=slave,
+                        )
 
                 case _:
                     error_message = f"Invalid operation in: {request}"

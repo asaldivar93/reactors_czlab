@@ -4,14 +4,10 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING
+from time import perf_counter
 
 from reactors_czlab.core.data import ControlConfig, ControlMethod
-from reactors_czlab.core.utils import Timer
 from reactors_czlab.server_info import VERBOSE
-
-if TYPE_CHECKING:
-    from reactors_czlab.core.sensor import Sensor
 
 _logger = logging.getLogger("server.control")
 
@@ -87,7 +83,7 @@ class _Control(ABC):
         self.max_val = limits[1]
 
     @abstractmethod
-    def get_value(self, sensor: Sensor | None = None) -> float:
+    def get_value(self, sens_value: float) -> float:
         """Calculate the actuator output value."""
 
 
@@ -109,7 +105,7 @@ class _ManualControl(_Control):
         this = [self.method, self.value]
         return this == other
 
-    def get_value(self, sensor: Sensor | None = None) -> float:
+    def get_value(self, sens_value: float) -> float:
         return self.value
 
 
@@ -128,6 +124,8 @@ class _TimerControl(_Control):
         self.time_off = time_off
         self.value_on = value_on
         self.value = value_on
+        self.last_time = perf_counter()
+        self.interval = time_on
 
         if limits is None:
             self.set_limits([0, 4095])
@@ -135,8 +133,6 @@ class _TimerControl(_Control):
             self.set_limits(limits)
 
         # create a timer instance
-        self.timer = Timer(time_on)
-        self.timer.add_suscriber(self)
         self._is_on = False
         self._sampling_event = True
 
@@ -167,27 +163,24 @@ class _TimerControl(_Control):
             raise TypeError
         self._time_off = time_off
 
-    def on_timer_callback(self) -> None:
-        """Invert the actuator state."""
-        self._sampling_event = True
-
-    def get_value(self, sensor: Sensor | None = None) -> float:
-        self.timer.callback()
-        if self._sampling_event:
-            self._sampling_event = False
+    def get_value(self, sens_value: float) -> float:
+        this_time = perf_counter()
+        elapsed_time = this_time - self.last_time
+        if elapsed_time > self.interval:
+            self.last_time = this_time
             if self._is_on:
                 # Set the new timer
-                self.timer.interval = self.time_off
+                self.interval = self.time_off
                 # Invert the state
                 self.value = 0
                 self._is_on = False
             else:
                 # Set the new timer
-                self.timer.interval = self.time_on
+                self.interval = self.time_on
                 # Invert the state
                 self._is_on = True
                 self.value = self.value_on
-            _logger.debug(f"value:{self.value}, is_on:{self._is_on}")
+            _logger.debug(f"value:{self.value}, elapsed:{elapsed_time}")
         return self.value
 
 
@@ -261,17 +254,13 @@ class _OnBoundariesControl(_Control):
             raise TypeError
         self._upper_bound = upper_bound
 
-    def get_value(self, sensor: Sensor | None = None) -> float:
-        if sensor is None:
-            raise AttributeError
-
-        variable = sensor.channels[0].value
-        if variable < self.lower_bound:
+    def get_value(self, sens_value: float) -> float:
+        if sens_value < self.lower_bound:
             if self.backwards:
                 self.value = 0
             else:
                 self.value = self.value_on
-        elif variable > self.upper_bound:
+        elif sens_value > self.upper_bound:
             if self.backwards:
                 self.value = self.value_on
             else:
@@ -361,18 +350,12 @@ class _PidControl(_Control):
         self.ki = gains[1]
         self.kd = gains[2]
 
-    def get_value(self, sensor: Sensor | None = None) -> float:
-        if sensor is None:
-            raise AttributeError
-        if sensor.timer is None:
-            raise AttributeError
-
+    def get_value(self, sens_value: float) -> float:
         self._sampling_event = False
-        variable = sensor.channels[0].value
-        dt = sensor.timer.elapsed_time
+        dt = 10
 
         # Get error
-        error = self.setpoint - variable
+        error = self.setpoint - sens_value
         d_error = error - self._last_error
         self._last_error = error
 
@@ -392,7 +375,7 @@ class _PidControl(_Control):
         # Constraint the output to the allowable range
         self.value = max(self.min_val, min(output, self.max_val))
         if VERBOSE:
-            _logger.debug(f"elapsed_time: {dt}, var: {variable}")
+            _logger.debug(f"elapsed_time: {dt}, var: {sens_value}")
             _logger.debug(
                 f"p_term: {p_term}, i_term: {i_term}, d_term: {d_term}",
             )
