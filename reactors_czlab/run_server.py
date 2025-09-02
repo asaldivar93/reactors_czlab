@@ -70,6 +70,14 @@ for r in REACTORS:
 for k, sens in enumerate(biomass.values()):
     sens.set_i2c(tca[k])
 
+# HOT FIX unti async.lock is applied to the i2c channel
+biomass = {
+    "R0": [SpectralSensor("R0:biomass", BIOMASS_SENSORS["R0"]["R0:biomass"])],
+    "R1": [],
+    "R2": [],
+}
+biomass["R0"][0].set_i2c(tca[2])
+
 analog = {}
 for r in REACTORS:
     acts = [

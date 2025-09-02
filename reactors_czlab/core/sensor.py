@@ -32,7 +32,8 @@ if IN_RASPBERRYPI:
 
     spi = busio.SPI(board.SCK, MOSI=board.MOSI)
     led_driver = TLC59711(spi, pixel_count=16)
-    current_led = -1
+    led_driver.set_pixel_all((65535, 65535, 65535))
+    led_driver.show()
 
 ERROR_VAL = -0.111
 
@@ -428,6 +429,8 @@ class AnalogSensor(Sensor):
 
 
 class SpectralSensor(Sensor):
+    """AS7341 11 channel sensor."""
+
     def __init__(
         self,
         identifier: str,
@@ -447,17 +450,16 @@ class SpectralSensor(Sensor):
 
         """
         super().__init__(identifier, config)
-        if current_led == led_driver.channel_count:
-            raise AttributeError("All led channels are used")
-        self.led = current_led + 1
-        led_driver.set_channel(self.led, 65535)
         self.bus: None | AS7341 = None
 
     def set_i2c(self, i2c: busio.I2C) -> None:
         self.bus = AS7341(i2c)
 
-    def read(self) -> None:
+    # You need to find a way to async.Lock the i2c bus,
+    # for now you can only have one i2c even with the multiplexer
+    async def read(self) -> None:
         """Read spectral sensor."""
+        await asyncio.sleep(0.001)  # To be replaced with async.Lock
         values = {
             "415": self.bus.channel_415nm,
             "445": self.bus.channel_445nm,

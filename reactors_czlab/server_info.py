@@ -127,9 +127,9 @@ ANALOG_ACTUATORS = {
             type="pwm",
             channels=[
                 Channel(
+                    "pwm0",
                     "pwm",
-                    "pump_pwm",
-                    pin="Q0.5",
+                    pin="Q2.7",
                     calibration=Calibration("pump_0"),
                 ),
             ],
@@ -140,9 +140,9 @@ ANALOG_ACTUATORS = {
             type="pwm",
             channels=[
                 Channel(
-                    "pwm",
+                    "pwm1",
                     "pump_pwm",
-                    pin="Q0.5",
+                    pin="Q1.5",
                     calibration=Calibration("pump_1"),
                 ),
             ],
@@ -153,9 +153,9 @@ ANALOG_ACTUATORS = {
             type="pwm",
             channels=[
                 Channel(
-                    "pwm",
+                    "pwm2",
                     "led_pwm",
-                    pin="Q0.5",
+                    pin="Q1.6",
                     calibration=Calibration("pump_1"),
                 ),
             ],
@@ -166,9 +166,9 @@ ANALOG_ACTUATORS = {
             type="pwm",
             channels=[
                 Channel(
-                    "pwm",
+                    "pwm3",
                     "led_pwm",
-                    pin="Q0.5",
+                    pin="Q2.6",
                     calibration=Calibration("pump_1"),
                 ),
             ],
@@ -181,9 +181,9 @@ ANALOG_ACTUATORS = {
             type="pwm",
             channels=[
                 Channel(
-                    "pwm",
+                    "pwm0",
                     "pump_pwm",
-                    pin="Q0.5",
+                    pin="Q2.5",
                     calibration=Calibration("pump_0"),
                 ),
             ],
@@ -194,9 +194,9 @@ ANALOG_ACTUATORS = {
             type="pwm",
             channels=[
                 Channel(
-                    "pwm",
+                    "pwm1",
                     "pump_pwm",
-                    pin="Q0.5",
+                    pin="Q2.4",
                     calibration=Calibration("pump_1"),
                 ),
             ],
@@ -207,9 +207,9 @@ ANALOG_ACTUATORS = {
             type="pwm",
             channels=[
                 Channel(
-                    "pwm",
+                    "pwm2",
                     "led_pwm",
-                    pin="Q0.5",
+                    pin="Q1.7",
                     calibration=Calibration("pump_1"),
                 ),
             ],
@@ -220,7 +220,7 @@ ANALOG_ACTUATORS = {
             type="pwm",
             channels=[
                 Channel(
-                    "pwm",
+                    "pwm3",
                     "led_pwm",
                     pin="Q0.5",
                     calibration=Calibration("pump_1"),
@@ -235,9 +235,9 @@ ANALOG_ACTUATORS = {
             type="pwm",
             channels=[
                 Channel(
-                    "pwm",
+                    "pwm0",
                     "pump_pwm",
-                    pin="Q0.5",
+                    pin="Q0.6",
                     calibration=Calibration("pump_0"),
                 ),
             ],
@@ -248,9 +248,9 @@ ANALOG_ACTUATORS = {
             type="pwm",
             channels=[
                 Channel(
-                    "pwm",
+                    "pwm1",
                     "pump_pwm",
-                    pin="Q0.5",
+                    pin="Q0.7",
                     calibration=Calibration("pump_1"),
                 ),
             ],
@@ -261,9 +261,9 @@ ANALOG_ACTUATORS = {
             type="pwm",
             channels=[
                 Channel(
-                    "pwm",
+                    "pwm2",
                     "led_pwm",
-                    pin="Q0.5",
+                    pin="Q1.4",
                     calibration=Calibration("pump_1"),
                 ),
             ],
@@ -274,9 +274,9 @@ ANALOG_ACTUATORS = {
             type="pwm",
             channels=[
                 Channel(
-                    "pwm",
+                    "pwm3",
                     "led_pwm",
-                    pin="Q0.5",
+                    pin="Q0.4",
                     calibration=Calibration("pump_1"),
                 ),
             ],
@@ -317,6 +317,12 @@ MFC_ACTUATORS = {
     },
 }
 
+i2c_ports = {
+    "R0": 2,
+    "R1": 3,
+    "R2": 4,
+    "R3": 5,
+}
 
 server_vars = {
     "R0": {
