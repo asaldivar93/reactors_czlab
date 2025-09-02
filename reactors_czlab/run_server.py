@@ -18,7 +18,7 @@ from reactors_czlab.server_info import (
     MFC_ACTUATORS,
 )
 
-logging.getLogger("asyncio").setLevel(logging.CRITICAL)
+# logging.getLogger("asyncio").setLevel(logging.CRITICAL)
 
 _logger = logging.getLogger("server")
 _logger.setLevel(logging.DEBUG)
@@ -67,6 +67,8 @@ for r in REACTORS:
         SpectralSensor(k, config) for k, config in BIOMASS_SENSORS[r].items()
     ]
     biomass.update({r: sens})
+for k, sens in enumerate(biomass.values()):
+    sens.set_i2c(tca[k])
 
 analog = {}
 for r in REACTORS:
@@ -86,7 +88,7 @@ reactors = [
         volume=5,
         sensors=[*hamilton[r], *biomass[r]],
         actuators=[*analog[r], *mfc[r]],
-        timer=7,
+        period=10,
     )
     for r in REACTORS
 ]
@@ -95,30 +97,33 @@ reactors = [
 async def main() -> None:
     """Run the server."""
     # Init the server
-
     server = Server()
     await server.init()
     server.set_endpoint("opc.tcp://10.10.10.20:55488/")
-
     uri = "http://czlab/biocontroller"
     idx = await server.register_namespace(uri)
 
     # Create reactors, sensor and actuator nodes
-    for reactor_i in reactors:
-        await reactor_i.init_node(server, idx)
+    tasks = []
+    for r_i in reactors:
+        await r_i.init_node(server, idx)
+        tasks.extend(
+            [
+                asyncio.create_task(r_i.reactor.slow_loop()),
+                asyncio.create_task(r_i.reactor.fast_loop()),
+                asyncio.create_task(r_i.update()),
+            ],
+        )
 
+    await server.start()
     _logger.info("Server Started")
-    async with server:
-        try:
-            while True:
-                for r in reactors:
-                    # Read sensors, write actuators
-                    r.reactor.update()
-                    # Update server
-                    await r.update()
-                await asyncio.sleep(1)
-        except KeyboardInterrupt:
-            await server.stop()
+    try:
+        await asyncio.gather(*tasks)
+    except KeyboardInterrupt:
+        for r_i in reactors:
+            r_i.stop()
+    finally:
+        await server.stop()
 
 
 if __name__ == "__main__":

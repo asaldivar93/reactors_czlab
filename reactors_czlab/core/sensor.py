@@ -432,7 +432,6 @@ class SpectralSensor(Sensor):
         self,
         identifier: str,
         config: PhysicalInfo,
-        i2c: busio.I2C,
     ) -> None:
         """AS7341 spectral sensor.
 
@@ -448,11 +447,14 @@ class SpectralSensor(Sensor):
 
         """
         super().__init__(identifier, config)
-        self.bus = AS7341(i2c)
         if current_led == led_driver.channel_count:
             raise AttributeError("All led channels are used")
         self.led = current_led + 1
         led_driver.set_channel(self.led, 65535)
+        self.bus: None | AS7341 = None
+
+    def set_i2c(self, i2c: busio.I2C) -> None:
+        self.bus = AS7341(i2c)
 
     def read(self) -> None:
         """Read spectral sensor."""
