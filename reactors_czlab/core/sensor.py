@@ -31,7 +31,9 @@ if IN_RASPBERRYPI:
     from reactors_czlab.core.reactor import rpiplc
 
     spi = busio.SPI(board.SCK, MOSI=board.MOSI)
+    i2c_lock = asyncio.Lock()  # Serialize access to i2c channel
     led_driver = TLC59711(spi, pixel_count=16)
+    # Set all leds to max value
     led_driver.set_pixel_all((65535, 65535, 65535))
     led_driver.show()
 
@@ -455,22 +457,20 @@ class SpectralSensor(Sensor):
     def set_i2c(self, i2c: busio.I2C) -> None:
         self.bus = AS7341(i2c)
 
-    # You need to find a way to async.Lock the i2c bus,
-    # for now you can only have one i2c even with the multiplexer
     async def read(self) -> None:
         """Read spectral sensor."""
-        await asyncio.sleep(0.001)  # To be replaced with async.Lock
-        values = {
-            "415": self.bus.channel_415nm,
-            "445": self.bus.channel_445nm,
-            "480": self.bus.channel_480nm,
-            "515": self.bus.channel_515nm,
-            "555": self.bus.channel_555nm,
-            "590": self.bus.channel_590nm,
-            "630": self.bus.channel_630nm,
-            "680": self.bus.channel_680nm,
-            "clear": self.bus.channel_clear,
-            "nir": self.bus.channel_nir,
-        }
-        for chn in self.channels:
-            chn.value = values[chn.units]
+        async with i2c_lock:
+            values = {
+                "415": self.bus.channel_415nm,
+                "445": self.bus.channel_445nm,
+                "480": self.bus.channel_480nm,
+                "515": self.bus.channel_515nm,
+                "555": self.bus.channel_555nm,
+                "590": self.bus.channel_590nm,
+                "630": self.bus.channel_630nm,
+                "680": self.bus.channel_680nm,
+                "clear": self.bus.channel_clear,
+                "nir": self.bus.channel_nir,
+            }
+            for chn in self.channels:
+                chn.value = values[chn.units]

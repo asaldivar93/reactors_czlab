@@ -121,40 +121,13 @@ def store_data(
     datetime = timestamp.isoformat(timespec="milliseconds")
 
     try:
-        insert_map = {
-            "visiferm": (
-                "INSERT INTO visiferm \
-                (experiment_id, date, reactor, value, units) \
-                VALUES (%s, %s, %s, %s, %s)",
-                (exp_id, datetime, reactor_id, value, units),
-            ),
-            "arcph": (
-                "INSERT INTO arcph \
-                (experiment_id, date, reactor, value, units) \
-                VALUES (%s, %s, %s, %s, %s)",
-                (exp_id, datetime, reactor_id, value, units),
-            ),
-            "analog": (
-                "INSERT INTO analog \
-                (experiment_id, date, reactor, calibration, value, units) \
-                VALUES (%s, %s, %s, %s, %s, %s)",
-                (exp_id, datetime, reactor_id, calibration, value, units),
-            ),
-            "actuator": (
-                "INSERT INTO actuator \
-                (experiment_id, date, reactor, calibration, value, units) \
-                VALUES (%s, %s, %s, %s, %s, %s)",
-                (exp_id, datetime, reactor_id, calibration, value, units),
-            ),
-            "digital": (
-                "INSERT INTO digital \
-                (experiment_id, date, reactor, calibration, value, units) \
-                VALUES (%s, %s, %s, %s, %s, %s)",
-                (exp_id, datetime, reactor_id, calibration, value, units),
-            ),
-        }
-
-        query, values = insert_map[model]
+        insert_map = (
+            "INSERT INTO data \
+            (experiment_id, date, reactor, model, calibration, units, value) \
+            VALUES (%s, %s, %s, %s, %s, %s)",
+            (exp_id, datetime, reactor_id, model, calibration, units, value),
+        )
+        query, values = insert_map
         if VERBOSE:
             _logger.debug(data)
             _logger.debug(query)
@@ -226,33 +199,12 @@ def get_data(experiment_name: str, time_filter: tuple[float, str]) -> list:
 
     # Queries (with optional date filter)
     try:
-        queries = {
-            "visiferm": f"SELECT 'visiferm' \
-                AS source_table, date, reactor, value, units, 'null' AS calibration \
-                FROM visiferm \
-                WHERE {base_conditions}",
-            "arcph": f"SELECT 'arcph' \
-                AS source_table, date, reactor, value, units, 'null' AS calibration \
-                FROM arcph \
-                WHERE {base_conditions}",
-            "analog": f"SELECT 'analog' \
-                AS source_table, date, reactor, value, units, calibration \
-                FROM analog \
-                WHERE {base_conditions}",
-            "actuator": f"SELECT 'actuator' \
-                AS source_table, date, reactor, value, units, calibration \
-                FROM actuator \
-                WHERE {base_conditions}",
-            "digital": f"SELECT 'digital' \
-                AS source_table, date, reactor, value, units, calibration \
-                FROM digital \
-                WHERE {base_conditions}",
-        }
-        all_rows = []
-        for query in queries.values():
-            cursor.execute(query, tuple(params))
-            rows = cursor.fetchall()
-            all_rows.extend(rows)
+        query = f"SELECT 'data' \
+            AS source_table, date, reactor, model, calibration, units, value \
+            FROM data \
+            WHERE {base_conditions}"
+        cursor.execute(query, tuple(params))
+        all_rows = cursor.fetchall()
     except psycopg.Error as err:
         error_message = "Error during get operation"
         raise SqlError(error_message) from err
@@ -269,9 +221,10 @@ def row_to_csv(out_name: str, rows: list) -> None:
                 "source_table",
                 "date",
                 "reactor",
-                "value",
-                "units",
+                "model",
                 "calibration",
+                "units",
+                "value",
             ],
         )  # Header
         writer.writerows(rows)
@@ -283,9 +236,10 @@ def rows_to_polars(rows: list) -> pl.DataFrame:
         "source_table",
         "date",
         "reactor",
-        "value",
-        "units",
+        "model",
         "calibration",
+        "units",
+        "value",
     ]
     schema = {col: type(rows[0][i]) for i, col in enumerate(columns)}
     return pl.DataFrame(rows, schema=schema)

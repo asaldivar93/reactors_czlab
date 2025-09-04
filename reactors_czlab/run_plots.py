@@ -33,9 +33,7 @@ class Plotter:
         titles = [
             "Visiferm",
             "Arcph",
-            "Analog",
-            "Actuator",
-            "Digital",
+            "Biomass",
             "Temperature",
         ]
         plots = {}
@@ -69,7 +67,7 @@ class Plotter:
 
 
 def filter_df(all_df: pl.DataFrame, table: str, reactor: str) -> pl.DataFrame:
-    """Filter the dataframe by source table and reactor."""
+    """Filter the dataframe by model and reactor."""
     units_map = {"arcph": "pH", "visiferm": "ppm"}
     if table != "temperature":
         units = units_map.get(table)
