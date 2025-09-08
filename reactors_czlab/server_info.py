@@ -15,12 +15,13 @@ def copy_info(info: PhysicalInfo, channels: list[Channel]) -> PhysicalInfo:
     info:
         Sensor info to copy
     channels:
-        List of channels to remove
+        List of channels to keep
 
     """
     new_info = deepcopy(info)
-    for chn in channels:
-        new_info.channels.remove(chn)
+    for chn in new_info.channels:
+        if chn not in channels:
+            new_info.channels.remove(chn)
     return new_info
 
 
@@ -139,7 +140,7 @@ ANALOG_ACTUATORS = {
             channels=[
                 Channel(
                     "pwm1",
-                    "pump_pwm",
+                    "pwm",
                     pin="Q1.5",
                     calibration=Calibration("pump_1"),
                 ),
@@ -152,7 +153,7 @@ ANALOG_ACTUATORS = {
             channels=[
                 Channel(
                     "pwm2",
-                    "led_pwm",
+                    "pwm",
                     pin="Q1.6",
                     calibration=Calibration("pump_1"),
                 ),
@@ -165,7 +166,7 @@ ANALOG_ACTUATORS = {
             channels=[
                 Channel(
                     "pwm3",
-                    "led_pwm",
+                    "pwm",
                     pin="Q2.6",
                     calibration=Calibration("pump_1"),
                 ),
@@ -180,7 +181,7 @@ ANALOG_ACTUATORS = {
             channels=[
                 Channel(
                     "pwm0",
-                    "pump_pwm",
+                    "pwm",
                     pin="Q2.5",
                     calibration=Calibration("pump_0"),
                 ),
@@ -193,7 +194,7 @@ ANALOG_ACTUATORS = {
             channels=[
                 Channel(
                     "pwm1",
-                    "pump_pwm",
+                    "pwm",
                     pin="Q2.4",
                     calibration=Calibration("pump_1"),
                 ),
@@ -206,7 +207,7 @@ ANALOG_ACTUATORS = {
             channels=[
                 Channel(
                     "pwm2",
-                    "led_pwm",
+                    "pwm",
                     pin="Q1.7",
                     calibration=Calibration("pump_1"),
                 ),
@@ -219,7 +220,7 @@ ANALOG_ACTUATORS = {
             channels=[
                 Channel(
                     "pwm3",
-                    "led_pwm",
+                    "pwm",
                     pin="Q0.5",
                     calibration=Calibration("pump_1"),
                 ),
@@ -234,7 +235,7 @@ ANALOG_ACTUATORS = {
             channels=[
                 Channel(
                     "pwm0",
-                    "pump_pwm",
+                    "pwm",
                     pin="Q0.6",
                     calibration=Calibration("pump_0"),
                 ),
@@ -247,7 +248,7 @@ ANALOG_ACTUATORS = {
             channels=[
                 Channel(
                     "pwm1",
-                    "pump_pwm",
+                    "pwm",
                     pin="Q0.7",
                     calibration=Calibration("pump_1"),
                 ),
@@ -260,7 +261,7 @@ ANALOG_ACTUATORS = {
             channels=[
                 Channel(
                     "pwm2",
-                    "led_pwm",
+                    "pwm",
                     pin="Q1.4",
                     calibration=Calibration("pump_1"),
                 ),
@@ -273,7 +274,7 @@ ANALOG_ACTUATORS = {
             channels=[
                 Channel(
                     "pwm3",
-                    "led_pwm",
+                    "pwm",
                     pin="Q0.4",
                     calibration=Calibration("pump_1"),
                 ),
