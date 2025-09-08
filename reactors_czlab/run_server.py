@@ -32,7 +32,7 @@ _file_handler.setFormatter(_formatter)
 _file_handler.setLevel(logging.INFO)
 
 _stream_handler = logging.StreamHandler()
-_stream_handler.setLevel(logging.INFO)
+_stream_handler.setLevel(logging.DEBUG)
 _stream_handler.setFormatter(_formatter)
 
 _logger.addHandler(_file_handler)
@@ -67,8 +67,8 @@ for r in REACTORS:
         SpectralSensor(k, config) for k, config in BIOMASS_SENSORS[r].items()
     ]
     biomass.update({r: sens})
-for k, sens in enumerate(biomass.values()):
-    sens.set_i2c(tca[k])
+#for k, sens in enumerate(biomass.values()):
+#    sens.set_i2c(tca[k])
 
 # HOT FIX unti async.lock is applied to the i2c channel
 biomass = {

@@ -459,7 +459,7 @@ class SpectralSensor(Sensor):
     # for now you can only have one i2c even with the multiplexer
     async def read(self) -> None:
         """Read spectral sensor."""
-        await asyncio.sleep(0.001)  # To be replaced with async.Lock
+        await asyncio.sleep(0.01)  # To be replaced with async.Lock
         values = {
             "415": self.bus.channel_415nm,
             "445": self.bus.channel_445nm,
