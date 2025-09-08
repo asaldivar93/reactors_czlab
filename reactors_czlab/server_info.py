@@ -87,8 +87,6 @@ as7341_channels = [
     Channel("590", "dimensionles", register="all"),
     Channel("630", "dimensionles", register="all"),
     Channel("680", "dimensionles", register="all"),
-    Channel("415", "dimensionles", register="all"),
-    Channel("415", "dimensionles", register="all"),
     Channel("clear", "dimensionles", register="all"),
     Channel("nir", "dimensionles", register="all"),
 ]
