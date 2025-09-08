@@ -66,9 +66,9 @@ class Reactor:
         self.reactor_state = ReactorState()
         for actuator in self.actuators.values():
             if actuator.info.type == "digital":
-                self.reactor_state.slow_actuators.append(actuator)
+                self.reactor_state.slow_actuators.append(actuator.id)
             else:
-                self.reactor_state.fast_actuators.append(actuator)
+                self.reactor_state.fast_actuators.append(actuator.id)
         self.reactor_state.sensors = list(self.sensors.keys())
         self.reactor_state.actuators = list(self.actuators.keys())
 

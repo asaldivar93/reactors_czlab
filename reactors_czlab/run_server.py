@@ -16,6 +16,7 @@ from reactors_czlab.server_info import (
     BIOMASS_SENSORS,
     HAMILTON_SENSORS,
     MFC_ACTUATORS,
+    i2c_ports,
 )
 
 # logging.getLogger("asyncio").setLevel(logging.CRITICAL)
@@ -66,9 +67,9 @@ for r in REACTORS:
     sens = [
         SpectralSensor(k, config) for k, config in BIOMASS_SENSORS[r].items()
     ]
+    i2c_chn = i2c_ports[r]
+    sens[0].set_i2c(tca[i2c_chn])
     biomass.update({r: sens})
-#for k, sens in enumerate(biomass.values()):
-#    sens.set_i2c(tca[k])
 
 # HOT FIX unti async.lock is applied to the i2c channel
 biomass = {
