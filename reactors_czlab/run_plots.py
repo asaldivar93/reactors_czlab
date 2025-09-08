@@ -26,7 +26,7 @@ class Plotter:
 
     def setup_plots(self) -> tuple[Figure, dict[str, Any]]:
         """Initialize plots."""
-        fig, axs = plt.subplots(2, 3, figsize=(12, 8))
+        fig, axs = plt.subplots(2, 2, figsize=(12, 8))
         fig.suptitle("Live Sensor Data", fontsize=16)
         axs = axs.flatten()
 
@@ -68,23 +68,17 @@ class Plotter:
 
 def filter_df(all_df: pl.DataFrame, table: str, reactor: str) -> pl.DataFrame:
     """Filter the dataframe by model and reactor."""
-    units_map = {"arcph": "pH", "visiferm": "ppm"}
+    units_map = {"arcph": "pH", "visiferm": "ppm", "biomass": "445"}
     if table != "temperature":
         units = units_map.get(table)
-        if units is not None:
-            table_df = all_df.filter(
-                pl.col("source_table") == table,
-                pl.col("reactor") == reactor,
-                pl.col("units") == units,
-            )
-        else:
-            table_df = all_df.filter(
-                pl.col("source_table") == table,
-                pl.col("reactor") == reactor,
-            )
+        table_df = all_df.filter(
+            pl.col("model") == table,
+            pl.col("reactor") == reactor,
+            pl.col("units") == units,
+        )
     else:
         table_df = all_df.filter(
-            pl.col("source_table").is_in(["visiferm", "arcph"]),
+            pl.col("model").is_in(["visiferm", "arcph"]),
             pl.col("units") == "oC",
         )
     return table_df.sort("date")
