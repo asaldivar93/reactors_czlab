@@ -19,6 +19,7 @@ if platform.machine().startswith("aarch64"):
 
 _logger = logging.getLogger("server.sensors")
 IN_RASPBERRYPI = platform.machine().startswith("aarch64")
+pwm_lock = asyncio.Lock()
 
 
 @dataclass
@@ -136,6 +137,7 @@ class Reactor:
             async with self.reactor_state.lock:
                 for aid in self.reactor_state.fast_actuators:
                     actuator = self.actuators[aid]  # get the actuator
-                    actuator.write_output(0)
+                    async with pwm_lock:
+                        actuator.write_output(0)
 
             await asyncio.sleep(0.1)
