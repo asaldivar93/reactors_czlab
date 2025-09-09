@@ -13,9 +13,17 @@ if TYPE_CHECKING:
     from reactors_czlab.core.sensor import Sensor
 
 if platform.machine().startswith("aarch64"):
+    import board
+    import busio
+    from adafruit_tlc59711 import TLC59711
     from librpiplc import rpiplc
 
     rpiplc.init("RPIPLC_V6", "RPIPLC_58")
+    spi = busio.SPI(board.SCK, MOSI=board.MOSI)
+    led_driver = TLC59711(spi, pixel_count=16)
+    # Set all leds to max value
+    led_driver.set_pixel_all((65535, 65535, 65535))
+    led_driver.show()
 
 _logger = logging.getLogger("server.sensors")
 IN_RASPBERRYPI = platform.machine().startswith("aarch64")
@@ -101,6 +109,8 @@ class Reactor:
         next_tick = loop.time()
         while True:
             next_tick += self.period
+            led_driver.set_pixel_all((65535, 65535, 65535))
+            led_driver.show()
             # Read all sensors
             for sensor in self.sensors.values():
                 await sensor.read()

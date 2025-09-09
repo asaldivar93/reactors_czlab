@@ -45,13 +45,11 @@ class ActuatorOpc:
 
     async def update_value(self) -> None:
         """Update the actuator state in the server."""
-        new_val = self.actuator.channel.value
-        old_val = self.actuator.channel.old_value
-        if new_val != old_val:
-            self.actuator.channel.old_value = new_val
-            await self.curr_value.write_value(float(new_val))
-            if VERBOSE:
-                _logger.debug(f"Updated {self.curr_value} with value {new_val}")
+        new_val = self.actuator.channel.old_value
+        self.actuator.channel.old_value = new_val
+        await self.curr_value.write_value(float(new_val))
+        if VERBOSE:
+            _logger.debug(f"Updated {self.id} with value {new_val}")
 
     async def init_node(self, server: Server, parent: Node, idx: int) -> None:
         """Add node and variables for the actuator."""

@@ -23,19 +23,12 @@ if TYPE_CHECKING:
     from reactors_czlab.core.modbus import ModbusHandler
 
 if IN_RASPBERRYPI:
-    import board
-    import busio
     from adafruit_as7341 import AS7341
-    from adafruit_tlc59711 import TLC59711
 
     from reactors_czlab.core.reactor import rpiplc
 
-    spi = busio.SPI(board.SCK, MOSI=board.MOSI)
     i2c_lock = asyncio.Lock()  # Serialize access to i2c channel
-    led_driver = TLC59711(spi, pixel_count=16)
-    # Set all leds to max value
-    led_driver.set_pixel_all((65535, 65535, 65535))
-    led_driver.show()
+
 
 ERROR_VAL = -0.111
 

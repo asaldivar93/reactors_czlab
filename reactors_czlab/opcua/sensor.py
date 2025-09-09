@@ -58,9 +58,9 @@ class SensorOpc:
             new_val = self.sensor.channels[i].value
             if not isinstance(new_val, float | int):
                 raise TypeError
-            old_val = self.sensor.channels[i].old_value
-            if new_val != old_val:
-                self.sensor.channels[i].old_value = new_val
-                await channel.write_value(float(new_val))
-                if VERBOSE:
-                    _logger.debug(f"Updated {channel} with value {new_val}")
+
+            await channel.write_value(float(new_val))
+            if VERBOSE:
+                _logger.debug(
+                    f"Updated {self.id}:{channel} with value {new_val}",
+                )

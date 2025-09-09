@@ -36,6 +36,7 @@ class ReactorOpc:
     ) -> None:
         """Initialize the OPC Reactor node."""
         self.id: str = identifier
+        self.period = period
         self.reactor = Reactor(
             identifier,
             volume,
@@ -191,13 +192,14 @@ class ReactorOpc:
 
     async def update(self) -> None:
         """Get Sensor readings and update actuators."""
+        # TO DO: Replace the update loop with qeue
         while True:
             for sensor_opc in self.sensor_nodes:
                 await sensor_opc.update_value()
 
             for actuator_opc in self.actuator_nodes:
                 await actuator_opc.update_value()
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(self.period)
 
     def stop(self) -> None:
         """Kill all actuators."""
