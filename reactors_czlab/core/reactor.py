@@ -134,7 +134,8 @@ class Reactor:
         """Update fast acting actuators."""
         while True:
             async with self.reactor_state.lock:
-                for actuator in self.reactor_state.fast_actuators:
+                for aid in self.reactor_state.fast_actuators:
+                    actuator = self.actuators[aid]  # get the actuator
                     actuator.write_output(0)
 
             await asyncio.sleep(0.1)
