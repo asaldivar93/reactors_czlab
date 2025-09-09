@@ -164,7 +164,7 @@ class PlcActuator(Actuator):
         """Write to physical pin."""
         if IN_RASPBERRYPI:
             chn = self.channel
-            rpiplc.analog_write(chn.register, value)
+            rpiplc.analog_write(chn.pin, value)
             chn.value = value
             _logger.debug(f"Actuator {self.id} - {value}")
 

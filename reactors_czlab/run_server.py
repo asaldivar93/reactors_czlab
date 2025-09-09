@@ -7,7 +7,7 @@ import adafruit_tca9548a
 import board
 from asyncua import Server
 
-from reactors_czlab.core.actuator import RandomActuator
+from reactors_czlab.core.actuator import PlcActuator, RandomActuator
 from reactors_czlab.core.modbus import ModbusHandler
 from reactors_czlab.core.sensor import HamiltonSensor, SpectralSensor
 from reactors_czlab.opcua import ReactorOpc
@@ -19,7 +19,7 @@ from reactors_czlab.server_info import (
     i2c_ports,
 )
 
-# logging.getLogger("asyncio").setLevel(logging.CRITICAL)
+logging.getLogger("asyncio").setLevel(logging.CRITICAL)
 
 _logger = logging.getLogger("server")
 _logger.setLevel(logging.DEBUG)
@@ -68,21 +68,16 @@ for r in REACTORS:
         SpectralSensor(k, config) for k, config in BIOMASS_SENSORS[r].items()
     ]
     i2c_chn = i2c_ports[r]
-    sens[0].set_i2c(tca[i2c_chn])
+    try:
+        sens[0].set_i2c(tca[i2c_chn])
+    except ValueError:
+        sens = []
     biomass.update({r: sens})
-
-# HOT FIX unti async.lock is applied to the i2c channel
-biomass = {
-    "R0": [SpectralSensor("R0:biomass", BIOMASS_SENSORS["R0"]["R0:biomass"])],
-    "R1": [],
-    "R2": [],
-}
-biomass["R0"][0].set_i2c(tca[2])
 
 analog = {}
 for r in REACTORS:
     acts = [
-        RandomActuator(k, config) for k, config in ANALOG_ACTUATORS[r].items()
+        PlcActuator(k, config) for k, config in ANALOG_ACTUATORS[r].items()
     ]
     analog.update({r: acts})
 
@@ -108,7 +103,7 @@ async def main() -> None:
     # Init the server
     server = Server()
     await server.init()
-    server.set_endpoint("opc.tcp://10.10.10.20:55488/")
+    server.set_endpoint("opc.tcp://10.10.11.20:55488/")
     uri = "http://czlab/biocontroller"
     idx = await server.register_namespace(uri)
 
