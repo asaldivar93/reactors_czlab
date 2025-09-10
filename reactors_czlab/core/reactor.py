@@ -145,11 +145,15 @@ class Reactor:
 
     async def fast_loop(self) -> None:
         """Update fast acting actuators."""
+        loop = asyncio.get_running_loop()
+        next_tick = loop.time()
         while True:
+            next_tick += 0.1
             async with self.reactor_fast.lock:
                 for aid in self.reactor_fast.actuators:
                     actuator = self.actuators[aid]
                     async with pwm_lock:
                         actuator.write_output(0)
-
-            await asyncio.sleep(0.1)
+            now = loop.time()
+            delay = max(0.0, next_tick - now)
+            await asyncio.sleep(delay)

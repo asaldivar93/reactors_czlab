@@ -98,7 +98,7 @@ class ReactorOpc:
             await actuator.init_node(server, self.node, self.idx)
 
         # Add method to match actuators to sensors
-        reactor_state = self.reactor.reactor_state
+        reactor_state = self.reactor.reactor_slow
 
         @uamethod
         async def set_pairing(parent, sensor, actuator, channel) -> bool:
