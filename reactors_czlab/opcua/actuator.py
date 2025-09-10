@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING
 from asyncua import ua
 
 from reactors_czlab.core.data import ControlConfig, ControlMethod
-from reactors_czlab.server_info import VERBOSE
 
 if TYPE_CHECKING:
     from asyncua import Server
@@ -45,10 +44,12 @@ class ActuatorOpc:
 
     async def update_value(self) -> None:
         """Update the actuator state in the server."""
-        new_val = self.actuator.channel.old_value
-        self.actuator.channel.old_value = new_val
-        await self.curr_value.write_value(float(new_val))
-        if VERBOSE:
+        this_value = await self.curr_value.get_value()  # get value in server
+        new_val = self.actuator.channel.old_value  # get value in actuator
+        self.actuator.channel.old_value = new_val  # Do we need this?
+        # Update only if value in server is different
+        if new_val != this_value:
+            await self.curr_value.write_value(float(new_val))
             _logger.debug(f"Updated {self.id} with value {new_val}")
 
     async def init_node(self, server: Server, parent: Node, idx: int) -> None:
