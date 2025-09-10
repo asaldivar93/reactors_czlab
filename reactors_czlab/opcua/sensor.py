@@ -52,14 +52,8 @@ class SensorOpc:
     async def update_value(self) -> None:
         """Update the server."""
         for i, channel in enumerate(self.channels):
-            this_val = await channel.get_value()  # Get value in server
             new_val = self.sensor.channels[i].value  # Get value in sensor
-            if not isinstance(new_val, float | int):
-                raise TypeError
-
-            # Update only if value in server is different
-            if this_val != new_val:
-                await channel.write_value(float(new_val))
-                _logger.debug(
-                    f"Updated {self.id}:{channel} with value {new_val}",
-                )
+            await channel.write_value(float(new_val))
+            _logger.debug(
+                f"Updated {self.id}:{channel} with value {new_val}",
+            )
