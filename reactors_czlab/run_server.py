@@ -98,8 +98,6 @@ reactors = [
 
 async def main() -> None:
     """Run the server."""
-    # Init modbus
-    await modbus_client.connect()
     # Init the server
     server = Server()
     await server.init()

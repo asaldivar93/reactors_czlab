@@ -6,6 +6,7 @@ import asyncio
 import logging
 import random
 from abc import ABC, abstractmethod
+from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, NamedTuple
 
 from reactors_czlab.core.data import Calibration, PhysicalInfo
@@ -27,7 +28,11 @@ if IN_RASPBERRYPI:
 
     from reactors_czlab.core.reactor import rpiplc
 
-    i2c_lock = asyncio.Lock()  # Serialize access to i2c channel
+    _i2c_lock = asyncio.Lock()  # Serialize access to i2c channel
+    _i2c_executor = ThreadPoolExecutor(
+        max_workers=1,
+        thread_name_prefix="i2c",
+    )
 
 
 ERROR_VAL = -0.111
@@ -452,7 +457,9 @@ class SpectralSensor(Sensor):
 
     async def read(self) -> None:
         """Read spectral sensor."""
-        async with i2c_lock:
+        loop = asyncio.get_running_loop()
+
+        def _blocking_call() -> None:
             values = {
                 "415": self.bus.channel_415nm,
                 "445": self.bus.channel_445nm,
@@ -467,3 +474,7 @@ class SpectralSensor(Sensor):
             }
             for chn in self.channels:
                 chn.value = values[chn.units]
+            _logger.debug(f"In {self.id}: {values}")
+
+        async with _i2c_lock:
+            await loop.run_in_executor(_i2c_executor, _blocking_call)

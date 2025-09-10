@@ -118,8 +118,9 @@ class Reactor:
             led_driver.set_pixel_all((65535, 65535, 65535))
             led_driver.show()
             # Read all sensors
-            for sensor in self.sensors.values():
-                await sensor.read()
+            async with asyncio.TaskGroup() as tg:
+                for sensor in self.sensors.values():
+                    tg.create_task(sensor.read())
 
             # Get pairings
             async with self.reactor_slow.lock:
