@@ -51,6 +51,8 @@ class ReactorOpc:
         self.sensor_nodes: list[SensorOpc] = []
         self.actuator_nodes: list[ActuatorOpc] = []
         self.create_child_nodes()
+        # Flag for sensing loop completed
+        self.sample_ready = asyncio.Event()
 
     @property
     def sensors(self) -> dict[str, Sensor]:
@@ -98,48 +100,64 @@ class ReactorOpc:
             await actuator.init_node(server, self.node, self.idx)
 
         # Add method to match actuators to sensors
-        reactor_state = self.reactor.reactor_slow
+        reactor_slow = self.reactor.reactor_slow
+        reactor_fast = self.reactor.reactor_fast
 
         @uamethod
-        async def set_pairing(parent, sensor, actuator, channel) -> bool:
+        async def set_pairing(parent, sid, aid, channel) -> bool:
             """Pairs an (actuator, channel) to a sensor."""
-            print(sensor)
             # Validete sensor_id and actuator_id
             if (
-                sensor not in reactor_state.sensors
-                or actuator not in reactor_state.actuators
+                sid not in reactor_slow.sensors
+                or aid not in reactor_fast.actuators
+                or aid not in reactor_fast.actuators
             ):
                 raise ua.UaStatusCodeError(ua.StatusCode.is_bad)
+
             # Check that the actuator is not paired already
             is_paired = [
-                (actuator, channel) in paired
-                for paired in reactor_state.pairings.values()
+                (aid, channel) in paired
+                for paired in reactor_slow.pairings.values()
             ]
             if any(is_paired):
                 raise ua.UaStatusCodeError(ua.StatusCode.is_bad)
+
             # Pair the actuator
-            async with reactor_state.lock:
-                reactor_state.pairings[sensor].append((actuator, channel))
-            _logger.info(f"Current pairings {reactor_state.pairings}")
+            async with reactor_slow.lock:
+                reactor_slow.pairings[sid].append((aid, channel))
+            # Remove the actuator from the fast loop
+            async with reactor_fast.lock:
+                try:
+                    reactor_fast.actuators.remove(aid)
+                except ValueError:
+                    _logger.error(f"{aid} not in fast loop")
+            _logger.info(f"Current pairings: {reactor_slow.pairings}")
 
             return True
 
         @uamethod
-        async def unpair(parent, sensor, actuator, channel) -> bool:
+        async def unpair(parent, sid, aid, channel) -> bool:
             """Unpairs an (actuator, channel) from a sensor."""
             # Validete sensor_id and actuator_id
             if (
-                sensor not in reactor_state.sensors
-                or actuator not in reactor_state.actuators
+                sid not in reactor_slow.sensors
+                or aid not in reactor_slow.actuators
+                or aid not in reactor_fast.actuators
             ):
                 raise ua.UaStatusCodeError(ua.StatusCode.is_bad)
+
             # Unpair the actuator
-            async with reactor_state.lock:
-                reactor_state.pairings[sensor].remove((actuator, channel))
+            async with reactor_slow.lock:
+                reactor_slow.pairings[sid].remove((aid, channel))
+            # Get the actuator back to the fast loop
+            if self.actuators[aid].info.type == "pwm":
+                async with reactor_fast.lock:
+                    reactor_fast.actuators.append(aid)
             _logger.info(f"Current pairings {reactor_state.pairings}")
 
             return True
 
+        # TO DO: add description to variables
         await self.node.add_method(
             idx,
             "set_pairing",
@@ -192,8 +210,8 @@ class ReactorOpc:
 
     async def update(self) -> None:
         """Get Sensor readings and update actuators."""
-        # TO DO: Replace the update loop with qeue
         while True:
+            await self.sample_ready.wait()
             for sensor_opc in self.sensor_nodes:
                 await sensor_opc.update_value()
 

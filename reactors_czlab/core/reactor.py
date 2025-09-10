@@ -109,7 +109,7 @@ class Reactor:
         """Set the actuators as a dict."""
         self._actuators = {a.id: a for a in actuators}
 
-    async def slow_loop(self) -> None:
+    async def slow_loop(self, sample_ready: asyncio.Event) -> None:
         """Read sensors and update paired actuators."""
         loop = asyncio.get_running_loop()
         next_tick = loop.time()
@@ -135,26 +135,24 @@ class Reactor:
                         except IndexError:
                             _logger.error(f"{chn} not a channel in {sensor.id}")
                         else:
+                            # TO DO: move this logic inside write_output
                             if actuator.info.type == "digital":
                                 await actuator.write_output(value)
                             else:
                                 actuator.write_output(value)
-
+            # Flag that the sensing loop finished
+            sample_ready.set()
+            # Drift correct the next tick
             now = loop.time()
             delay = max(0.0, next_tick - now)
             await asyncio.sleep(delay)
 
     async def fast_loop(self) -> None:
         """Update fast acting actuators."""
-        loop = asyncio.get_running_loop()
-        next_tick = loop.time()
         while True:
-            next_tick += 0.1
             async with self.reactor_fast.lock:
                 for aid in self.reactor_fast.actuators:
                     actuator = self.actuators[aid]
                     async with pwm_lock:
                         actuator.write_output(0)
-            now = loop.time()
-            delay = max(0.0, next_tick - now)
-            await asyncio.sleep(delay)
+            await asyncio.sleep(0.05)
