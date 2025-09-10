@@ -11,7 +11,7 @@ from reactors_czlab.core.data import ControlConfig, ControlMethod
 from reactors_czlab.core.reactor import IN_RASPBERRYPI
 
 if TYPE_CHECKING:
-    from reactors_czlab.core.data import ControlConfig, PhysicalInfo
+    from reactors_czlab.core.data import PhysicalInfo
 
 if IN_RASPBERRYPI:
     from reactors_czlab.core.reactor import rpiplc

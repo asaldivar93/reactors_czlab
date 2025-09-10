@@ -25,28 +25,25 @@ def copy_info(info: PhysicalInfo, channels: list[Channel]) -> PhysicalInfo:
     return new_info
 
 
-ph_channels = [
-    Channel("pH", "pH", register="pmc1"),
-    Channel("oC", "degree_celsius", register="pmc6"),
-]
-do_channels = [
-    Channel("ppm", "dissolved_oxygen", register="pmc1"),
-    Channel("oC", "degree_celsius", register="pmc6"),
-]
-
 HAMILTON_SENSORS = {
     "R0": {
         "R0:ph": PhysicalInfo(
             model="ArcPh",
             address=0x01,
-            channels=ph_channels,
             type="digital",
+            channels=[
+                Channel("pH", "pH", register="pmc1"),
+                Channel("oC", "degree_celsius", register="pmc6"),
+            ],
         ),
         "R0:do": PhysicalInfo(
             model="VisiFerm",
             address=0x04,
             type="digital",
-            channels=do_channels,
+            channels=[
+                Channel("ppm", "dissolved_oxygen", register="pmc1"),
+                Channel("oC", "degree_celsius", register="pmc6"),
+            ],
         ),
     },
     "R1": {
@@ -54,13 +51,19 @@ HAMILTON_SENSORS = {
             model="ArcPh",
             address=0x02,
             type="digital",
-            channels=ph_channels,
+            channels=[
+                Channel("pH", "pH", register="pmc1"),
+                Channel("oC", "degree_celsius", register="pmc6"),
+            ],
         ),
         "R1:do": PhysicalInfo(
             model="VisiFerm",
             address=0x05,
             type="digital",
-            channels=do_channels,
+            channels=[
+                Channel("ppm", "dissolved_oxygen", register="pmc1"),
+                Channel("oC", "degree_celsius", register="pmc6"),
+            ],
         ),
     },
     "R2": {
@@ -68,36 +71,41 @@ HAMILTON_SENSORS = {
             model="ArcPh",
             address=0x03,
             type="digital",
-            channels=ph_channels,
+            channels=[
+                Channel("pH", "pH", register="pmc1"),
+                Channel("oC", "degree_celsius", register="pmc6"),
+            ],
         ),
         "R2:do": PhysicalInfo(
             model="VisiFerm",
             address=0x06,
             type="digital",
-            channels=do_channels,
+            channels=[
+                Channel("ppm", "dissolved_oxygen", register="pmc1"),
+                Channel("oC", "degree_celsius", register="pmc6"),
+            ],
         ),
     },
 }
 
-as7341_channels = [
-    Channel("415", "dimensionles", register="all"),
-    Channel("445", "dimensionles", register="all"),
-    Channel("480", "dimensionles", register="all"),
-    Channel("515", "dimensionles", register="all"),
-    Channel("555", "dimensionles", register="all"),
-    Channel("590", "dimensionles", register="all"),
-    Channel("630", "dimensionles", register="all"),
-    Channel("680", "dimensionles", register="all"),
-    Channel("clear", "dimensionles", register="all"),
-    Channel("nir", "dimensionles", register="all"),
-]
 BIOMASS_SENSORS = {
     "R0": {
         "R0:biomass": PhysicalInfo(
             model="biomass",
             address=0x32,
             type="digital",
-            channels=as7341_channels,
+            channels=[
+                Channel("415", "dimensionles", register="all"),
+                Channel("445", "dimensionles", register="all"),
+                Channel("480", "dimensionles", register="all"),
+                Channel("515", "dimensionles", register="all"),
+                Channel("555", "dimensionles", register="all"),
+                Channel("590", "dimensionles", register="all"),
+                Channel("630", "dimensionles", register="all"),
+                Channel("680", "dimensionles", register="all"),
+                Channel("clear", "dimensionles", register="all"),
+                Channel("nir", "dimensionles", register="all"),
+            ],
         ),
     },
     "R1": {
@@ -105,7 +113,18 @@ BIOMASS_SENSORS = {
             model="biomass",
             address=0x32,
             type="digital",
-            channels=as7341_channels,
+            channels=[
+                Channel("415", "dimensionles", register="all"),
+                Channel("445", "dimensionles", register="all"),
+                Channel("480", "dimensionles", register="all"),
+                Channel("515", "dimensionles", register="all"),
+                Channel("555", "dimensionles", register="all"),
+                Channel("590", "dimensionles", register="all"),
+                Channel("630", "dimensionles", register="all"),
+                Channel("680", "dimensionles", register="all"),
+                Channel("clear", "dimensionles", register="all"),
+                Channel("nir", "dimensionles", register="all"),
+            ],
         ),
     },
     "R2": {
@@ -113,7 +132,18 @@ BIOMASS_SENSORS = {
             model="biomass",
             address=0x32,
             type="digital",
-            channels=as7341_channels,
+            channels=[
+                Channel("415", "dimensionles", register="all"),
+                Channel("445", "dimensionles", register="all"),
+                Channel("480", "dimensionles", register="all"),
+                Channel("515", "dimensionles", register="all"),
+                Channel("555", "dimensionles", register="all"),
+                Channel("590", "dimensionles", register="all"),
+                Channel("630", "dimensionles", register="all"),
+                Channel("680", "dimensionles", register="all"),
+                Channel("clear", "dimensionles", register="all"),
+                Channel("nir", "dimensionles", register="all"),
+            ],
         ),
     },
 }
@@ -316,7 +346,7 @@ MFC_ACTUATORS = {
     },
 }
 
-i2c_ports = {
+I2C_PORTS = {
     "R0": 2,
     "R1": 3,
     "R2": 4,

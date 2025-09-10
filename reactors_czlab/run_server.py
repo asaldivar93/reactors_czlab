@@ -15,8 +15,8 @@ from reactors_czlab.server_info import (
     ANALOG_ACTUATORS,
     BIOMASS_SENSORS,
     HAMILTON_SENSORS,
+    I2C_PORTS,
     MFC_ACTUATORS,
-    i2c_ports,
 )
 
 logging.getLogger("asyncio").setLevel(logging.CRITICAL)
@@ -67,7 +67,7 @@ for r in REACTORS:
     sens = [
         SpectralSensor(k, config) for k, config in BIOMASS_SENSORS[r].items()
     ]
-    i2c_chn = i2c_ports[r]
+    i2c_chn = I2C_PORTS[r]
     try:
         sens[0].set_i2c(tca[i2c_chn])
     except ValueError:
@@ -76,9 +76,7 @@ for r in REACTORS:
 
 analog = {}
 for r in REACTORS:
-    acts = [
-        PlcActuator(k, config) for k, config in ANALOG_ACTUATORS[r].items()
-    ]
+    acts = [PlcActuator(k, config) for k, config in ANALOG_ACTUATORS[r].items()]
     analog.update({r: acts})
 
 mfc = {}

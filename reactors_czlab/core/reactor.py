@@ -35,10 +35,10 @@ class ReactorState:
     """Shared state of the reactor."""
 
     pairings: dict[str, list[tuple[str, int]]] = field(default_factory=dict)
-    sensors: list[Sensor] = field(default_factory=list)
-    actuators: list[Actuator] = field(default_factory=list)
-    fast_actuators: list[Actuator] = field(default_factory=list)
-    slow_actuators: list[Actuator] = field(default_factory=list)
+    sensors: list[str] = field(default_factory=list)
+    actuators: list[str] = field(default_factory=list)
+    fast_actuators: list[str] = field(default_factory=list)
+    slow_actuators: list[str] = field(default_factory=list)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
@@ -75,11 +75,11 @@ class Reactor:
         self.reactor_state = ReactorState()
         for actuator in self.actuators.values():
             if actuator.info.type == "digital":
-                self.reactor_state.slow_actuators.append(actuator)
+                self.reactor_state.slow_actuators.append(actuator.id)
             else:
-                self.reactor_state.fast_actuators.append(actuator)
-        self.reactor_state.sensors = sensors
-        self.reactor_state.actuators = actuators
+                self.reactor_state.fast_actuators.append(actuator.id)
+        self.reactor_state.sensors = [s.id for s in sensors]
+        self.reactor_state.actuators = [a.id for a in actuators]
 
     @property
     def sensors(self) -> dict[str, Sensor]:
@@ -134,7 +134,8 @@ class Reactor:
                                 actuator.write_output(value)
 
                 # Update other digital actuators (MODBUS, I2C)
-                for actuator in self.reactor_state.slow_actuators:
+                for aid in self.reactor_state.slow_actuators:
+                    actuator = self.actuators[aid]
                     await actuator.write_output(0)
 
             now = loop.time()
@@ -145,7 +146,8 @@ class Reactor:
         """Update fast acting actuators."""
         while True:
             async with self.reactor_state.lock:
-                for actuator in self.reactor_state.fast_actuators:
+                for aid in self.reactor_state.fast_actuators:
+                    actuator = self.actuators[aid]
                     async with pwm_lock:
                         actuator.write_output(0)
 
