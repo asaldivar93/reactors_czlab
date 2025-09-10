@@ -31,14 +31,20 @@ pwm_lock = asyncio.Lock()
 
 
 @dataclass
-class ReactorState:
-    """Shared state of the reactor."""
+class ReactorSlow:
+    """Shared state of the slow loop."""
 
     pairings: dict[str, list[tuple[str, int]]] = field(default_factory=dict)
     sensors: list[str] = field(default_factory=list)
     actuators: list[str] = field(default_factory=list)
-    fast_actuators: list[str] = field(default_factory=list)
-    slow_actuators: list[str] = field(default_factory=list)
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+
+@dataclass
+class ReactorFast:
+    """Shared state of the fast loop."""
+
+    actuators: list[str] = field(default_factory=list)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
@@ -72,14 +78,14 @@ class Reactor:
         self.period: float = period
         self.sensors = sensors
         self.actuators = actuators
-        self.reactor_state = ReactorState()
+        self.reactor_slow = ReactorSlow()
+        self.reactor_fast = ReactorFast()
         for actuator in self.actuators.values():
             if actuator.info.type == "digital":
-                self.reactor_state.slow_actuators.append(actuator.id)
+                self.reactor_slow.actuators.append(actuator.id)
             else:
-                self.reactor_state.fast_actuators.append(actuator.id)
-        self.reactor_state.sensors = [s.id for s in sensors]
-        self.reactor_state.actuators = [a.id for a in actuators]
+                self.reactor_fast.actuators.append(actuator.id)
+        self.reactor_slow.sensors = [s.id for s in sensors]
 
     @property
     def sensors(self) -> dict[str, Sensor]:
@@ -116,11 +122,11 @@ class Reactor:
                 await sensor.read()
 
             # Get pairings
-            async with self.reactor_state.lock:
+            async with self.reactor_slow.lock:
                 # Update paired actuators
-                for sensor_id in self.reactor_state.pairings:
+                for sensor_id in self.reactor_slow.pairings:
                     sensor = self.sensors[sensor_id]  # get the sensor
-                    for aid, chn in self.reactor_state.pairings[sensor_id]:
+                    for aid, chn in self.reactor_slow.pairings[sensor_id]:
                         actuator = self.actuators[aid]  # get the actuator
                         # Verify that the selected chn exist
                         try:
@@ -133,11 +139,6 @@ class Reactor:
                             else:
                                 actuator.write_output(value)
 
-                # Update other digital actuators (MODBUS, I2C)
-                for aid in self.reactor_state.slow_actuators:
-                    actuator = self.actuators[aid]
-                    await actuator.write_output(0)
-
             now = loop.time()
             delay = max(0.0, next_tick - now)
             await asyncio.sleep(delay)
@@ -145,8 +146,8 @@ class Reactor:
     async def fast_loop(self) -> None:
         """Update fast acting actuators."""
         while True:
-            async with self.reactor_state.lock:
-                for aid in self.reactor_state.fast_actuators:
+            async with self.reactor_fast.lock:
+                for aid in self.reactor_fast.actuators:
                     actuator = self.actuators[aid]
                     async with pwm_lock:
                         actuator.write_output(0)
