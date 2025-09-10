@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import ClassVar
 
 from pymodbus import FramerType
-from pymodbus.client import ModbusSerialClient
+from pymodbus.client import AsyncModbusSerialClient
 from pymodbus.constants import Endian
 from pymodbus.exceptions import ModbusException
 from pymodbus.payload import BinaryPayloadBuilder, BinaryPayloadDecoder
@@ -80,7 +79,7 @@ class ModbusHandler:
 
         """
         self.baudrate = baudrate
-        self.client = ModbusSerialClient(
+        self.client = AsyncModbusSerialClient(
             framer=FramerType.RTU,
             port=port,
             baudrate=self.baudrate,
@@ -93,14 +92,10 @@ class ModbusHandler:
         # Serialize all Modbus calls so only 1 sensor uses the
         # modbus line at a time
         self.lock = asyncio.Lock()
-        # Offload modbus calls to a different thread to prevent them
-        # from blocking asyncio
-        self._executor = ThreadPoolExecutor(
-            max_workers=1,
-            thread_name_prefix="modbus",
-        )
 
-        if not self.client.connect():
+    async def connect(self) -> None:
+        """Innit modbus."""
+        if not await self.client.connect():
             error_message = f"Failed to connect to Modbus device at port {port}"
             raise ModbusError(error_message)
         self._last_result = None
@@ -140,14 +135,10 @@ class ModbusHandler:
                     count=count,
                 ):
                     async with self.lock:
-                        loop = asyncio.get_running_loop()
-                        result = await loop.run_in_executor(
-                            self._executor,
-                            lambda: self.client.read_holding_registers(
-                                address=address,
-                                count=count,
-                                slave=slave,
-                            ),
+                        result = await self.client.read_holding_registers(
+                            address=address,
+                            count=count,
+                            slave=slave,
                         )
 
                 case ModbusRequest(
@@ -157,14 +148,10 @@ class ModbusHandler:
                     count=count,
                 ):
                     async with self.lock:
-                        loop = asyncio.get_running_loop()
-                        result = await loop.run_in_executor(
-                            self._executor,
-                            lambda: self.client.read_input_registers(
-                                address=address,
-                                count=count,
-                                slave=slave,
-                            ),
+                        result = await self.client.read_input_registers(
+                            address=address,
+                            count=count,
+                            slave=slave,
                         )
 
                 case ModbusRequest(
@@ -179,14 +166,10 @@ class ModbusHandler:
                         raise ModbusError(error_message)
                     payload = self._build_payload(values)
                     async with self.lock:
-                        loop = asyncio.get_running_loop()
-                        result = await loop.run_in_executor(
-                            self._executor,
-                            lambda: self.client.write_registers(
-                                address=address,
-                                values=payload,
-                                slave=slave,
-                            ),
+                        result = await self.client.write_registers(
+                            address=address,
+                            values=payload,
+                            slave=slave,
                         )
 
                 case _:
