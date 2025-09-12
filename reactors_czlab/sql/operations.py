@@ -124,7 +124,7 @@ def store_data(
         insert_map = (
             "INSERT INTO data \
             (experiment_id, date, reactor, model, calibration, units, value) \
-            VALUES (%s, %s, %s, %s, %s, %s)",
+            VALUES (%s, %s, %s, %s, %s, %s, %s)",
             (exp_id, datetime, reactor_id, model, calibration, units, value),
         )
         query, values = insert_map
