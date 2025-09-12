@@ -242,4 +242,5 @@ def rows_to_polars(rows: list) -> pl.DataFrame:
         "value",
     ]
     schema = {col: type(rows[0][i]) for i, col in enumerate(columns)}
+    schema["calibration"] = str
     return pl.DataFrame(rows, schema=schema)
