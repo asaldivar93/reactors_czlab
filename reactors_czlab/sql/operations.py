@@ -11,8 +11,6 @@ from typing import TYPE_CHECKING
 import polars as pl
 import psycopg
 
-from reactors_czlab.server_info import VERBOSE
-
 if TYPE_CHECKING:
     from psycopg import Connection, Cursor
 
@@ -128,12 +126,9 @@ def store_data(
             (exp_id, datetime, reactor_id, model, calibration, units, value),
         )
         query, values = insert_map
-        if VERBOSE:
-            _logger.debug(data)
-            _logger.debug(query)
-            _logger.debug(values)
         cursor.execute(query, values)
         connection.commit()
+        _logger.debug(f"Commit to db: {values}")
 
     except psycopg.Error as err:
         error_message = "Error during insert operation."

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from reactors_czlab.server_info import VERBOSE
+from asyncua import ua
+
 from reactors_czlab.sql.operations import store_data
 
 if TYPE_CHECKING:
@@ -52,16 +54,45 @@ class ReactorOpcClient:
             items are a core.utils.PhysicalInfo instance
         """
         self.variables = variables
+        self._queue = asyncio.Queue(maxsize=1000)
         # Get all the variable
         self.vars = [client.get_node(nodeid) for nodeid in variables]
+
         await self._init_sub(client)
+        commit_task = asyncio.create_task(self.commit_to_db())
 
     async def _init_sub(self, client: Client) -> None:
         """Create a subcription to the variables."""
-        sub = await client.create_subscription(500, self)
-        await sub.subscribe_data_change(self.vars)
+        params = ua.CreateSubscriptionParameters()
+        params.RequestedPublishingInterval = 500
+        params.RequestedMaxKeepAliveCount = 60
+        params.RequestedLifetimeCount = 60
+        params.MaxNotificationsPerPublish = 0
+        sub = await client.create_subscription(params, self)
 
-    def datachange_notification(
+        filt = build_no_deadbands_filter()
+        requests = []
+        for node in self.vars:
+            params = ua.MonitoringParameters(
+                ClientHandle=0,
+                SamplingInterval=0.0,
+                QueueSize=4,
+                DiscardOldest=True,
+                Filter=filt,
+            )
+            requests.append(
+                ua.MonitoredItemCreateRequest(
+                    ItemToMonitor=ua.ReadValueId(
+                        NodeId_=node.nodeid,
+                        AttributeId=ua.AttributeIds.Value,
+                    ),
+                    MonitoringMode_=ua.MonitoringMode.Reporting,
+                    RequestedParameters=params,
+                ),
+            )
+        results = await sub.subscribe_data_change(self.vars)
+
+    async def datachange_notification(
         self,
         node: Node,
         val: float,
@@ -70,10 +101,28 @@ class ReactorOpcClient:
         """Commit to the sql database."""
         nodeid = node.nodeid.to_string()
         info = self.variables.get(nodeid, None)
-        if VERBOSE:
-            _logger.debug(data)
         if info is not None:
             info.channels[0].value = val
             timestamp = datetime.now()
-            store_data(info, self.id, self.experiment, timestamp)
-            _logger.debug(f"Data change in {self.id} - {info.model}: {val}")
+            await self._queue.put((info, timestamp))
+            _logger.debug(
+                f"Data change in {self.id}:{nodeid}:{info.model}: {val}",
+            )
+
+    async def commit_to_db(self):
+        while True:
+            info, timestamp = await self._queue.get()
+            try:
+                store_data(info, self.id, self.experiment, timestamp)
+            finally:
+                self._queue.task_done()
+
+
+def build_no_deadbands_filter(
+    trigger=ua.DataChangeTrigger.StatusValueTimestamp,
+):
+    f = ua.DataChangeFilter()
+    f.Trigger = trigger
+    f.DeadbandType = ua.DeadbandType.None_
+    f.DeadbandValue = 0.0
+    return f

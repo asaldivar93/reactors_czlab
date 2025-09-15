@@ -33,7 +33,7 @@ _logger.addHandler(_stream_handler)
 
 async def main():
     experiment = "test"
-    reactors = ["R0"]
+    reactors = ["R0", "R1", "R2"]
     volume = 2
     reactor_nodes = [ReactorOpcClient(k, experiment) for k in reactors]
     create_experiment(experiment, datetime.now(), reactors, volume)
