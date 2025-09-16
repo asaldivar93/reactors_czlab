@@ -7,21 +7,21 @@ from reactors_czlab.core.data import Calibration, Channel, PhysicalInfo
 VERBOSE = True
 
 
-def copy_info(info: PhysicalInfo, channels: list[Channel]) -> PhysicalInfo:
-    """Copy sensor info and remove the channles in list.
+def copy_info(
+    info: PhysicalInfo, channels_to_keep: list[Channel]
+) -> PhysicalInfo:
+    """Copy sensor info and keep the channles in list.
 
     Parameters
     ----------
     info:
         Sensor info to copy
-    channels:
+    channels_to_keep:
         List of channels to keep
 
     """
     new_info = deepcopy(info)
-    for chn in new_info.channels:
-        if chn not in channels:
-            new_info.channels.remove(chn)
+    new_info.channels = [c for c in new_info.channels if c in channels_to_keep]
     return new_info
 
 

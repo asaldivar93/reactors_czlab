@@ -54,6 +54,8 @@ class ReactorOpcClient:
             items are a core.utils.PhysicalInfo instance
         """
         self.variables = variables
+        for key, val in self.variables.items():
+            _logger.info(f"{key}: {val}")
         self._queue = asyncio.Queue(maxsize=1000)
         # Get all the variable
         self.vars = [client.get_node(nodeid) for nodeid in variables]
@@ -69,28 +71,7 @@ class ReactorOpcClient:
         params.RequestedLifetimeCount = 60
         params.MaxNotificationsPerPublish = 0
         sub = await client.create_subscription(params, self)
-
-        filt = build_no_deadbands_filter()
-        requests = []
-        for node in self.vars:
-            params = ua.MonitoringParameters(
-                ClientHandle=0,
-                SamplingInterval=0.0,
-                QueueSize=4,
-                DiscardOldest=True,
-                Filter=filt,
-            )
-            requests.append(
-                ua.MonitoredItemCreateRequest(
-                    ItemToMonitor=ua.ReadValueId(
-                        NodeId_=node.nodeid,
-                        AttributeId=ua.AttributeIds.Value,
-                    ),
-                    MonitoringMode_=ua.MonitoringMode.Reporting,
-                    RequestedParameters=params,
-                ),
-            )
-        results = await sub.subscribe_data_change(self.vars)
+        await sub.subscribe_data_change(self.vars)
 
     async def datachange_notification(
         self,
@@ -116,13 +97,3 @@ class ReactorOpcClient:
                 store_data(info, self.id, self.experiment, timestamp)
             finally:
                 self._queue.task_done()
-
-
-def build_no_deadbands_filter(
-    trigger=ua.DataChangeTrigger.StatusValueTimestamp,
-):
-    f = ua.DataChangeFilter()
-    f.Trigger = trigger
-    f.DeadbandType = ua.DeadbandType.None_
-    f.DeadbandValue = 0.0
-    return f
