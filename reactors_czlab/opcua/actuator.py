@@ -52,7 +52,12 @@ class ActuatorOpc:
             await self.curr_value.write_value(float(new_val))
             _logger.debug(f"Updated {self.id} with value {new_val}")
 
-    async def init_node(self, server: Server, parent: Node, idx: int) -> None:
+    async def init_node(
+        self,
+        server: Server,
+        parent: Node,
+        idx: int,
+    ) -> None:
         """Add node and variables for the actuator."""
         actuator = self.actuator
 

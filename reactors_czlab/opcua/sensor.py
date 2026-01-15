@@ -33,7 +33,7 @@ class SensorOpc:
         this = self.sensor.id
         return this == other
 
-    async def init_node(self, parent: Node, idx: int) -> None:
+    async def init_node(self, parent: Node, idx: int, parent_id: str) -> None:
         """Add node and variables for the sensor."""
         sensor = self.sensor
         # Add sensor node to reactor
@@ -41,7 +41,11 @@ class SensorOpc:
 
         # Add channels to store data from the sensor
         for i, channel in enumerate(sensor.channels):
-            var = await self.node.add_variable(idx, f"var_{i}", 0.0)
+            var = await self.node.add_variable(
+                idx,
+                f"{self.id}:{channel.units}",
+                0.0,
+            )
             await var.set_writable()
             await var.write_attribute(
                 ua.AttributeIds.Description,

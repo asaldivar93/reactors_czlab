@@ -93,7 +93,7 @@ class ReactorOpc:
 
         # Add sensor nodes to the server
         for sensor in self.sensor_nodes:
-            await sensor.init_node(self.node, self.idx)
+            await sensor.init_node(self.node, self.idx, self.id)
 
         # Add actuator nodes to the server
         for actuator in self.actuator_nodes:
@@ -110,7 +110,7 @@ class ReactorOpc:
             if (
                 sid not in reactor_slow.sensors
                 or aid not in reactor_fast.actuators
-                or aid not in reactor_fast.actuators
+                or aid not in reactor_slow.actuators
             ):
                 raise ua.UaStatusCodeError(ua.StatusCode.is_bad)
 
