@@ -10,7 +10,6 @@ Generated with ChatGPT
 
 import argparse
 import asyncio
-from typing import Optional
 
 from asyncua import Client, ua
 from asyncua.common import Node
@@ -18,13 +17,6 @@ from asyncua.common import Node
 
 def indent(level: int) -> str:
     return "  " * level
-
-
-def safe_str(x) -> str:
-    try:
-        return str(x)
-    except Exception:
-        return "<unprintable>"
 
 
 async def node_class_name(node_class: ua.NodeClass) -> str:
@@ -35,74 +27,53 @@ async def node_class_name(node_class: ua.NodeClass) -> str:
         return safe_str(node_class)
 
 
-async def try_read_value(node: Node) -> Optional[str]:
-    """Best-effort read of a node's value.
-    Only meaningful for Variable nodes. Returns a string or None.
-    """
-    try:
-        dv = await node.read_data_value()
-        # dv is a DataValue with status_code, source_timestamp, server_timestamp, value
-        if dv is None:
-            return None
-        if hasattr(dv, "status") and dv.status and dv.status.is_bad():
-            return f"<bad status: {dv.status}>"
-        if (
-            hasattr(dv, "status_code")
-            and dv.status_code
-            and dv.status_code.is_bad()
-        ):
-            return f"<bad status: {dv.status_code}>"
-        if dv.value is None:
-            return "<no value>"
-        return safe_str(dv.value.Value)
-    except Exception as e:
-        return f"<read failed: {type(e).__name__}: {e}>"
-
-
-async def try_read_datatype(node: Node) -> Optional[str]:
+async def try_read_datatype(node: Node) -> str:
     """Best-effort read of a Variable node's DataType attribute.
+
     Returns a short string if possible.
     """
     try:
         dt = await node.read_data_type()  # NodeId of the datatype
-        return safe_str(dt)
+        return str(dt)
     except Exception:
-        return None
+        return "no-data-type"
 
 
 async def browse_tree(
     node: Node,
     level: int,
     max_depth: int,
-    show_values: bool,
     visited: set,
     max_children: int,
 ):
     """Recursively browse children of `node` to `max_depth`.
+
     Uses a visited set to avoid infinite loops in case of cyclic references.
     """
     try:
         nodeid = node.nodeid.to_string()
-    except Exception:
+    except Exception as e:
+        print(e)
         nodeid = "<unknown nodeid>"
 
     # De-dupe by NodeId string form
-    nodeid_key = safe_str(nodeid)
-    # if nodeid_key in visited:
-    #     print(f"{indent(level)}↩ {nodeid_key} (already visited)")
-    #     return
-    # visited.add(nodeid_key)
+    if nodeid in visited:
+        print(f"{indent(level)}↩ {nodeid} (already visited)")
+        return
+    visited.add(nodeid)
 
     # Read metadata (best effort)
     try:
         display_name = (await node.read_display_name()).Text
-    except Exception:
+    except Exception as e:
+        print(e)
         display_name = "<no display name>"
 
     try:
         browse_name = await node.read_browse_name()
-        browse_name_str = safe_str(browse_name)
+        browse_name_str = str(browse_name)
     except Exception:
+        print(e)
         browse_name_str = "<no browse name>"
 
     try:

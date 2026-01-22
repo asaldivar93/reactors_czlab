@@ -14,6 +14,7 @@ from reactors_czlab.opcua.sensor import SensorOpc
 
 if TYPE_CHECKING:
     from asyncua import Server
+    from asyncua.common import Node
 
     from reactors_czlab.core.actuator import Actuator
     from reactors_czlab.core.sensor import Sensor
@@ -90,29 +91,41 @@ class ReactorOpc:
 
         # Create a Reactor object in the server
         self.node = await server.nodes.objects.add_object(idx, self.id)
+        # Create Actuators and Sensors objects in the server
+        self.snode = await self.node.add_object(idx, f"{self.id}:sensors")
+        self.anode = await self.node.add_object(idx, f"{self.id}:actuators")
 
         # Add sensor nodes to the server
         for sensor in self.sensor_nodes:
-            await sensor.init_node(self.node, self.idx, self.id)
+            await sensor.init_node(self.snode, self.idx, self.id)
 
         # Add actuator nodes to the server
         for actuator in self.actuator_nodes:
-            await actuator.init_node(server, self.node, self.idx)
+            await actuator.init_node(server, self.anode, self.idx)
 
         # Add method to match actuators to sensors
         reactor_slow = self.reactor.reactor_slow
         reactor_fast = self.reactor.reactor_fast
 
         @uamethod
-        async def set_pairing(parent, sid, aid, channel) -> bool:
+        async def set_pairing(
+            parent: Node,
+            sid: str,
+            aid: str,
+            channel: int,
+        ) -> bool:
             """Pairs an (actuator, channel) to a sensor."""
             # Validete sensor_id and actuator_id
+            if sid not in reactor_slow.sensors:
+                _logger.error(f"sid not in {self.id} sensors")
+                return False
+
             if (
-                sid not in reactor_slow.sensors
-                or aid not in reactor_fast.actuators
+                aid not in reactor_fast.actuators
                 or aid not in reactor_slow.actuators
             ):
-                raise ua.UaStatusCodeError(ua.StatusCode.is_bad)
+                _logger.error(f"aid not in {self.id} actuators")
+                return False
 
             # Check that the actuator is not paired already
             is_paired = [
@@ -120,7 +133,8 @@ class ReactorOpc:
                 for paired in reactor_slow.pairings.values()
             ]
             if any(is_paired):
-                raise ua.UaStatusCodeError(ua.StatusCode.is_bad)
+                _logger.error(f"{aid} already paired to a sensor")
+                return False
 
             # Pair the actuator
             async with reactor_slow.lock:
@@ -136,7 +150,12 @@ class ReactorOpc:
             return True
 
         @uamethod
-        async def unpair(parent, sid, aid, channel) -> bool:
+        async def unpair(
+            parent: Node,
+            sid: str,
+            aid: str,
+            channel: int,
+        ) -> bool:
             """Unpairs an (actuator, channel) from a sensor."""
             # Validete sensor_id and actuator_id
             if (
@@ -158,15 +177,23 @@ class ReactorOpc:
             return True
 
         # TO DO: add description to variables
+        inarg_sid = ua.Argument()
+        inarg_sid.Name = "Sensor_id"
+        inarg_sid.DataType = ua.NodeId(ua.ObjectIds.String)
+
+        inarg_aid = ua.Argument()
+        inarg_aid.Name = "Actuator_id"
+        inarg_sid.DataType = ua.NodeId(ua.ObjectIds.String)
+
+        inarg_chn = ua.Argument()
+        inarg_chn.Name = "Channel"
+        inarg_chn.DataType = ua.NodeId(ua.ObjectIds.Int64)
+
         await self.node.add_method(
             idx,
             "set_pairing",
             set_pairing,
-            [
-                ua.VariantType.String,
-                ua.VariantType.String,
-                ua.VariantType.Int64,
-            ],
+            [inarg_sid, inarg_aid, inarg_chn],
             [ua.VariantType.Boolean],
         )
 
@@ -174,38 +201,8 @@ class ReactorOpc:
             idx,
             "unpair",
             unpair,
-            [
-                ua.VariantType.String,
-                ua.VariantType.String,
-                ua.VariantType.Int64,
-            ],
+            [inarg_sid, inarg_aid, inarg_chn],
             [ua.VariantType.Boolean],
-        )
-
-        # Get all avaliable sensors
-        sensors_list = [sensor.id for sensor in self.sensors.values()]
-        # Add sensor list to the opc server
-        sensors_variant = ua.Variant(
-            [ua.LocalizedText(sensor) for sensor in sensors_list],
-            ua.VariantType.LocalizedText,
-        )
-        await self.node.add_property(
-            ua.ObjectIds.MultiStateDiscreteType_EnumStrings,
-            "Sensors",
-            sensors_variant,
-        )
-
-        # Get all avaliable actuators
-        actuators_list = [actuator.id for actuator in self.actuators.values()]
-        # Add sensor list to the opc server
-        actuators_variant = ua.Variant(
-            [ua.LocalizedText(actuator) for actuator in actuators_list],
-            ua.VariantType.LocalizedText,
-        )
-        await self.node.add_property(
-            ua.ObjectIds.MultiStateDiscreteType_EnumStrings,
-            "Actuators",
-            actuators_variant,
         )
 
     async def update(self) -> None:

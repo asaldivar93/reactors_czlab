@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from abc import abstractmethod
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -97,3 +98,7 @@ class ReactorOpcClient:
                 store_data(info, self.id, self.experiment, timestamp)
             finally:
                 self._queue.task_done()
+
+    @abstractmethod
+    def write(self, nodeid: str, value: str) -> None:
+        """Write value to the server."""

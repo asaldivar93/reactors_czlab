@@ -8,12 +8,14 @@ Examples:
 
 """
 
+from __future__ import annotations
+
 import argparse
 import asyncio
 import re
-from typing import Optional, Set
 
 from asyncua import Client
+from asyncua.common import Node
 
 R_NUMERIC_BROWSENAME = re.compile(r"^R\d+$")
 
@@ -22,95 +24,74 @@ def indent(level: int) -> str:
     return "  " * level
 
 
-def safe_str(x) -> str:
-    try:
-        return str(x)
-    except Exception:
-        return "<unprintable>"
-
-
-async def try_read_value(node) -> Optional[str]:
-    try:
-        dv = await node.read_data_value()
-        if dv is None:
-            return None
-
-        # asyncua exposes StatusCode as dv.status_code typically
-        sc = getattr(dv, "status_code", None)
-        if sc is not None and hasattr(sc, "is_bad") and sc.is_bad():
-            return f"<bad status: {sc}>"
-
-        val = getattr(dv, "value", None)
-        if val is None:
-            return "<no value>"
-        return safe_str(val.Value)
-    except Exception as e:
-        return f"<read failed: {type(e).__name__}: {e}>"
-
-
-async def node_line(node, show_values: bool) -> str:
+async def node_line(node: Node) -> str:
     """Build one printable line with useful metadata."""
     try:
         nodeid = node.nodeid.to_string()
-        nodeid_str = safe_str(nodeid)
-    except Exception:
-        nodeid_str = "<unknown nodeid>"
+    except Exception as e:
+        print(e)
+        nodeid = "<unknown nodeid>"
 
     try:
-        dn = (await node.read_display_name()).Text
-    except Exception:
-        dn = "<no display name>"
+        disp_name = (await node.read_display_name()).Text
+    except Exception as e:
+        print(e)
+        disp_name = "<no display name>"
 
     try:
-        bn = await node.read_browse_name()
+        browse_name = await node.read_browse_name()
         # bn is a QualifiedName with .Name and .NamespaceIndex
-        bn_str = f"{bn.NamespaceIndex}:{bn.Name}"
-    except Exception:
+        bn_str = f"{browse_name.NamespaceIndex}:{browse_name.Name}"
+    except Exception as e:
+        print(e)
         bn_str = "<no browse name>"
 
     try:
-        nc = await node.read_node_class()
-        nc_str = nc.name if hasattr(nc, "name") else safe_str(nc)
-    except Exception:
+        node_class = await node.read_node_class()
+        nc_str = node_class.name
+    except Exception as e:
+        print(e)
         nc_str = "<unknown class>"
 
-    parts = [
-        f"{dn}",
-        f"[{nc_str}]",
-        f"BrowseName={bn_str}",
-        f"NodeId={nodeid_str}",
-    ]
+    try:
+        data_type = await node.read_data_type()
+        dt_str = str(data_type)
+    except Exception as e:
+        print(e)
+        dt_str = "<unknown data type>"
 
-    if show_values and nc_str == "Variable":
-        v = await try_read_value(node)
-        if v is not None:
-            parts.append(f"Value={v}")
+    parts = [
+        f"DisplayName:{disp_name}",
+        f"NodeClasss:[{nc_str}]",
+        f"BrowseName:{bn_str}",
+        f"NodeId:{nodeid}",
+        f"DataType:{dt_str}",
+    ]
 
     return " | ".join(parts)
 
 
 async def print_subtree(
-    node,
+    node: Node,
     level: int,
     max_depth: int,
-    show_values: bool,
-    visited: Set[str],
+    visited: set[str],
     max_children: int,
 ):
     """Print node and all descendants (no filtering inside subtree)."""
     # loop protection
     try:
         nodeid = node.nodeid.to_string()
-        key = safe_str(nodeid)
-    except Exception:
-        key = f"<unknown:{id(node)}>"
+    except Exception as e:
+        print(e)
+        nodeid = f"<unknown:{id(node)}>"
 
-    if key in visited:
-        print(f"{indent(level)}↩ {key} (already visited)")
+    if nodeid in visited:
+        print(f"{indent(level)}↩ {nodeid} (already visited)")
         return
-    visited.add(key)
+    visited.add(nodeid)
 
-    print(f"{indent(level)}- {await node_line(node, show_values)}")
+    print(f"{indent(level)}- {await node_line(node)}")
 
     if level >= max_depth:
         return
@@ -134,35 +115,33 @@ async def print_subtree(
             child,
             level + 1,
             max_depth,
-            show_values,
             visited,
             max_children,
         )
 
 
 async def browse_for_r_hash_roots(
-    objects_node,
-    prefix: str,
+    objects_node: Node,
     search_depth: int,
     max_children: int,
 ) -> list:
-    """Find nodes under objects_node (up to search_depth) whose BrowseName.Name starts with prefix.
+    """Find nodes under objects_node whose BrowseName starts with prefix.
+
     Returns a list of matching nodes.
     """
     matches = []
     visited = set()
 
-    async def recurse(node, level: int):
+    async def recurse(node: Node, level: int):
         # loop protection
         try:
             nodeid = node.nodeid.to_string()
-            key = safe_str(nodeid)
         except Exception:
-            key = f"<unknown:{id(node)}>"
+            nodeid = f"<unknown:{id(node)}>"
 
-        # if key in visited:
-        #     return
-        # visited.add(key)
+        if nodeid in visited:
+            return
+        visited.add(nodeid)
 
         # Check browse name
         try:
@@ -251,7 +230,6 @@ async def main():
 
         roots = await browse_for_r_hash_roots(
             objects_node=objects,
-            prefix=args.prefix,
             search_depth=args.search_depth,
             max_children=args.max_children,
         )
@@ -268,7 +246,6 @@ async def main():
                 root,
                 level=0,
                 max_depth=args.depth,
-                show_values=args.values,
                 visited=set(),
                 max_children=args.max_children,
             )
