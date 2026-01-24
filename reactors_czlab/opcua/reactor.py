@@ -158,12 +158,16 @@ class ReactorOpc:
         ) -> bool:
             """Unpairs an (actuator, channel) from a sensor."""
             # Validete sensor_id and actuator_id
+            if sid not in reactor_slow.sensors:
+                _logger.error(f"sid not in {self.id} sensors")
+                return False
+
             if (
-                sid not in reactor_slow.sensors
+                aid not in reactor_fast.actuators
                 or aid not in reactor_slow.actuators
-                or aid not in reactor_fast.actuators
             ):
-                raise ua.UaStatusCodeError(ua.StatusCode.is_bad)
+                _logger.error(f"aid not in {self.id} actuators")
+                return False
 
             # Unpair the actuator
             async with reactor_slow.lock:
@@ -191,7 +195,7 @@ class ReactorOpc:
 
         await self.node.add_method(
             idx,
-            "set_pairing",
+            f"{self.id}:set_pairing",
             set_pairing,
             [inarg_sid, inarg_aid, inarg_chn],
             [ua.VariantType.Boolean],
@@ -199,7 +203,7 @@ class ReactorOpc:
 
         await self.node.add_method(
             idx,
-            "unpair",
+            f"{self.id}:unpair",
             unpair,
             [inarg_sid, inarg_aid, inarg_chn],
             [ua.VariantType.Boolean],

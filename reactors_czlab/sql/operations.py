@@ -12,9 +12,8 @@ import polars as pl
 import psycopg
 
 if TYPE_CHECKING:
-    from psycopg import Connection, Cursor
+    from psycopg import Connection
 
-    from reactors_czlab.core.data import PhysicalInfo
 
 _logger = logging.getLogger("client.sql")
 
@@ -34,71 +33,9 @@ def connect_to_db() -> Connection:
     )
 
 
-def create_experiment(
-    name: str,
-    date: datetime,
-    reactors: list[str],
-    volume: float,
-) -> None:
-    """Create a record for the experiment."""
-    try:
-        connection = connect_to_db()
-    except psycopg.Error as err:
-        error_message = "Error connecting to database"
-        raise SqlError(error_message) from err
-    date_str = date.isoformat(timespec="milliseconds")
-    query = "INSERT INTO experiment (name, date, reactors, volume) \
-             VALUES (%s, %s, %s, %s) RETURNING id"
-    values = (name, date_str, ",".join(reactors), volume)
-    cursor = connection.cursor()
-    if not experiment_exist(cursor, name):
-        _logger.info(f"Creating experiment {name}")
-        cursor.execute(query, values)
-        connection.commit()
-
-
-def experiment_exist(cursor: Cursor, name: str) -> bool:
-    """Evaluate if there is a record for the experiment."""
-    cursor.execute("SELECT name FROM experiment WHERE name = %s", (name,))
-    return cursor.fetchone() is not None
-
-
-def get_experiment_id(cursor: Cursor, name: str) -> str:
-    """Get experiment id from name."""
-    cursor.execute(
-        "SELECT id FROM experiment WHERE name = %s",
-        (name,),
-    )
-    row = cursor.fetchone()
-    if row is None:
-        raise SqlError("Experiment does not exist")
-    return row[0]
-
-
-def get_reactors(name: str) -> list[str]:
-    """Return reactors in an experiment."""
-    try:
-        connection = connect_to_db()
-    except psycopg.Error as err:
-        error_message = "Error connecting to database"
-        raise SqlError(error_message) from err
-    cursor = connection.cursor()
-    cursor.execute(
-        "SELECT reactors FROM experiment WHERE name = %s",
-        (name,),
-    )
-    row = cursor.fetchone()
-    if row is None:
-        error_message = "Experiment has no reactors?"
-        raise SqlError(error_message)
-    return row[0].split(",")
-
-
 def store_data(
-    data: PhysicalInfo,
-    reactor_id: str,
-    experiment_name: str,
-    timestamp: datetime,
+    node_id: str,
+    info: dict,
 ) -> None:
     """Insert data into respective PostgreSQL tables based on the sensor."""
     try:
@@ -108,22 +45,20 @@ def store_data(
         raise SqlError(error_message) from err
 
     cursor = connection.cursor()
-    exp_id = get_experiment_id(cursor, experiment_name)
 
     # Extract sensor data
-    model = data.model.lower()
-    channel = data.channels[0]
-    value = channel.value
-    units = channel.units
-    calibration = channel.calibration.file if channel.calibration else None
-    datetime = timestamp.isoformat(timespec="milliseconds")
+    reactor = info["reactor"]
+    name = info["name"]
+    channel = info["channel"]
+    value = info["value"]
+    datetime = info["timestamp"].isoformat(timespec="milliseconds")
 
     try:
         insert_map = (
             "INSERT INTO data \
-            (experiment_id, date, reactor, model, calibration, units, value) \
-            VALUES (%s, %s, %s, %s, %s, %s, %s)",
-            (exp_id, datetime, reactor_id, model, calibration, units, value),
+            (node_id, date, reactor, name, channel, value) \
+            VALUES (%s, %s, %s, %s, %s, %s)",
+            (node_id, datetime, reactor, name, channel, value),
         )
         query, values = insert_map
         cursor.execute(query, values)

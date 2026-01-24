@@ -4,13 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime
 
-from asyncua import Client
-
-from reactors_czlab.opcua.client import ReactorOpcClient
-from reactors_czlab.server_info import SERVER_VARS
-from reactors_czlab.sql.operations import create_experiment
+from reactors_czlab.opcua.client import OpcClient
 
 _logger = logging.getLogger("client")
 _logger.setLevel(logging.DEBUG)
@@ -32,19 +27,13 @@ _logger.addHandler(_stream_handler)
 
 
 async def main():
-    experiment = "test"
-    reactors = ["R0", "R1", "R2"]
-    volume = 2
-    reactor_nodes = [ReactorOpcClient(k, experiment) for k in reactors]
-    create_experiment(experiment, datetime.now(), reactors, volume)
-    client = Client(url="opc.tcp://localhost:4840/")
-    async with client:
-        for reactor in reactor_nodes:
-            variables = SERVER_VARS[reactor.id]
-            await reactor.connect_nodes(client, variables)
+    client = OpcClient("opc.tcp://localhost:4840/")
+    await client.connect()
+    async with client.client:
+        await client.init_subcriptions()
         while True:
             await asyncio.sleep(0.1)
-            await client.check_connection()
+            # await client._client.check_connection()
 
 
 if __name__ == "__main__":
