@@ -127,7 +127,7 @@ class OpcClient:
                 info = name.split(":")
                 methods[node_id] = {
                     "reactor": info[0],
-                    "name": info[1],
+                    "name": info[1:],
                 }
 
             for child in children:
@@ -208,8 +208,7 @@ class OpcClient:
             return await parent.call_method(nodeid, *args)
         except Exception as e:
             _logger.exception(
-                "Method call failed %s.%s : %s",
-                parent.nodeid.to_string(),
+                "Method call failed %s : %s",
                 nodeid,
                 e,
             )
