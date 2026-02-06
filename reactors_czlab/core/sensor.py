@@ -81,6 +81,14 @@ class Sensor(ABC):
     async def read(self) -> None:
         """Read all sensor channels."""
 
+    @abstractmethod
+    async def write_calibration(
+        self,
+        cal_point: float,
+        cal_value: float,
+    ) -> tuple[str, float, float]:
+        """Do a one point calibration."""
+
 
 class RandomSensor(Sensor):
     """Class used for testing."""
@@ -111,6 +119,14 @@ class RandomSensor(Sensor):
             chn.value = value
             debug_msg.extend([[chn.description, value]])
         _logger.debug(f"In {self.id} - {debug_msg}")
+
+    async def write_calibration(
+        self,
+        cal_point: float,
+        cal_value: float,
+    ) -> tuple[str, float, float]:
+        """Do a one point calibration."""
+        return "ok", cal_point, cal_value
 
 
 class HamiltonSensor(Sensor):
@@ -317,16 +333,22 @@ class HamiltonSensor(Sensor):
             error_message = f"Baudrate should be one of: {valid_baudrates}"
             _logger.exception(error_message)
 
-    async def write_calibration(self, cp: str, value: float) -> None:
+    async def write_calibration(
+        self,
+        cal_point: float,
+        cal_value: float,
+    ) -> tuple[str, float, float]:
         """Write value to calibration points."""
         try:
             await self.set_operator_level("specialist")
 
-            await self.write_registers(cp, [value])
+            cp = "cp" + str(int(cal_point))
+            await self.write_registers(cp, [cal_value])
 
             status_response = await self.read_holding_registers(cp + "_status")
             low, high = status_response[0], status_response[1]
-            status = self.modbus_handler.decode((low, high), "int")
+            st = self.modbus_handler.decode((low, high), "int")
+            status = "Successful" if st == 0 else "Failed"
             low, high = status_response[4], status_response[5]
             cal_value = self.modbus_handler.decode((low, high), "float")
 
@@ -344,6 +366,9 @@ class HamiltonSensor(Sensor):
         except ModbusError:
             error_message = f"Error during calibration of unit {self.id}"
             _logger.exception(error_message)
+            return ("failed", 0, 0)
+        else:
+            return (status, quality, cal_value)
 
     async def read(self) -> None:
         """Read all available channels in the sensor."""

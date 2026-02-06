@@ -52,7 +52,12 @@ class ActuatorOpc:
             await self.curr_value.write_value(float(new_val))
             _logger.debug(f"Updated {self.id} with value {new_val}")
 
-    async def init_node(self, server: Server, parent: Node, idx: int) -> None:
+    async def init_node(
+        self,
+        server: Server,
+        parent: Node,
+        idx: int,
+    ) -> None:
         """Add node and variables for the actuator."""
         actuator = self.actuator
 
@@ -115,20 +120,31 @@ class ActuatorOpc:
         # This is a mess, might need to think of a better way,
         # maybe use an OPC structure instead or a Builder Class?
         # Add Node to store the control settings
-        self.control_method = await self.node.add_object(idx, "ControlMethod")
+        self.control_method = await self.node.add_object(
+            idx,
+            f"{self.id}:ControlMethod",
+        )
 
         # Add variable to set the desired status
-        self.value = await self.control_method.add_variable(idx, "value", 0.0)
+        self.value = await self.control_method.add_variable(
+            idx,
+            f"{self.id}:value",
+            0.0,
+        )
         await self.value.set_writable()
 
         # Add variable to record the current status
-        self.curr_value = await self.node.add_variable(idx, "curr_value", 0.0)
+        self.curr_value = await self.node.add_variable(
+            idx,
+            f"{self.id}:curr_value",
+            0.0,
+        )
         await self.curr_value.set_writable()
 
         # ControlMethod
         self.method = await self.control_method.add_variable(
             idx,
-            "method",
+            f"{self.id}:method",
             0,
             varianttype=ua.VariantType.UInt32,
         )
@@ -146,13 +162,13 @@ class ActuatorOpc:
         # TimerControl
         self.time_on = await self.control_method.add_variable(
             idx,
-            "time_on",
+            f"{self.id}:time_on",
             0.0,
         )
         await self.time_on.set_writable()
         self.time_off = await self.control_method.add_variable(
             idx,
-            "time_off",
+            f"{self.id}:time_off",
             0.0,
         )
         await self.time_off.set_writable()
@@ -160,13 +176,13 @@ class ActuatorOpc:
         # OnBoundariesControl
         self.lb = await self.control_method.add_variable(
             idx,
-            "lb",
+            f"{self.id}:lb",
             0.0,
         )
         await self.lb.set_writable()
         self.ub = await self.control_method.add_variable(
             idx,
-            "ub",
+            f"{self.id}:ub",
             0.0,
         )
         await self.ub.set_writable()
@@ -174,7 +190,7 @@ class ActuatorOpc:
         # PidControl
         self.setpoint = await self.control_method.add_variable(
             idx,
-            "setpoint",
+            f"{self.id}:setpoint",
             0.0,
         )
         await self.setpoint.set_writable()
@@ -182,7 +198,7 @@ class ActuatorOpc:
         # Sensor used as control variable
         self.curr_sensor = await self.control_method.add_variable(
             idx,
-            "reference_sensor",
+            f"{self.id}:reference_sensor",
             0,
             varianttype=ua.VariantType.UInt32,
         )
