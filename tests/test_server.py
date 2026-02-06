@@ -81,7 +81,7 @@ async def main():
         await r_i.init_node(server, idx)
         tasks.extend(
             [
-                asyncio.create_task(r_i.reactor.slow_loop()),
+                asyncio.create_task(r_i.reactor.slow_loop(r_i.sample_ready)),
                 asyncio.create_task(r_i.reactor.fast_loop()),
                 asyncio.create_task(r_i.update()),
             ],

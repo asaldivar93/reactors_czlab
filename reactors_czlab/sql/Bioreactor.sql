@@ -17,6 +17,6 @@ CREATE TABLE data (
     reactor TEXT NOT NULL,
     model TEXT NOT NULL,
     calibration TEXT,
-    units TEXT NOT NULL
-    value FLOAT NOT NULL,
+    units TEXT NOT NULL,
+    value FLOAT NOT NULL
 );

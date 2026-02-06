@@ -115,8 +115,9 @@ class Reactor:
         next_tick = loop.time()
         while True:
             next_tick += self.period
-            led_driver.set_pixel_all((65535, 65535, 65535))
-            led_driver.show()
+            if IN_RASPBERRYPI:
+                led_driver.set_pixel_all((65535, 65535, 65535))
+                led_driver.show()
             # Read all sensors
             async with asyncio.TaskGroup() as tg:
                 for sensor in self.sensors.values():

@@ -9,7 +9,7 @@ from datetime import datetime
 from asyncua import Client
 
 from reactors_czlab.opcua.client import ReactorOpcClient
-from reactors_czlab.server_info import server_test
+from reactors_czlab.server_info import SERVER_VARS
 from reactors_czlab.sql.operations import create_experiment
 
 _logger = logging.getLogger("client")
@@ -33,14 +33,14 @@ _logger.addHandler(_stream_handler)
 
 async def main():
     experiment = "test"
-    reactors = ["R0", "R2"]
+    reactors = ["R0"]
     volume = 2
     reactor_nodes = [ReactorOpcClient(k, experiment) for k in reactors]
     create_experiment(experiment, datetime.now(), reactors, volume)
     client = Client(url="opc.tcp://localhost:4840/")
     async with client:
         for reactor in reactor_nodes:
-            variables = server_test[reactor.id]
+            variables = SERVER_VARS[reactor.id]
             await reactor.connect_nodes(client, variables)
         while True:
             await asyncio.sleep(0.1)
