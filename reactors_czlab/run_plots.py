@@ -8,18 +8,17 @@ import polars as pl
 from matplotlib.animation import FuncAnimation
 from matplotlib.figure import Figure
 
-from reactors_czlab.sql.operations import get_data, get_reactors, rows_to_polars
+from reactors_czlab.sql.operations import query_data, rows_to_polars
 
 
 class Plotter:
     def __init__(
         self,
-        experiment_name: str,
         time_filter: tuple[float, str],
+        reactors: list[str],
     ) -> None:
-        self.experiment_name = experiment_name
         self.time_filter = time_filter
-        self.reactors = get_reactors(experiment_name)
+        self.reactors = reactors
         figure, plots = self.setup_plots()
         self.figure = figure
         self.plots = plots
@@ -62,7 +61,7 @@ class Plotter:
 
     def get_data(self) -> pl.DataFrame:
         """Export data to polars.DataFrame."""
-        all_rows = get_data(self.experiment_name, self.time_filter)
+        all_rows = query_data(self.time_filter)
         return rows_to_polars(all_rows)
 
 
@@ -100,9 +99,8 @@ def update(frame, plotter: Plotter):
 
 
 if __name__ == "__main__":
-    experiment_name = "test"
-    time_filter = (24, "h")
-    plotter = Plotter(experiment_name, time_filter)
+    time_range = (24, "h")
+    plotter = Plotter(time_range)
 
     ani = FuncAnimation(plotter.figure, update, fargs=(plotter,), interval=1000)
     plt.show()

@@ -68,9 +68,6 @@ def store_data(
     except psycopg.Error as err:
         error_message = "Error during insert operation."
         raise SqlError(error_message) from err
-    except KeyError as err:
-        error_message = f"Unknown model type: {model}"
-        raise SqlError(error_message) from err
     finally:
         cursor.close()
         connection.close()
@@ -105,7 +102,7 @@ def get_date_filter_range(time_range: float, units: str) -> datetime | None:
             raise ValueError(error_message)
 
 
-def get_data(experiment_name: str, time_filter: tuple[float, str]) -> list:
+def query_data(time_range: tuple[float, str]) -> list:
     """Query the SQL database by date."""
     try:
         connection = connect_to_db()
@@ -115,24 +112,17 @@ def get_data(experiment_name: str, time_filter: tuple[float, str]) -> list:
 
     cursor = connection.cursor()
 
-    experiment_id = get_experiment_id(cursor, experiment_name)
-
     # Determine date filter
-    time, unit = time_filter
-    cutoff_date = get_date_filter_range(time, unit)
-    base_conditions = "experiment_id = %s"
-    params = [experiment_id]
-
-    if cutoff_date:
-        base_conditions += " AND date >= %s"
-        params.append(cutoff_date.isoformat())
+    time, unit = time_range
+    date_filter = get_date_filter_range(time, unit)
+    params = [date_filter]
 
     # Queries (with optional date filter)
     try:
-        query = f"SELECT 'data' \
-            AS source_table, date, reactor, model, calibration, units, value \
+        query = "SELECT 'data' \
+            AS node_id, date, reactor, name, channel, value \
             FROM data \
-            WHERE {base_conditions}"
+            WHERE date >= %s"
         cursor.execute(query, tuple(params))
         all_rows = cursor.fetchall()
     except psycopg.Error as err:
