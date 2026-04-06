@@ -101,7 +101,7 @@ async def main() -> None:
     # Init the server
     server = Server()
     await server.init()
-    server.set_endpoint("opc.tcp://10.10.11.20:55488/")
+    server.set_endpoint("opc.tcp://10.10.10.20:55488/")
     uri = "http://czlab/biocontroller"
     idx = await server.register_namespace(uri)
 
@@ -129,4 +129,4 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main(), debug=True)
+    asyncio.run(main())

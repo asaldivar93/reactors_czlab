@@ -75,6 +75,7 @@ async def main():
     server.set_endpoint("opc.tcp://localhost:4840/")
     uri = "http://czlab/biocontroller"
     idx = await server.register_namespace(uri)
+
     # Create reactors, sensor and actuator nodes
     tasks = []
     for r_i in reactors:
