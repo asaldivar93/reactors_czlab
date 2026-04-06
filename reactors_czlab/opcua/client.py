@@ -17,7 +17,23 @@ if TYPE_CHECKING:
     from asyncua.common import Node
 
 
-_logger = logging.getLogger("client.client")
+_logger = logging.getLogger("client")
+_logger.setLevel(logging.DEBUG)
+
+_formatter = logging.Formatter(
+    "%(name)s: %(asctime)s %(levelname)s - %(message)s",
+)
+
+_file_handler = logging.FileHandler("client.log")
+_file_handler.setFormatter(_formatter)
+_file_handler.setLevel(logging.DEBUG)
+
+_stream_handler = logging.StreamHandler()
+_stream_handler.setLevel(logging.DEBUG)
+_stream_handler.setFormatter(_formatter)
+
+_logger.addHandler(_file_handler)
+_logger.addHandler(_stream_handler)
 
 SENSORS_NODE_RE = re.compile(r"^R\d+:sensors$")
 ACTUATORS_NODE_RE = re.compile(r"^R\d+:actuators$")
@@ -31,13 +47,13 @@ class OpcClient:
         self.timeout = timeout
         self._connected = False
         self._queue = asyncio.Queue(maxsize=1000)
-        self.variables: dict[str, dict] = {}
         self.client: Client
-        self.sensor_vars: dict[str, dict]
-        self.actuator_vars: dict[str, dict]
-        self.methods: dict[str, dict]
+        self.variables: dict[str, dict] = {}
+        self.sensor_vars: dict[str, dict] = {}
+        self.actuator_vars: dict[str, dict] = {}
+        self.methods: dict[str, dict] = {}
 
-    async def connect(self):
+    async def connect(self) -> None:
         """Connect to OPC-UA server."""
         if self._connected:
             return
@@ -52,6 +68,11 @@ class OpcClient:
                 self.variables.update(self.sensor_vars)
                 self.variables.update(self.actuator_vars)
                 self.methods = await self.get_methods()
+                self.mappings = {
+                    "sensor_vars": self.sensor_vars,
+                    "actuator_vars": self.actuator_vars,
+                    "methods": self.methods,
+                }
 
         except Exception as e:
             _logger.exception("Failed to connect to OPC-UA server: %s", e)
@@ -171,18 +192,20 @@ class OpcClient:
             info["value"] = val
             info["timestamp"] = datetime.now()
             await self._queue.put((nodeid, info))
-            _logger.debug(
-                f"Data change in {nodeid}:{info}",
-            )
+
+    async def start_psql(self):
+        self._db_task = asyncio.create_task(self.commit_to_db())
 
     async def commit_to_db(self):
         """Commit ot sql database."""
-        while True:
-            nodeid, info = await self._queue.get()
-            try:
-                store_data(nodeid, info)
-            finally:
-                self._queue.task_done()
+        try:
+            while True:
+                nodeid, info = await self._queue.get()
+                await asyncio.to_thread(store_data, nodeid, info)
+        except Exception as e:
+            print(e)
+        finally:
+            self._queue.task_done()
 
     async def write(self, nodeid: str, value):
         """Write a Python value to a node.

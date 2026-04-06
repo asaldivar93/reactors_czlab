@@ -31,9 +31,9 @@ async def main():
     await client.connect()
     async with client.client:
         await client.init_subcriptions()
-        while True:
-            await asyncio.sleep(0.1)
-            # await client._client.check_connection()
+        await client.start_psql()
+        await asyncio.gather(client._db_task)
+        # await client._client.check_connection()
 
 
 if __name__ == "__main__":
