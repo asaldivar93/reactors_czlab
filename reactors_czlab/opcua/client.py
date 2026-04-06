@@ -63,7 +63,6 @@ class OpcClient:
             async with self.client:
                 self._connected = True
                 _logger.info("Connected to %s", self.endpoint)
-                print("wtf")
                 self.sensor_vars = await self.get_sensor_vars()
                 self.actuator_vars = await self.get_actuator_vars()
                 self.variables.update(self.sensor_vars)
@@ -180,7 +179,8 @@ class OpcClient:
         )
         await sub.subscribe_data_change(vars_to_sub)
         names = [await node.read_browse_name() for node in vars_to_sub]
-        print([n.Name for n in names])
+        names = [n.Name for n in names]
+        _logger.info(f"Subscribed to variables {names}")
 
     async def datachange_notification(
         self,
@@ -194,12 +194,13 @@ class OpcClient:
         if info is not None:
             info["value"] = val
             info["timestamp"] = datetime.now()
-            await self._queue.put((nodeid, info))
-            print("Data Change")
+            if info["value"] != -0.111
+                await self._queue.put((nodeid, info))
+                _logger.debug(f"Data Change in {nodeid}:{info}")
 
     async def start_psql(self):
         self._db_task = asyncio.create_task(self.commit_to_db())
-        print("Database Task created")
+        _logger.info("Database Task created")
 
     async def commit_to_db(self):
         """Commit ot sql database."""
@@ -207,10 +208,8 @@ class OpcClient:
             while True:
                 nodeid, info = await self._queue.get()
                 await asyncio.to_thread(store_data, nodeid, info)
-                print("Database task running")
-                # await asyncio.sleep(0.1)
         except Exception as e:
-            print(e)
+            _logger.error(e)
         finally:
             self._queue.task_done()
 

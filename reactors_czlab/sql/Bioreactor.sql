@@ -11,3 +11,11 @@ CREATE TABLE data (
     channel TEXT NOT NULL,
     value FLOAT NOT NULL
 );
+
+CREATE TABLE experiments (
+    id SERIAL PRIMARY KEY,
+    name TEXT NOT NULL,
+    reactors TEXT NOT NULL,
+    start_date TIMESTAMP(3) NOT NULL,
+    end_date TIMESTAMP(3) NOT NULL
+);
