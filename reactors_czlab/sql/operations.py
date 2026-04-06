@@ -138,12 +138,11 @@ def row_to_csv(out_name: str, rows: list) -> None:
         writer = csv.writer(csvfile)
         writer.writerow(
             [
-                "source_table",
+                "node_id",
                 "date",
                 "reactor",
-                "model",
-                "calibration",
-                "units",
+                "name",
+                "channel",
                 "value",
             ],
         )  # Header
@@ -153,12 +152,11 @@ def row_to_csv(out_name: str, rows: list) -> None:
 def rows_to_polars(rows: list) -> pl.DataFrame:
     """Export sql queries to polars dataframe."""
     columns = [
-        "source_table",
+        "node_id",
         "date",
         "reactor",
-        "model",
-        "calibration",
-        "units",
+        "name",
+        "channel",
         "value",
     ]
     schema = {col: type(rows[0][i]) for i, col in enumerate(columns)}
