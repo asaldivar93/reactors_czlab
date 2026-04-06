@@ -14,7 +14,7 @@ from reactors_czlab.server_info import (
 )
 
 _logger = logging.getLogger("server")
-_logger.setLevel(logging.DEBUG)
+_logger.setLevel(logging.INFO)
 
 _formatter = logging.Formatter(
     "%(name)s: %(asctime)s %(levelname)s - %(message)s",
@@ -22,10 +22,10 @@ _formatter = logging.Formatter(
 
 _file_handler = logging.FileHandler("record.log")
 _file_handler.setFormatter(_formatter)
-_file_handler.setLevel(logging.DEBUG)
+_file_handler.setLevel(logging.INFO)
 
 _stream_handler = logging.StreamHandler()
-_stream_handler.setLevel(logging.DEBUG)
+_stream_handler.setLevel(logging.INFO)
 _stream_handler.setFormatter(_formatter)
 
 _logger.addHandler(_file_handler)

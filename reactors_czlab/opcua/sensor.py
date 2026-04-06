@@ -38,6 +38,9 @@ class SensorOpc:
         sensor = self.sensor
         # Add sensor node to reactor
         self.node = await parent.add_object(idx, f"{sensor.id}")
+        bnp = await parent.read_browse_name()
+        bns = await self.node.read_browse_name()
+        _logger.info(f"In node {bnp.Name} added {bns.Name}")
 
         # Add channels to store data from the sensor
         for i, channel in enumerate(sensor.channels):

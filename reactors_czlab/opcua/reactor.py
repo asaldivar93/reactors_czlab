@@ -48,7 +48,6 @@ class ReactorOpc:
         self.sensors = sensors
         self.actuators = actuators
 
-        _logger.info(f"Creating nodes for {self.id}")
         self.sensor_nodes: list[SensorOpc] = []
         self.actuator_nodes: list[ActuatorOpc] = []
         self.create_child_nodes()
@@ -96,6 +95,7 @@ class ReactorOpc:
         self.anode = await self.node.add_object(idx, f"{self.id}:actuators")
 
         # Add sensor nodes to the server
+        _logger.info(f"Creating Sensor Nodes for {self.id}")
         for sensor in self.sensor_nodes:
             await sensor.init_node(self.snode, self.idx, self.id)
 

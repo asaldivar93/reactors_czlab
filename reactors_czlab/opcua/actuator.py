@@ -63,6 +63,9 @@ class ActuatorOpc:
 
         # Add actuator node to reactor
         self.node = await parent.add_object(idx, actuator.id)
+        bnp = await parent.read_browse_name()
+        bns = await self.node.read_browse_name()
+        _logger.info(f"In node {bnp.Name} added {bns.Name}")
 
         # Add a node with variables holding the control config
         await self.init_control_node(idx)
