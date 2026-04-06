@@ -33,7 +33,7 @@ _file_handler.setFormatter(_formatter)
 _file_handler.setLevel(logging.INFO)
 
 _stream_handler = logging.StreamHandler()
-_stream_handler.setLevel(logging.DEBUG)
+_stream_handler.setLevel(logging.INFO)
 _stream_handler.setFormatter(_formatter)
 
 _logger.addHandler(_file_handler)
@@ -44,7 +44,7 @@ serial_0 = "/dev/ttySC2"
 modbus_client = ModbusHandler(
     port=serial_0,
     baudrate=19200,
-    timeout=0.1,
+    timeout=0.05,
 )
 
 # I2C configuration

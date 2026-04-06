@@ -8,7 +8,7 @@ from pymodbus.exceptions import ModbusException
 
 port = "/dev/ttySC2"
 #  Default Hamilton sensor slave address
-slave = 0x01
+slave = 0x05
 # Channels PMC1 and PMC6 address
 pmc1 = 2089
 pmc6 = 2409
