@@ -18,22 +18,6 @@ if TYPE_CHECKING:
 
 
 _logger = logging.getLogger("client")
-_logger.setLevel(logging.DEBUG)
-
-_formatter = logging.Formatter(
-    "%(name)s: %(asctime)s %(levelname)s - %(message)s",
-)
-
-_file_handler = logging.FileHandler("client.log")
-_file_handler.setFormatter(_formatter)
-_file_handler.setLevel(logging.DEBUG)
-
-_stream_handler = logging.StreamHandler()
-_stream_handler.setLevel(logging.DEBUG)
-_stream_handler.setFormatter(_formatter)
-
-_logger.addHandler(_file_handler)
-_logger.addHandler(_stream_handler)
 
 SENSORS_NODE_RE = re.compile(r"^R\d+:sensors$")
 ACTUATORS_NODE_RE = re.compile(r"^R\d+:actuators$")
@@ -194,7 +178,7 @@ class OpcClient:
         if info is not None:
             info["value"] = val
             info["timestamp"] = datetime.now()
-            if info["value"] != -0.111
+            if info["value"] != -0.111:
                 await self._queue.put((nodeid, info))
                 _logger.debug(f"Data Change in {nodeid}:{info}")
 
