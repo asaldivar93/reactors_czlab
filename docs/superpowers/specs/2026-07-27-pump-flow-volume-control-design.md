@@ -323,8 +323,13 @@ On the actuator node:
   table with no client change, and `run_plots.py` can filter on it like any
   other channel.
 - `cal_a`, `cal_b`, `r2` - published read-only.
-- `min_duty`, `dispense_duty` - writable bench knobs.
-- The five calibration methods, added with `add_method` following the
+- `min_duty` and `dispense_duty` are settable at runtime through a sixth
+  calibration method, `set_duties(min_duty, dispense_duty)`, rather than as
+  writable variables. Writable variables would need their own subscription and
+  handler alongside the control-config one, and every stray write would trigger
+  a save; a method validates the pair together (a dispense duty below the stall
+  floor is refused) and saves once.
+- The calibration methods, added with `add_method` following the
   `write_calibration` pattern in `opcua/sensor.py:83`.
 
 ## Error handling
