@@ -175,3 +175,7 @@ cython_debug/
 
 # Other files
 *.csv
+
+# Agent scratch: worktrees and subagent-driven-development ledgers
+.claude/worktrees/
+.superpowers/
