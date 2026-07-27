@@ -1,386 +1,348 @@
-"""Control methods."""
+"""Control methods.
+
+Each controller is a dataclass: the fields that make up its *configuration*
+take part in equality, the fields that change while it runs do not. That is
+what lets Actuator.set_control_config() tell "the user changed the setpoint"
+apart from "the timer toggled since the last comparison".
+"""
 
 from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
 from time import perf_counter
+from typing import ClassVar
 
-from reactors_czlab.core.data import ControlConfig, ControlMethod
+from reactors_czlab.core.data import (
+    MAX_OUTPUT,
+    ControlConfig,
+    ControlMethod,
+)
 from reactors_czlab.server_info import VERBOSE
 
 _logger = logging.getLogger("server.control")
 
 
-class ControlFactory:
-    """Factory of the different control classes."""
-
-    def create_control(self, config: ControlConfig) -> _Control:
-        """Create a control class based on the control_config.
-
-        Inputs:
-        -------
-        config: ControlConfig
-            A dataclass with the parameters of the new configuration
-
-        """
-        # Pattern matching to the new control config
-        match config:
-            case ControlConfig("manual") as c:
-                return _ManualControl(c.value)
-
-            case ControlConfig("timer") as c:
-                return _TimerControl(c.time_on, c.time_off, c.value)
-
-            case ControlConfig("on_boundaries") as c:
-                return _OnBoundariesControl(c.lb, c.ub, c.value)
-
-            case ControlConfig("pid") as c:
-                return _PidControl(c.setpoint)
-
-            case _:
-                raise TypeError
+def _as_float(name: str, value: object) -> float:
+    """Validate that a config value is a real number and widen it to float."""
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        error_message = (
+            f"{name} must be a number, got {type(value).__name__}: {value!r}"
+        )
+        raise TypeError(error_message)
+    return float(value)
 
 
+@dataclass(kw_only=True)
 class _Control(ABC):
-    """Metaclass for control methods."""
+    """Base class for the control strategies.
 
-    @property
-    def value(self) -> float:
-        """Get the value of the actuator."""
-        return self._value
+    ``value`` is the *current* output. Subclasses whose output is derived
+    from the sensor reading exclude it from equality; _ManualControl, where
+    the output is the configuration, puts it back in.
+    """
 
-    @value.setter
-    def value(self, value: float) -> None:
-        """Set the value of the actuator."""
-        error_message = "Expected Float type in ControlConfig"
-        if not isinstance(value, float | int):
-            raise TypeError(error_message)
-        self._value = value
+    method: ClassVar[ControlMethod]
 
-    @property
-    def max_val(self) -> float:
-        return self._max_val
+    min_val: float = 0.0
+    max_val: float = MAX_OUTPUT
+    value: float = field(default=0.0, compare=False)
 
-    @max_val.setter
-    def max_val(self, max_val: float) -> None:
-        if not isinstance(max_val, float | int):
-            raise TypeError
-        self._max_val = max_val
+    def __post_init__(self) -> None:
+        """Validate the numeric fields shared by every controller."""
+        self.min_val = _as_float("min_val", self.min_val)
+        self.max_val = _as_float("max_val", self.max_val)
+        self.value = _as_float("value", self.value)
 
-    @property
-    def min_val(self) -> float:
-        return self._min_val
-
-    @min_val.setter
-    def min_val(self, min_val: float) -> None:
-        if not isinstance(min_val, float | int):
-            raise TypeError
-        self._min_val = min_val
-
-    def set_limits(self, limits: list[float]) -> None:
-        self.min_val = limits[0]
-        self.max_val = limits[1]
+    def clamp(self, value: float) -> float:
+        """Constrain a value to the output range of the actuator."""
+        return max(self.min_val, min(value, self.max_val))
 
     @abstractmethod
     def get_value(self, sens_value: float) -> float:
         """Calculate the actuator output value."""
 
 
+@dataclass(kw_only=True)
 class _ManualControl(_Control):
-    """ManualControl class sets the output value based on user input."""
+    """Set the output value directly from user input."""
 
-    def __init__(self, value: float, limits: list[float] | None = None) -> None:
-        self.method = ControlMethod.manual
-        self.value = value
-        if limits is None:
-            self.set_limits([0, 4095])
-        else:
-            self.set_limits(limits)
+    method: ClassVar[ControlMethod] = ControlMethod.manual
+
+    # The output *is* the configuration here, so it is compared.
+    value: float = 0.0
 
     def __repr__(self) -> str:
+        """Print the configured output."""
         return f"_ManualControl({self.value!r})"
 
-    def __eq__(self, other: object) -> bool:
-        this = [self.method, self.value]
-        return this == other
-
     def get_value(self, sens_value: float) -> float:
+        """Return the value set by the user, ignoring the sensor."""
         return self.value
 
 
+@dataclass(kw_only=True)
 class _TimerControl(_Control):
-    """TimerControl class sets the output based on time intervals."""
+    """Toggle the output between ``value_on`` and 0 on a fixed schedule."""
 
-    def __init__(
-        self,
-        time_on: float,
-        time_off: float,
-        value_on: float,
-        limits: list[float] | None = None,
-    ) -> None:
-        self.method = ControlMethod.timer
-        self.time_on = time_on
-        self.time_off = time_off
-        self.value_on = value_on
-        self.value = value_on
-        self.last_time = perf_counter()
-        self.interval = time_on
+    method: ClassVar[ControlMethod] = ControlMethod.timer
 
-        if limits is None:
-            self.set_limits([0, 4095])
-        else:
-            self.set_limits(limits)
+    time_on: float = 0.0
+    time_off: float = 0.0
+    value_on: float = 0.0
 
-        # create a timer instance
-        self._is_on = False
-        self._sampling_event = True
+    _is_on: bool = field(default=True, init=False, repr=False, compare=False)
+    _interval: float = field(default=0.0, init=False, repr=False, compare=False)
+    _last_time: float = field(
+        default_factory=perf_counter,
+        init=False,
+        repr=False,
+        compare=False,
+    )
+
+    def __post_init__(self) -> None:
+        """Validate the timings and start the first ON phase."""
+        super().__post_init__()
+        self.time_on = _as_float("time_on", self.time_on)
+        self.time_off = _as_float("time_off", self.time_off)
+        self.value_on = _as_float("value_on", self.value_on)
+        # Start in the ON phase so the first full period is time_on, not
+        # 2 * time_on as it was when _is_on started out False.
+        self.value = self.value_on
+        self._is_on = True
+        self._interval = self.time_on
 
     def __repr__(self) -> str:
-        return f"_TimerControl(on: {self.time_on!r}s, off: {self.time_off!r}s, {self.value!r})"
-
-    def __eq__(self, other: object) -> bool:
-        this = [self.method, self.time_on, self.time_off, self.value]
-        return this == other
-
-    @property
-    def time_on(self) -> float:
-        return self._time_on
-
-    @time_on.setter
-    def time_on(self, time_on: float) -> None:
-        if not isinstance(time_on, float | int):
-            raise TypeError
-        self._time_on = time_on
-
-    @property
-    def time_off(self) -> float:
-        return self._time_off
-
-    @time_off.setter
-    def time_off(self, time_off: float) -> None:
-        if not isinstance(time_off, float | int):
-            raise TypeError
-        self._time_off = time_off
+        """Print the configured schedule."""
+        return (
+            f"_TimerControl(on: {self.time_on!r}s, "
+            f"off: {self.time_off!r}s, {self.value_on!r})"
+        )
 
     def get_value(self, sens_value: float) -> float:
+        """Flip the output when the current phase has elapsed."""
         this_time = perf_counter()
-        elapsed_time = this_time - self.last_time
-        if elapsed_time > self.interval:
-            self.last_time = this_time
+        elapsed_time = this_time - self._last_time
+        if elapsed_time > self._interval:
+            self._last_time = this_time
+            self._is_on = not self._is_on
             if self._is_on:
-                # Set the new timer
-                self.interval = self.time_off
-                # Invert the state
-                self.value = 0
-                self._is_on = False
-            else:
-                # Set the new timer
-                self.interval = self.time_on
-                # Invert the state
-                self._is_on = True
+                self._interval = self.time_on
                 self.value = self.value_on
-            _logger.debug(f"value:{self.value}, elapsed:{elapsed_time}")
+            else:
+                self._interval = self.time_off
+                self.value = 0.0
+            _logger.debug(
+                "Timer output %s after %.3fs",
+                self.value,
+                elapsed_time,
+            )
         return self.value
 
 
+@dataclass(kw_only=True)
 class _OnBoundariesControl(_Control):
-    """OnBoundariesControl class.
+    """Switch the output when the reference sensor crosses a threshold.
 
-    Sets the output only when the reference variable crosses
-    upper or lower thresholds.
+    Parameters
+    ----------
+    lower_bound:
+        After the reference sensor crosses this threshold the output is on
+    upper_bound:
+        After the reference sensor crosses this threshold the output is off
+    value_on:
+        The value used in the on state
+    backwards:
+        If True the output is reversed: crossing the lower bound turns the
+        output off and crossing the upper bound turns it on
+
     """
 
-    def __init__(
-        self,
-        lower_bound: float,
-        upper_bound: float,
-        value: float,
-        limits: list[float] | None = None,
-        backwards: bool = False,
-    ) -> None:
-        """Initialize OnBoundaries controller.
+    method: ClassVar[ControlMethod] = ControlMethod.on_boundaries
 
-        Inputs:
-        -------
-        lower_bound: float | int
-            After the reference sensor crosses this threshold the ouput is on
-        upper_bound: float | int
-            After the reference sensor crosses this threshold the ouput is off
-        value: float | int
-            The value used in the on state
-        backwards: bool
-            if backwards=True the output is reversed, if the reference sensor
-            crosses the lower_bound the ouput is off and viceversa
-        """
-        self.method = ControlMethod.on_boundaries
-        self.lower_bound = lower_bound
-        self.upper_bound = upper_bound
-        self.value_on = value
-        self.backwards = backwards
-        if backwards:
-            self.value = value
-        else:
-            self.value = 0
-        if limits is None:
-            self.set_limits([0, 4095])
-        else:
-            self.set_limits(limits)
+    lower_bound: float = 0.0
+    upper_bound: float = 0.0
+    value_on: float = 0.0
+    backwards: bool = False
+
+    def __post_init__(self) -> None:
+        """Validate the thresholds and set the initial output."""
+        super().__post_init__()
+        self.lower_bound = _as_float("lower_bound", self.lower_bound)
+        self.upper_bound = _as_float("upper_bound", self.upper_bound)
+        self.value_on = _as_float("value_on", self.value_on)
+        self.value = self.value_on if self.backwards else 0.0
 
     def __repr__(self) -> str:
-        return f"_OnBoundariesControl({self.lower_bound, self.upper_bound, self.value_on})"
-
-    def __eq__(self, other: object) -> bool:
-        this = [self.method, self.lower_bound, self.upper_bound, self.value_on]
-        return this == other
-
-    @property
-    def lower_bound(self) -> float:
-        return self._lower_bound
-
-    @lower_bound.setter
-    def lower_bound(self, lower_bound: float) -> None:
-        if not isinstance(lower_bound, float | int):
-            raise TypeError
-        self._lower_bound = lower_bound
-
-    @property
-    def upper_bound(self) -> float:
-        return self._upper_bound
-
-    @upper_bound.setter
-    def upper_bound(self, upper_bound: float) -> None:
-        if not isinstance(upper_bound, float | int):
-            raise TypeError
-        self._upper_bound = upper_bound
+        """Print the configured thresholds."""
+        return (
+            f"_OnBoundariesControl({self.lower_bound!r}, "
+            f"{self.upper_bound!r}, {self.value_on!r})"
+        )
 
     def get_value(self, sens_value: float) -> float:
+        """Update the output from the reference sensor reading."""
         if sens_value < self.lower_bound:
-            if self.backwards:
-                self.value = 0
-            else:
-                self.value = self.value_on
+            self.value = 0.0 if self.backwards else self.value_on
         elif sens_value > self.upper_bound:
-            if self.backwards:
-                self.value = self.value_on
-            else:
-                self.value = 0
+            self.value = self.value_on if self.backwards else 0.0
 
         if VERBOSE:
-            _logger.debug(f"lb: {self.lower_bound}, ub: {self.upper_bound}")
-            _logger.debug(f"var: {variable}, value: {self.value}")
-
+            _logger.debug(
+                "OnBoundaries lb: %s, ub: %s, var: %s, value: %s",
+                self.lower_bound,
+                self.upper_bound,
+                sens_value,
+                self.value,
+            )
         return self.value
 
 
+@dataclass(kw_only=True)
 class _PidControl(_Control):
-    """PidControl class uses the PID algorithm to calculate the output."""
+    """Drive the output towards ``setpoint`` with a PID algorithm."""
 
-    def __init__(
-        self,
-        setpoint: float,
-        gains: list[float] | None = None,
-        limits: list[float] | None = None,
-    ) -> None:
-        self.method = ControlMethod.pid
-        self.setpoint = setpoint
-        if gains is None:
-            self.set_gains([100, 0.01, 0])
-        else:
-            self.set_gains(gains)
+    method: ClassVar[ControlMethod] = ControlMethod.pid
 
-        if limits is None:
-            self.set_limits([0, 4095])
-        else:
-            self.set_limits(limits)
+    setpoint: float = 0.0
+    kp: float = 100.0
+    ki: float = 0.01
+    kd: float = 0.0
+    # Anti-windup band for the integral term. Defaults to the output range
+    # but is a separate knob, because the two limits are unrelated.
+    min_integral: float | None = None
+    max_integral: float | None = None
 
-        self.value = 0
-        self._last_error = 0
-        self._integral_sum = 0
+    _integral_sum: float = field(
+        default=0.0,
+        init=False,
+        repr=False,
+        compare=False,
+    )
+    _last_measurement: float | None = field(
+        default=None,
+        init=False,
+        repr=False,
+        compare=False,
+    )
+    _last_time: float = field(
+        default_factory=perf_counter,
+        init=False,
+        repr=False,
+        compare=False,
+    )
+
+    def __post_init__(self) -> None:
+        """Validate the gains and default the anti-windup band."""
+        super().__post_init__()
+        self.setpoint = _as_float("setpoint", self.setpoint)
+        self.kp = _as_float("kp", self.kp)
+        self.ki = _as_float("ki", self.ki)
+        self.kd = _as_float("kd", self.kd)
+        if self.min_integral is None:
+            self.min_integral = self.min_val
+        if self.max_integral is None:
+            self.max_integral = self.max_val
+        self.min_integral = _as_float("min_integral", self.min_integral)
+        self.max_integral = _as_float("max_integral", self.max_integral)
 
     def __repr__(self) -> str:
-        return f"_PidControl(SP: {self.setpoint!r})"
-
-    def __eq__(self, other: object) -> bool:
-        this = [self.setpoint]
-        return this == other
-
-    @property
-    def setpoint(self) -> float:
-        return self._setpoint
-
-    @setpoint.setter
-    def setpoint(self, setpoint: float) -> None:
-        if not isinstance(setpoint, float | int):
-            raise TypeError
-        self._setpoint = setpoint
-
-    @property
-    def kp(self) -> float:
-        return self._kp
-
-    @kp.setter
-    def kp(self, kp: float) -> None:
-        if not isinstance(kp, float | int):
-            raise TypeError
-        self._kp = kp
-
-    @property
-    def ki(self) -> float:
-        return self._ki
-
-    @ki.setter
-    def ki(self, ki: float) -> None:
-        if not isinstance(ki, float | int):
-            raise TypeError
-        self._ki = ki
-
-    @property
-    def kd(self) -> float:
-        return self._kd
-
-    @kd.setter
-    def kd(self, kd: float) -> None:
-        if not isinstance(kd, float | int):
-            raise TypeError
-        self._kd = kd
+        """Print the setpoint and gains."""
+        return (
+            f"_PidControl(SP: {self.setpoint!r}, "
+            f"kp: {self.kp!r}, ki: {self.ki!r}, kd: {self.kd!r})"
+        )
 
     def set_gains(self, gains: list[float]) -> None:
-        self.kp = gains[0]
-        self.ki = gains[1]
-        self.kd = gains[2]
+        """Set [kp, ki, kd] in one call."""
+        self.kp = _as_float("kp", gains[0])
+        self.ki = _as_float("ki", gains[1])
+        self.kd = _as_float("kd", gains[2])
 
     def get_value(self, sens_value: float) -> float:
-        self._sampling_event = False
-        dt = 10
+        """Run one PID step using the time actually elapsed since the last."""
+        this_time = perf_counter()
+        dt = this_time - self._last_time
+        if dt <= 0.0:
+            # Two calls inside the clock resolution: nothing to integrate.
+            return self.value
+        self._last_time = this_time
 
-        # Get error
         error = self.setpoint - sens_value
-        d_error = error - self._last_error
-        self._last_error = error
 
-        # Get PID terms
         p_term = self.kp * error
+
         i_term = self.ki * error * dt
-        d_term = self.kd * d_error / dt
-        self._integral_sum += i_term
-
-        # Anti-windup
         self._integral_sum = max(
-            self.min_val,
-            min(self._integral_sum, self.max_val),
+            self.min_integral,
+            min(self._integral_sum + i_term, self.max_integral),
         )
-        # Sum all the PID terms
-        output = p_term + self._integral_sum + d_term
-        # Constraint the output to the allowable range
-        self.value = max(self.min_val, min(output, self.max_val))
-        if VERBOSE:
-            _logger.debug(f"elapsed_time: {dt}, var: {sens_value}")
-            _logger.debug(
-                f"p_term: {p_term}, i_term: {i_term}, d_term: {d_term}",
-            )
-            _logger.debug(
-                f"error: {error}, _integral_sum: {self._integral_sum}, value: {self.value}",
-            )
 
+        # Derivative on measurement rather than on error, so a setpoint
+        # change does not produce a derivative kick.
+        if self._last_measurement is None:
+            d_term = 0.0
+        else:
+            d_term = -self.kd * (sens_value - self._last_measurement) / dt
+        self._last_measurement = sens_value
+
+        output = p_term + self._integral_sum + d_term
+        self.value = self.clamp(output)
+
+        if VERBOSE:
+            _logger.debug(
+                "PID dt: %.3f, var: %s, error: %s", dt, sens_value, error
+            )
+            _logger.debug(
+                "PID p: %s, i: %s, d: %s, sum: %s, value: %s",
+                p_term,
+                i_term,
+                d_term,
+                self._integral_sum,
+                self.value,
+            )
         return self.value
+
+
+class ControlFactory:
+    """Factory of the different control classes."""
+
+    def create_control(self, config: ControlConfig) -> _Control:
+        """Create a control class based on the control config.
+
+        Parameters
+        ----------
+        config:
+            A dataclass with the parameters of the new configuration
+
+        Raises
+        ------
+        TypeError
+            If the method is unknown or a parameter is not a number.
+
+        """
+        match config.method:
+            case ControlMethod.manual:
+                return _ManualControl(value=config.value)
+
+            case ControlMethod.timer:
+                return _TimerControl(
+                    time_on=config.time_on,
+                    time_off=config.time_off,
+                    value_on=config.value,
+                )
+
+            case ControlMethod.on_boundaries:
+                return _OnBoundariesControl(
+                    lower_bound=config.lb,
+                    upper_bound=config.ub,
+                    value_on=config.value,
+                )
+
+            case ControlMethod.pid:
+                return _PidControl(setpoint=config.setpoint)
+
+            case _:
+                error_message = f"Unknown control method: {config.method!r}"
+                raise TypeError(error_message)

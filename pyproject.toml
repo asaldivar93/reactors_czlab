@@ -1,8 +1,10 @@
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
 [project]
-requires-python = ">=3.10"
+# asyncio.TaskGroup and enum.StrEnum are both 3.11+.
+requires-python = ">=3.11"
 name = "reactors_czlab"
 version = "2025.0.0"
 description = "Bioreactor control module"
@@ -16,7 +18,10 @@ dependencies = ["asyncua>=1.1.5"]
 
 [project.optional-dependencies]
 server = [
-    "pymodbus>=3.8.6",
+    # BinaryPayloadBuilder/Decoder live in pymodbus.payload, which is
+    # deprecated and removed in later releases. Unpin only together with
+    # migrating ModbusHandler to convert_from_registers/convert_to_registers.
+    "pymodbus>=3.8.6,<3.9",
     "pyserial>=3.5",
     "adafruit-circuitpython-busdevice",
     "adafruit-circuitpython-tca9548a",
@@ -30,3 +35,22 @@ client = [
     "polars>=1.29.0",
     "matplotlib",
 ]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.6",
+]
+
+[project.scripts]
+reactors-server = "reactors_czlab.run_server:cli"
+reactors-client = "reactors_czlab.run_client:cli"
+reactors-plots = "reactors_czlab.run_plots:cli"
+reactors-export = "reactors_czlab.export_data:cli"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 79
+target-version = "py311"

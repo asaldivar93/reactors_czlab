@@ -7,164 +7,206 @@ import contextlib
 import logging
 import re
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from asyncua import Client, ua
 
-from reactors_czlab.sql.operations import store_data
+from reactors_czlab.core.data import ERROR_VALUE
+from reactors_czlab.sql.operations import (
+    SqlError,
+    connect_to_db,
+    store_data,
+)
 
 if TYPE_CHECKING:
-    from asyncua.common import Node
+    from types import TracebackType
 
+    from asyncua.common import Node
 
 _logger = logging.getLogger("client")
 
 SENSORS_NODE_RE = re.compile(r"^R\d+:sensors$")
 ACTUATORS_NODE_RE = re.compile(r"^R\d+:actuators$")
-REACTORS_NODE_RE = r"^R\d+:"
+REACTORS_NODE_RE = re.compile(r"^R\d+:")
+
+QUEUE_MAXSIZE = 1000
+#: Browse names split into exactly reactor:name:channel.
+NAME_PARTS = 3
 
 
 class OpcClient:
-    def __init__(self, endpoint: str, timeout: float = 5.0):
-        """endpoint: opc.tcp://host:port/..."""
+    """Browse an OPC-UA server, subscribe to it and archive the data."""
+
+    def __init__(self, endpoint: str, timeout: float = 5.0) -> None:
+        """Initialize the client.
+
+        Parameters
+        ----------
+        endpoint:
+            opc.tcp://host:port/...
+        timeout:
+            Seconds before a request to the server is abandoned
+
+        """
         self.endpoint = endpoint
         self.timeout = timeout
         self._connected = False
-        self._queue = asyncio.Queue(maxsize=1000)
-        self.client: Client
+        self._queue: asyncio.Queue = asyncio.Queue(maxsize=QUEUE_MAXSIZE)
+        self._db_task: asyncio.Task | None = None
+        self.client: Client | None = None
         self.variables: dict[str, dict] = {}
         self.sensor_vars: dict[str, dict] = {}
         self.actuator_vars: dict[str, dict] = {}
         self.methods: dict[str, dict] = {}
 
+    async def __aenter__(self) -> OpcClient:
+        """Connect on entry."""
+        await self.connect()
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        """Disconnect on exit."""
+        await self.disconnect()
+
     async def connect(self) -> None:
-        """Connect to OPC-UA server."""
+        """Connect to the OPC-UA server and browse its address space.
+
+        The connection stays open until disconnect() is called.
+        """
         if self._connected:
             return
 
-        try:
-            self.client = Client(url=self.endpoint)
-            async with self.client:
-                self._connected = True
-                _logger.info("Connected to %s", self.endpoint)
-                self.sensor_vars = await self.get_sensor_vars()
-                self.actuator_vars = await self.get_actuator_vars()
-                self.variables.update(self.sensor_vars)
-                self.variables.update(self.actuator_vars)
-                self.methods = await self.get_methods()
-                self.mappings = {
-                    "sensor_vars": self.sensor_vars,
-                    "actuator_vars": self.actuator_vars,
-                    "methods": self.methods,
-                }
+        self.client = Client(url=self.endpoint, timeout=self.timeout)
+        await self.client.connect()
+        self._connected = True
+        _logger.info("Connected to %s", self.endpoint)
 
-        except Exception as e:
-            _logger.exception("Failed to connect to OPC-UA server: %s", e)
+        try:
+            self.sensor_vars = await self.get_sensor_vars()
+            self.actuator_vars = await self.get_actuator_vars()
+            self.variables = {**self.sensor_vars, **self.actuator_vars}
+            self.methods = await self.get_methods()
+            self.mappings = {
+                "sensor_vars": self.sensor_vars,
+                "actuator_vars": self.actuator_vars,
+                "methods": self.methods,
+            }
+        except Exception:
+            _logger.exception("Failed to browse %s", self.endpoint)
+            await self.disconnect()
             raise
 
-    async def get_sensor_vars(self):
-        """Get a dict of {Nodeid: info} for sensors."""
+    async def disconnect(self) -> None:
+        """Stop the archiver task and close the connection."""
+        await self.stop_psql()
+        if not self._connected or self.client is None:
+            return
+        self._connected = False
+        with contextlib.suppress(Exception):
+            await self.client.disconnect()
+        _logger.info("Disconnected from %s", self.endpoint)
+
+    async def get_sensor_vars(self) -> dict[str, dict]:
+        """Get a dict of {nodeid: info} for sensors."""
         objects = self.client.nodes.objects
         return await self.match_tree(objects, SENSORS_NODE_RE)
 
-    async def get_actuator_vars(self):
-        """Get a dict of {Nodeid: info} for actuators."""
+    async def get_actuator_vars(self) -> dict[str, dict]:
+        """Get a dict of {nodeid: info} for actuators."""
         objects = self.client.nodes.objects
         return await self.match_tree(objects, ACTUATORS_NODE_RE)
 
-    async def match_tree(self, objects: Node, regular_expression: re.Pattern):
-        """Find the children variables of nodes followith a re."""
-        matches = []
-        variables = {}
+    async def match_tree(
+        self,
+        objects: Node,
+        regular_expression: re.Pattern,
+    ) -> dict[str, dict]:
+        """Find the variables below every node matching a regex."""
+        matches: list[Node] = []
+        variables: dict[str, dict] = {}
 
-        async def find_nodes(node: Node):
-            """Recursion to find Nodes matchin re."""
-            bn = await node.read_browse_name()
-            name = bn.Name
-            children = await node.get_children()
-
+        async def find_nodes(node: Node) -> None:
+            """Recurse to find nodes matching the regex."""
+            name = (await node.read_browse_name()).Name
             if regular_expression.match(name):
                 matches.append(node)
 
-            for child in children:
+            for child in await node.get_children():
                 await find_nodes(child)
 
-        async def find_vars(node: Node):
-            """Recursion to find child vars of a node."""
+        async def find_vars(node: Node) -> None:
+            """Recurse to find the child variables of a node."""
             node_id = node.nodeid.to_string()
             name = (await node.read_browse_name()).Name
             node_class = (await node.read_node_class()).name
-            children = await node.get_children()
 
             if node_class == "Variable":
                 info = name.split(":")
-                with contextlib.suppress(IndexError):
+                if len(info) >= NAME_PARTS:
                     variables[node_id] = {
                         "reactor": info[0],
                         "name": info[1],
                         "channel": info[2],
                         "value": 0.0,
                     }
+                else:
+                    _logger.debug("Skipping variable with name %r", name)
 
-            for child in children:
+            for child in await node.get_children():
                 await find_vars(child)
 
         await find_nodes(objects)
-        for m in matches:
-            await find_vars(m)
+        for match in matches:
+            await find_vars(match)
 
         return variables
 
-    async def get_methods(self):
+    async def get_methods(self) -> dict[str, dict]:
         """Find all methods associated to reactor nodes."""
-        methods = {}
+        methods: dict[str, dict] = {}
 
-        async def find_methods(node: Node):
-            """Find methods of a node."""
+        async def find_methods(node: Node) -> None:
+            """Find the methods of a node and its children."""
             node_id = node.nodeid.to_string()
             name = (await node.read_browse_name()).Name
             node_class = (await node.read_node_class()).name
-            children = await node.get_children()
 
-            if node_class == "Method" and bool(
-                re.search(REACTORS_NODE_RE, name),
-            ):
+            if node_class == "Method" and REACTORS_NODE_RE.search(name):
                 info = name.split(":")
-                methods[node_id] = {
-                    "reactor": info[0],
-                    "name": info[1:],
-                }
+                methods[node_id] = {"reactor": info[0], "name": info[1:]}
 
-            for child in children:
+            for child in await node.get_children():
                 await find_methods(child)
 
-        objects = self.client.nodes.objects
-        await find_methods(objects)
-
+        await find_methods(self.client.nodes.objects)
         return methods
 
-    async def init_subcriptions(self) -> None:
-        """Create a subcription to the variables."""
+    async def init_subscriptions(self) -> None:
+        """Create a subscription to the sensor and actuator variables."""
         params = ua.CreateSubscriptionParameters()
         params.RequestedPublishingInterval = 500
         params.RequestedMaxKeepAliveCount = 60
         params.RequestedLifetimeCount = 60
         params.MaxNotificationsPerPublish = 0
         sub = await self.client.create_subscription(params, self)
+
         vars_to_sub = [
             self.client.get_node(nodeid) for nodeid in self.sensor_vars
         ]
         vars_to_sub.extend(
-            [
-                self.client.get_node(nodeid)
-                for nodeid, info in self.actuator_vars.items()
-                if info["channel"] == "curr_value"
-            ],
+            self.client.get_node(nodeid)
+            for nodeid, info in self.actuator_vars.items()
+            if info["channel"] == "curr_value"
         )
         await sub.subscribe_data_change(vars_to_sub)
-        names = [await node.read_browse_name() for node in vars_to_sub]
-        names = [n.Name for n in names]
-        _logger.info(f"Subscribed to variables {names}")
+
+        names = [(await node.read_browse_name()).Name for node in vars_to_sub]
+        _logger.info("Subscribed to variables %s", names)
 
     async def datachange_notification(
         self,
@@ -172,56 +214,107 @@ class OpcClient:
         val: float,
         data: object,
     ) -> None:
-        """On data change queue new vals to the sql database."""
+        """Queue new values for the sql database on data change."""
         nodeid = node.nodeid.to_string()
-        info = self.variables.get(nodeid, None)
-        if info is not None:
-            info["value"] = val
-            info["timestamp"] = datetime.now()
-            if info["value"] != -0.111:
-                await self._queue.put((nodeid, info))
-                _logger.debug(f"Data Change in {nodeid}:{info}")
+        info = self.variables.get(nodeid)
+        if info is None:
+            return
+        if val == ERROR_VALUE:
+            # The server could not read the device; do not archive it.
+            _logger.debug("Skipping error value from %s", nodeid)
+            return
 
-    async def start_psql(self):
+        info["value"] = val
+        info["timestamp"] = datetime.now()
+        try:
+            self._queue.put_nowait((nodeid, dict(info)))
+        except asyncio.QueueFull:
+            _logger.error(
+                "Database queue is full (%s items), dropping %s",
+                QUEUE_MAXSIZE,
+                nodeid,
+            )
+        else:
+            _logger.debug("Data change in %s: %s", nodeid, info)
+
+    async def start_psql(self) -> None:
+        """Start the task that archives queued readings."""
+        if self._db_task is not None:
+            return
         self._db_task = asyncio.create_task(self.commit_to_db())
-        _logger.info("Database Task created")
+        _logger.info("Database task created")
 
-    async def commit_to_db(self):
-        """Commit ot sql database."""
+    async def run_archiver(self) -> None:
+        """Start archiving and block until the task finishes."""
+        await self.start_psql()
+        if self._db_task is not None:
+            await self._db_task
+
+    async def stop_psql(self) -> None:
+        """Stop the archiver task."""
+        if self._db_task is None:
+            return
+        self._db_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await self._db_task
+        self._db_task = None
+
+    async def commit_to_db(self) -> None:
+        """Drain the queue into the sql database.
+
+        Holds one connection for the lifetime of the task and reconnects if
+        it goes away. A row that cannot be stored is logged and dropped: it
+        must not take the archiver down with it.
+        """
+        connection = await asyncio.to_thread(connect_to_db)
         try:
             while True:
                 nodeid, info = await self._queue.get()
-                await asyncio.to_thread(store_data, nodeid, info)
-        except Exception as e:
-            _logger.error(e)
+                try:
+                    await asyncio.to_thread(
+                        store_data,
+                        connection,
+                        nodeid,
+                        info,
+                    )
+                except SqlError:
+                    _logger.exception("Could not store %s: %s", nodeid, info)
+                    connection = await self._reconnect_db(connection)
+                finally:
+                    self._queue.task_done()
         finally:
-            self._queue.task_done()
+            with contextlib.suppress(Exception):
+                await asyncio.to_thread(connection.close)
 
-    async def write(self, nodeid: str, value):
+    async def _reconnect_db(self, connection: Any) -> Any:
+        """Replace a connection that may have gone bad."""
+        if not connection.closed:
+            return connection
+        _logger.warning("Database connection lost, reconnecting")
+        return await asyncio.to_thread(connect_to_db)
+
+    async def write(self, nodeid: str, value: object) -> bool:
         """Write a Python value to a node.
 
-        If the node expects a Variant type, asyncua will attempt conversion.
+        Returns True on success so the caller can react to a failure.
         """
         try:
             node = self.client.get_node(nodeid)
             await node.write_value(value)
-        except Exception as e:
-            _logger.exception(
-                "Write failed for %s <- %r : %s",
-                nodeid,
-                value,
-                e,
-            )
+        except (ua.UaError, OSError):
+            _logger.exception("Write failed for %s <- %r", nodeid, value)
+            return False
+        return True
 
-    async def call_method(self, nodeid: str, *args):
-        """Call a method from its nodeid."""
-        try:
-            node = self.client.get_node(nodeid)
-            parent = await node.get_parent()
-            return await parent.call_method(nodeid, *args)
-        except Exception as e:
-            _logger.exception(
-                "Method call failed %s : %s",
-                nodeid,
-                e,
-            )
+    async def call_method(self, nodeid: str, *args: object) -> object:
+        """Call a method from its nodeid.
+
+        Raises
+        ------
+        ua.UaError
+            If the server rejected the call. Callers need to know.
+
+        """
+        node = self.client.get_node(nodeid)
+        parent = await node.get_parent()
+        return await parent.call_method(node, *args)

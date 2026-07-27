@@ -1,5 +1,8 @@
+"""Live plots of the archived reactor data."""
+
 from __future__ import annotations
 
+import argparse
 from typing import Any
 
 import matplotlib.dates as mdates
@@ -10,18 +13,40 @@ from matplotlib.figure import Figure
 
 from reactors_czlab.sql.operations import query_data, rows_to_polars
 
+# Each subplot selects rows by the (name, channel) pair the client stored,
+# which comes from the OPC browse name "<reactor>:<name>:<channel>".
+PLOT_FILTERS: dict[str, tuple[str, str]] = {
+    "visiferm": ("do", "ppm"),
+    "arcph": ("ph", "pH"),
+    "biomass": ("biomass", "445"),
+}
+TEMPERATURE_SOURCES = ["ph", "do"]
+TITLES = ["Visiferm", "Arcph", "Biomass", "Temperature"]
+
+DEFAULT_REACTORS = ["R0", "R1", "R2"]
+
 
 class Plotter:
+    """Hold the figure and the axes for the live plots."""
+
     def __init__(
         self,
         time_filter: tuple[float, str],
         reactors: list[str],
     ) -> None:
+        """Build the figure.
+
+        Parameters
+        ----------
+        time_filter:
+            (value, units) passed to query_data
+        reactors:
+            Reactor ids to draw one line each for
+
+        """
         self.time_filter = time_filter
         self.reactors = reactors
-        figure, plots = self.setup_plots()
-        self.figure = figure
-        self.plots = plots
+        self.figure, self.plots = self.setup_plots()
 
     def setup_plots(self) -> tuple[Figure, dict[str, Any]]:
         """Initialize plots."""
@@ -29,27 +54,17 @@ class Plotter:
         fig.suptitle("Live Sensor Data", fontsize=16)
         axs = axs.flatten()
 
-        titles = [
-            "Visiferm",
-            "Arcph",
-            "Biomass",
-            "Temperature",
-        ]
         plots = {}
-
-        for ax, title in zip(axs, titles):
-            lines = {}
-            # Date Formatter
+        for ax, title in zip(axs, TITLES, strict=True):
             locator = mdates.AutoDateLocator(minticks=3, maxticks=7)
-            formatter = mdates.ConciseDateFormatter(locator)
             ax.xaxis.set_major_locator(locator)
-            ax.xaxis.set_major_formatter(formatter)
+            ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator))
 
-            # Plot labels
             ax.set_title(title)
             ax.set_xlabel("Date")
             ax.set_ylabel("Value")
 
+            lines = {}
             for reactor in self.reactors:
                 (line,) = ax.plot([], [], label=reactor, marker=".")
                 lines[reactor] = line
@@ -60,47 +75,62 @@ class Plotter:
         return fig, plots
 
     def get_data(self) -> pl.DataFrame:
-        """Export data to polars.DataFrame."""
-        all_rows = query_data(self.time_filter)
-        return rows_to_polars(all_rows)
+        """Export the archived data to a polars.DataFrame."""
+        return rows_to_polars(query_data(self.time_filter))
 
 
 def filter_df(all_df: pl.DataFrame, table: str, reactor: str) -> pl.DataFrame:
-    """Filter the dataframe by model and reactor."""
-    units_map = {"arcph": "pH", "visiferm": "ppm", "biomass": "445"}
-    if table != "temperature":
-        units = units_map.get(table)
+    """Filter the dataframe down to one line of one subplot."""
+    if table == "temperature":
         table_df = all_df.filter(
-            pl.col("model") == table,
             pl.col("reactor") == reactor,
-            pl.col("units") == units,
+            pl.col("name").is_in(TEMPERATURE_SOURCES),
+            pl.col("channel") == "oC",
         )
     else:
+        name, channel = PLOT_FILTERS[table]
         table_df = all_df.filter(
-            pl.col("model").is_in(["visiferm", "arcph"]),
-            pl.col("units") == "oC",
+            pl.col("reactor") == reactor,
+            pl.col("name") == name,
+            pl.col("channel") == channel,
         )
     return table_df.sort("date")
 
 
-def update(frame, plotter: Plotter):
+def update(frame: int, plotter: Plotter) -> None:
+    """Redraw every line from a fresh query."""
     all_df = plotter.get_data()
     for table, (ax, lines) in plotter.plots.items():
         for reactor in plotter.reactors:
-            line = lines[reactor]
             table_df = filter_df(all_df, table, reactor)
-            dates = table_df["date"].to_numpy()
-            values = table_df["value"].to_numpy()
+            lines[reactor].set_data(
+                table_df["date"].to_numpy(),
+                table_df["value"].to_numpy(),
+            )
+        ax.relim()
+        ax.autoscale_view()
 
-            # Update plot
-            line.set_data(dates, values)
-            ax.relim()
-            ax.autoscale_view()
+
+def cli() -> None:
+    """Parse the command line and show the live plots."""
+    parser = argparse.ArgumentParser(description="Plot the archived data")
+    parser.add_argument("--hours", type=float, default=24.0)
+    parser.add_argument("--reactors", nargs="+", default=DEFAULT_REACTORS)
+    parser.add_argument("--interval-ms", type=int, default=1000)
+    args = parser.parse_args()
+
+    plotter = Plotter((args.hours, "h"), args.reactors)
+    # Keep a reference: FuncAnimation is garbage collected without one.
+    animation = FuncAnimation(
+        plotter.figure,
+        update,
+        fargs=(plotter,),
+        interval=args.interval_ms,
+        cache_frame_data=False,
+    )
+    plt.show()
+    del animation
 
 
 if __name__ == "__main__":
-    time_range = (24, "h")
-    plotter = Plotter(time_range)
-
-    ani = FuncAnimation(plotter.figure, update, fargs=(plotter,), interval=1000)
-    plt.show()
+    cli()

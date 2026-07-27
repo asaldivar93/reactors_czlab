@@ -4,23 +4,20 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING
 
 from reactors_czlab.core.control import ControlFactory, _Control
-from reactors_czlab.core.data import ControlConfig, ControlMethod
-from reactors_czlab.core.reactor import IN_RASPBERRYPI
+from reactors_czlab.core.data import ControlConfig, ControlMethod, PlcOutput
+from reactors_czlab.core.hardware import IN_RASPBERRYPI, rpiplc
 
 if TYPE_CHECKING:
     from reactors_czlab.core.data import PhysicalInfo
 
-if IN_RASPBERRYPI:
-    from reactors_czlab.core.reactor import rpiplc
-
 _logger = logging.getLogger("server.actuator")
 
+PWM_FREQUENCY_HZ = 100
 
-# Missing a Modbus Actuator
-# Missing an Actuator factory?
+
 class Actuator(ABC):
     """Base Actuator class."""
 
@@ -47,13 +44,8 @@ class Actuator(ABC):
         )
 
     def __repr__(self) -> str:
-        """Print sensor id."""
-        return f"Actuator(id: {self.id})"
-
-    def __eq__(self, other: object) -> bool:
-        """Test equality by senor id."""
-        this = self.id
-        return this == other
+        """Print the actuator id."""
+        return f"{type(self).__name__}(id: {self.id})"
 
     @property
     def controller(self) -> _Control:
@@ -63,41 +55,44 @@ class Actuator(ABC):
     @controller.setter
     def controller(self, controller: _Control) -> None:
         if not isinstance(controller, _Control):
-            raise TypeError
+            error_message = f"Expected a _Control, got {type(controller)}"
+            raise TypeError(error_message)
         self._controller = controller
 
     def write_output(self, sens_value: float) -> None:
-        """Write the actuator values."""
+        """Write the actuator value derived from a sensor reading."""
         value = self.controller.get_value(sens_value)
-        old_value = self.channel.old_value
-        if value != old_value:
+        if value != self.channel.old_value:
             self.channel.old_value = value
             self.write(value)
-            _logger.debug(f"Write {value} to {self.id}: {self.controller}")
+            _logger.debug("Write %s to %s: %s", value, self.id, self.controller)
 
     def set_control_config(self, config: ControlConfig) -> None:
         """Change the current configuration of the actuator outputs.
 
-        Inputs:
-        -------
-        config: ControlConfig
+        Parameters
+        ----------
+        config:
             A dataclass with the parameters of the new controller
 
         """
-        current_controller = self.controller
         try:
             new_controller = ControlFactory().create_control(config)
-            # sets the new config only if it is different from the old config
-            if current_controller != new_controller:
-                self.controller = new_controller
-                _logger.info(
-                    f"Control config update - {self.id}:{self.controller}",
-                )
-
         except TypeError:
             # Each control class checks that the values
             # passed are of the correct type
-            _logger.exception(f"Wrong attributes in {self.id}:{config}")
+            _logger.exception("Wrong attributes in %s: %s", self.id, config)
+            return
+
+        # Replace the controller only if the configuration actually changed,
+        # so an unrelated OPC write does not reset a running timer or PID.
+        if self.controller != new_controller:
+            self.controller = new_controller
+            _logger.info(
+                "Control config update - %s: %s",
+                self.id,
+                self.controller,
+            )
 
     @abstractmethod
     def write(self, value: float) -> None:
@@ -105,37 +100,15 @@ class Actuator(ABC):
 
 
 class RandomActuator(Actuator):
-    """Class for testing."""
-
-    def __init__(
-        self,
-        identifier: str,
-        config: PhysicalInfo,
-    ) -> None:
-        """Instance base actuator class.
-
-        Parameters
-        ----------
-        identifier:
-            A unique identifier for the actuator
-        config:
-            A data class with config parameters for the actuator
-
-        """
-        super().__init__(identifier, config)
+    """Class for testing without hardware."""
 
     def write(self, value: float) -> None:
-        """Write value."""
+        """Record the value in the channel."""
         self.channel.value = value
 
 
 class PlcActuator(Actuator):
     """Class to interface with the RaspberryPi PLC pins."""
-
-    limits: ClassVar = {
-        "lb": 0,
-        "ub": 4095,
-    }
 
     def __init__(
         self,
@@ -156,9 +129,8 @@ class PlcActuator(Actuator):
         if IN_RASPBERRYPI:
             chn = self.channel
             rpiplc.pin_mode(chn.pin, rpiplc.OUTPUT)
-            mode = chn.type
-            if mode == "pwm":
-                rpiplc.analog_write_set_frequency(chn.pin, 100)
+            if chn.type == PlcOutput.pwm:
+                rpiplc.analog_write_set_frequency(chn.pin, PWM_FREQUENCY_HZ)
 
     def write(self, value: float) -> None:
         """Write to physical pin."""
@@ -166,8 +138,4 @@ class PlcActuator(Actuator):
             chn = self.channel
             rpiplc.analog_write(chn.pin, int(value))
             chn.value = value
-            _logger.debug(f"Actuator {self.id} - {value}")
-
-
-class ModbusActuator(Actuator):
-    """Class writing to Modbus Channels."""
+            _logger.debug("Actuator %s - %s", self.id, value)

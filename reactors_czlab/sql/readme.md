@@ -1,42 +1,34 @@
-- experiment table: id, name[STR], date[DATE], volume[Float]
+# Database schema
 
-- visiferm table:
-  id, experiment_id, date[DATE], reactor[STR], value[FLOAT], units[STR]
+Create it with:
 
-- arcph table:
-  id, experiment_id, date[DATE], reactor[STR], value[FLOAT], units[STR]
-
-- analog table:
-  id, experiment_id, date[DATE], reactor[STR], calibration[STR], value[FLOAT]
-
-- actuator table:
-  id, experiment_id, date[DATE], reactor[STR], calibration[STR], value[FLOAT]
-
-@Bhavana because of how the OPC subscription works, we are going
-to get one channel at the time, which means we'll have to commit one
-channel at the time to the sql database even for tables that have
-two channels
-
-I think we'll need to modify the visiferm and arcph tables to reflect
-that. We'll also need a new field reactor that I overlooked before.
-I've updated the README in sql with the changes needed.
-
-Most of the info of the sql commit is stored in the data variable
-of type core.utils.PhysicalInfo with a single Channel.
-data.model is the name of the table. Then you'll need
-data.channels[0].value and data.channels[0].units
-
-For the actuator and analog tables, the calibration[STR] field in the
-sql tables will be under data.calibration.file
-
-The call to the sql database would look like this:
-(please modify however you see fit)
-
-```python
-our_sql_api.commit(
-   reactor_id: str,
-   experiment_name: str,
-   timestamp: DateTime,
-   data: PhysicalInfo,
-)
+```bash
+psql -f Bioreactor.sql
 ```
+
+## `data`
+
+One row per channel reading. The OPC subscription delivers one channel at a
+time, so a two channel sensor produces two rows with the same timestamp
+rather than one row with two values.
+
+| Column | Type | Source |
+| --- | --- | --- |
+| `id` | SERIAL | primary key |
+| `node_id` | TEXT | OPC node id, e.g. `ns=2;i=9` |
+| `date` | TIMESTAMP(3) | when the client received the change |
+| `reactor` | TEXT | `R0`, `R1`, ... |
+| `name` | TEXT | device name, e.g. `ph`, `do`, `biomass`, `pwm0` |
+| `channel` | TEXT | channel units, e.g. `pH`, `oC`, `ppm`, `445` |
+| `value` | FLOAT | the reading |
+
+`reactor`, `name` and `channel` are the three parts of the OPC browse name
+`<reactor>:<name>:<channel>`, split by `OpcClient.match_tree`.
+
+Readings equal to `core.data.ERROR_VALUE` are dropped by the client and
+never reach this table.
+
+## `experiments`
+
+Not written by any code yet. It is here for the planned "group a run under a
+named experiment" feature; until something populates it, `data` stands alone.

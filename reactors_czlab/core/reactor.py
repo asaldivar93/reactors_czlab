@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import platform
+from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -12,37 +12,45 @@ if TYPE_CHECKING:
     from reactors_czlab.core.actuator import Actuator
     from reactors_czlab.core.sensor import Sensor
 
-if platform.machine().startswith("aarch64"):
-    import board
-    import busio
-    from adafruit_tlc59711 import TLC59711
-    from librpiplc import rpiplc
+_logger = logging.getLogger("server.reactor")
 
-    rpiplc.init("RPIPLC_V6", "RPIPLC_58")
-    spi = busio.SPI(board.SCK, MOSI=board.MOSI)
-    led_driver = TLC59711(spi, pixel_count=16)
-    # Set all leds to max value
-    led_driver.set_pixel_all((65535, 65535, 65535))
-    led_driver.show()
+#: Reference value handed to controllers that are not paired to a sensor.
+#: Manual and timer controllers ignore it; the others should not be used
+#: unpaired.
+UNPAIRED_INPUT = 0.0
 
-_logger = logging.getLogger("server.sensors")
-IN_RASPBERRYPI = platform.machine().startswith("aarch64")
-pwm_lock = asyncio.Lock()
+#: How often unpaired actuators are refreshed, in seconds.
+UNPAIRED_PERIOD = 0.05
 
 
 @dataclass
-class ReactorSlow:
-    """Shared state of the slow loop."""
+class SamplingState:
+    """Shared state of the sampling loop.
 
-    pairings: dict[str, list[tuple[str, int]]] = field(default_factory=dict)
+    Attributes
+    ----------
+    pairings:
+        {sensor_id: [(actuator_id, channel_index), ...]}
+    sensors:
+        Ids of the sensors read by the loop
+    actuators:
+        Ids of the actuators that may be paired to a sensor
+    lock:
+        Guards pairings against concurrent OPC method calls
+
+    """
+
+    pairings: dict[str, list[tuple[str, int]]] = field(
+        default_factory=lambda: defaultdict(list),
+    )
     sensors: list[str] = field(default_factory=list)
     actuators: list[str] = field(default_factory=list)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
 @dataclass
-class ReactorFast:
-    """Shared state of the fast loop."""
+class UnpairedState:
+    """Shared state of the loop driving actuators with no reference sensor."""
 
     actuators: list[str] = field(default_factory=list)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -68,9 +76,11 @@ class Reactor:
         volume:
             The initial volume of the reactor.
         sensors:
-            A list containig the Sensor instances.
+            A list containing the Sensor instances.
         actuators:
-            A list cotaining the Actuator instances.
+            A list containing the Actuator instances.
+        period:
+            Seconds between sensor samples.
 
         """
         self.id: str = identifier
@@ -78,14 +88,18 @@ class Reactor:
         self.period: float = period
         self.sensors = sensors
         self.actuators = actuators
-        self.reactor_slow = ReactorSlow()
-        self.reactor_fast = ReactorFast()
-        for actuator in self.actuators.values():
-            if actuator.info.type == "digital":
-                self.reactor_slow.actuators.append(actuator.id)
-            else:
-                self.reactor_fast.actuators.append(actuator.id)
-        self.reactor_slow.sensors = [s.id for s in sensors]
+        self.sampling = SamplingState()
+        self.unpaired = UnpairedState()
+
+        self.sampling.sensors = [s.id for s in self.sensors.values()]
+        self.sampling.actuators = [a.id for a in self.actuators.values()]
+        # Every actuator starts unpaired; set_pairing() moves it out of this
+        # list and unpair() puts it back.
+        self.unpaired.actuators = [a.id for a in self.actuators.values()]
+
+    def __repr__(self) -> str:
+        """Print the reactor id."""
+        return f"Reactor(id: {self.id})"
 
     @property
     def sensors(self) -> dict[str, Sensor]:
@@ -96,7 +110,8 @@ class Reactor:
     def sensors(self, sensors: list[Sensor]) -> None:
         """Set the sensors as a dict."""
         if not isinstance(sensors, list):
-            raise TypeError
+            error_message = f"sensors must be a list, got {type(sensors)}"
+            raise TypeError(error_message)
         self._sensors = {s.id: s for s in sensors}
 
     @property
@@ -107,53 +122,65 @@ class Reactor:
     @actuators.setter
     def actuators(self, actuators: list[Actuator]) -> None:
         """Set the actuators as a dict."""
+        if not isinstance(actuators, list):
+            error_message = f"actuators must be a list, got {type(actuators)}"
+            raise TypeError(error_message)
         self._actuators = {a.id: a for a in actuators}
 
-    async def slow_loop(self, sample_ready: asyncio.Event) -> None:
-        """Read sensors and update paired actuators."""
+    def update_paired_actuators(self) -> None:
+        """Drive every paired actuator from its reference sensor channel.
+
+        The caller is responsible for holding ``self.sampling.lock``.
+        """
+        for sensor_id, paired in self.sampling.pairings.items():
+            sensor = self.sensors[sensor_id]
+            for aid, chn in paired:
+                actuator = self.actuators[aid]
+                try:
+                    value = sensor.channels[chn].value
+                except IndexError:
+                    _logger.error("%s is not a channel in %s", chn, sensor.id)
+                else:
+                    actuator.write_output(value)
+
+    async def sampling_loop(self, sample_ready: asyncio.Event) -> None:
+        """Read all sensors, then update the actuators paired to them."""
         loop = asyncio.get_running_loop()
         next_tick = loop.time()
         while True:
-            next_tick += self.period
-            if IN_RASPBERRYPI:
-                led_driver.set_pixel_all((65535, 65535, 65535))
-                led_driver.show()
-            # Read all sensors
             async with asyncio.TaskGroup() as tg:
                 for sensor in self.sensors.values():
                     tg.create_task(sensor.read())
 
-            # Get pairings
-            async with self.reactor_slow.lock:
-                # Update paired actuators
-                for sensor_id in self.reactor_slow.pairings:
-                    sensor = self.sensors[sensor_id]  # get the sensor
-                    for aid, chn in self.reactor_slow.pairings[sensor_id]:
-                        actuator = self.actuators[aid]  # get the actuator
-                        # Verify that the selected chn exist
-                        try:
-                            value = sensor.channels[chn].value
-                        except IndexError:
-                            _logger.error(f"{chn} not a channel in {sensor.id}")
-                        else:
-                            # TO DO: move this logic inside write_output
-                            if actuator.info.type == "digital":
-                                await actuator.write_output(value)
-                            else:
-                                actuator.write_output(value)
+            async with self.sampling.lock:
+                self.update_paired_actuators()
+
             # Flag that the sensing loop finished
             sample_ready.set()
-            # Drift correct the next tick
-            now = loop.time()
-            delay = max(0.0, next_tick - now)
-            await asyncio.sleep(delay)
 
-    async def fast_loop(self) -> None:
-        """Update fast acting actuators."""
+            # Drift correct the next tick. If a read overran the period, skip
+            # the ticks we missed instead of free running to catch up.
+            next_tick += self.period
+            now = loop.time()
+            if next_tick < now:
+                _logger.warning(
+                    "%s sampling overran its %.1fs period by %.3fs",
+                    self.id,
+                    self.period,
+                    now - next_tick,
+                )
+                next_tick = now + self.period
+            await asyncio.sleep(max(0.0, next_tick - now))
+
+    async def unpaired_loop(self) -> None:
+        """Refresh the actuators that are not paired to a sensor."""
         while True:
-            async with self.reactor_fast.lock:
-                for aid in self.reactor_fast.actuators:
-                    actuator = self.actuators[aid]
-                    async with pwm_lock:
-                        actuator.write_output(0)
-            await asyncio.sleep(0.05)
+            async with self.unpaired.lock:
+                for aid in self.unpaired.actuators:
+                    self.actuators[aid].write_output(UNPAIRED_INPUT)
+            await asyncio.sleep(UNPAIRED_PERIOD)
+
+    def stop(self) -> None:
+        """Drive every actuator to zero."""
+        for actuator in self.actuators.values():
+            actuator.write(0)

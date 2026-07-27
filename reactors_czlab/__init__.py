@@ -1,3 +1,6 @@
-from reactors_czlab.core import Reactor, Actuator, Sensor
+"""Bioreactor controller interface.
 
-from reactors_czlab import opcua
+Import the subpackage you need rather than relying on re-exports here:
+``reactors_czlab.core`` needs pymodbus and ``reactors_czlab.opcua`` needs
+asyncua, and a client-only install has neither.
+"""

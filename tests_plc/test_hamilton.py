@@ -4,7 +4,7 @@ import platform
 import time
 
 from reactors_czlab.core.modbus import ModbusHandler
-from reactors_czlab.core.reactor import IN_RASPBERRYPI
+from reactors_czlab.core.hardware import IN_RASPBERRYPI
 from reactors_czlab.core.sensor import HamiltonSensor
 from reactors_czlab.server_info import HAMILTON_SENSORS
 

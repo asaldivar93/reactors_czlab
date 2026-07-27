@@ -4,7 +4,7 @@ import logging
 import platform
 
 from reactors_czlab.core.modbus import ModbusHandler
-from reactors_czlab.core.reactor import IN_RASPBERRYPI
+from reactors_czlab.core.hardware import IN_RASPBERRYPI
 from reactors_czlab.core.sensor import HamiltonSensor
 from reactors_czlab.server_info import PH_SENSORS
 

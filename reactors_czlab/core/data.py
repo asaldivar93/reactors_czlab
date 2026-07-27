@@ -1,23 +1,21 @@
-"""Dataclasses."""
+"""Dataclasses shared by the server and the client."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum, auto
 
+#: Written to a channel when the underlying device could not be read.
+#: It is a real float, so consumers must compare against this constant
+#: instead of hardcoding the literal.
+ERROR_VALUE = -0.111
 
-@dataclass
-class PhysicalInfo:
-    """Class holding info for the sensors/actuators."""
-
-    model: str
-    address: int
-    type: str
-    channels: list[Channel]
+#: Full scale of the PLC analog/PWM outputs (0 - 10 V).
+MAX_OUTPUT = 4095.0
 
 
 class PlcOutput(StrEnum):
-    """Available Outputs in PLC.
+    """Kind of device behind a PhysicalInfo/Channel.
 
     Parameters
     ----------
@@ -31,6 +29,16 @@ class PlcOutput(StrEnum):
 
 
 @dataclass
+class PhysicalInfo:
+    """Class holding info for the sensors/actuators."""
+
+    model: str
+    address: int
+    type: PlcOutput
+    channels: list[Channel]
+
+
+@dataclass
 class Channel:
     """Class holding config info for sensor/actuator channels."""
 
@@ -39,12 +47,9 @@ class Channel:
     register: str = "none"
     pin: str = "none"
     type: PlcOutput = PlcOutput.pwm
-    value: float = -0.111
-    old_value: float = -0.111
+    value: float = ERROR_VALUE
+    old_value: float = ERROR_VALUE
     calibration: Calibration | None = None
-
-    def __eq__(self, other: object) -> bool:
-        return self.units == other.units
 
 
 @dataclass
@@ -80,17 +85,17 @@ class ControlConfig:
     method:
         ControlMethod
     time_on:
-        float | None (default: None)
+        float (default: 0.0)
     time_off:
-        float | None (default: None)
+        float (default: 0.0)
     lb:
-        float | None (default: None)
-    up:
-        float | None (default: None)
+        float (default: 0.0)
+    ub:
+        float (default: 0.0)
     setpoint:
-        float | None (default: None)
+        float (default: 0.0)
     value:
-        float | None (default: None)
+        float (default: 0.0)
 
     """
 

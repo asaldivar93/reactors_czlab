@@ -1,0 +1,109 @@
+"""Tests for the set_pairing/unpair OPC methods.
+
+These exercise the method bodies directly. Only asyncua is needed (it is a
+base dependency), not a running server: init_pairing_methods() is handed a
+stub node that captures the callables instead of registering them.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from reactors_czlab.opcua.reactor import ReactorOpc
+
+
+class _CapturingNode:
+    """Stand-in for an asyncua node that records added methods."""
+
+    def __init__(self) -> None:
+        self.methods: dict[str, object] = {}
+
+    async def add_method(self, idx, name, callback, *args, **kwargs) -> None:  # noqa: ANN001, ANN002, ANN003, ARG002
+        """Capture the callback under its bare method name."""
+        self.methods[name.split(":")[-1]] = callback
+
+
+@pytest.fixture
+async def paired(make_sensor, make_actuator):
+    """A ReactorOpc with its pairing methods captured."""
+    reactor_opc = ReactorOpc(
+        "R0",
+        volume=5,
+        sensors=[make_sensor("R0:ph")],
+        actuators=[make_actuator("R0:pwm0"), make_actuator("R0:pwm1")],
+        period=10,
+    )
+    node = _CapturingNode()
+    reactor_opc.node = node
+    await reactor_opc.init_pairing_methods(2)
+    return reactor_opc, node.methods["set_pairing"], node.methods["unpair"]
+
+
+async def test_set_pairing_succeeds(paired) -> None:
+    """A valid pairing is recorded and the actuator leaves the unpaired loop.
+
+    Regression: the validation required the actuator to be in the paired
+    *and* the unpaired list at once, which is impossible, so set_pairing
+    always returned False.
+    """
+    reactor_opc, set_pairing, _ = paired
+
+    assert await set_pairing(None, "R0:ph", "R0:pwm0", 0) is True
+    assert dict(reactor_opc.reactor.sampling.pairings) == {
+        "R0:ph": [("R0:pwm0", 0)],
+    }
+    assert reactor_opc.reactor.unpaired.actuators == ["R0:pwm1"]
+
+
+async def test_set_pairing_rejects_unknown_sensor(paired) -> None:
+    """A sensor id from another reactor is refused."""
+    _, set_pairing, _ = paired
+    assert await set_pairing(None, "R9:ph", "R0:pwm0", 0) is False
+
+
+async def test_set_pairing_rejects_unknown_actuator(paired) -> None:
+    """An actuator id from another reactor is refused."""
+    _, set_pairing, _ = paired
+    assert await set_pairing(None, "R0:ph", "R9:pwm0", 0) is False
+
+
+async def test_set_pairing_rejects_double_pairing(paired) -> None:
+    """An actuator can only follow one sensor channel."""
+    _, set_pairing, _ = paired
+    assert await set_pairing(None, "R0:ph", "R0:pwm0", 0) is True
+    assert await set_pairing(None, "R0:ph", "R0:pwm0", 1) is False
+
+
+async def test_unpair_returns_the_actuator(paired) -> None:
+    """Unpairing removes the pairing and restores the unpaired loop.
+
+    Regression: unpair logged an undefined name and raised NameError after
+    it had already mutated the pairings.
+    """
+    reactor_opc, set_pairing, unpair = paired
+
+    await set_pairing(None, "R0:ph", "R0:pwm0", 0)
+    assert await unpair(None, "R0:ph", "R0:pwm0", 0) is True
+
+    assert reactor_opc.reactor.sampling.pairings["R0:ph"] == []
+    assert set(reactor_opc.reactor.unpaired.actuators) == {
+        "R0:pwm0",
+        "R0:pwm1",
+    }
+
+
+async def test_unpair_rejects_a_pairing_that_does_not_exist(paired) -> None:
+    """Unpairing something that was never paired is refused, not fatal."""
+    _, _, unpair = paired
+    assert await unpair(None, "R0:ph", "R0:pwm1", 0) is False
+
+
+async def test_reactor_opc_does_not_duplicate_state(paired) -> None:
+    """ReactorOpc reads through to the Reactor rather than copying it.
+
+    Regression: it kept its own sensors/actuators dicts alongside the
+    Reactor's, so the two could drift apart.
+    """
+    reactor_opc, _, _ = paired
+    assert reactor_opc.sensors is reactor_opc.reactor.sensors
+    assert reactor_opc.actuators is reactor_opc.reactor.actuators

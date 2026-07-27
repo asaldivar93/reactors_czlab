@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import ClassVar
@@ -14,10 +15,18 @@ from pymodbus.constants import Endian
 from pymodbus.exceptions import ModbusException
 from pymodbus.payload import BinaryPayloadBuilder, BinaryPayloadDecoder
 
-# logging.getLogger("pymodbus.client").setLevel(logging.CRITICAL)
 _logger = logging.getLogger("server.modbus_handler")
 
 valid_baudrates = {4800: 2, 9600: 3, 19200: 4, 38400: 5, 57600: 6, 115200: 7}
+
+# Word/byte order used by the Hamilton Arc sensors. Encoding and decoding
+# MUST use the same pair, so they live here and nowhere else: if a reading
+# comes back byte swapped, flip these two constants and nothing else.
+BYTE_ORDER = Endian.BIG
+WORD_ORDER = Endian.LITTLE
+
+#: Hamilton stores every measurement as a 32 bit value across two registers.
+REGISTERS_PER_VALUE = 2
 
 
 class ModbusError(Exception):
@@ -101,8 +110,7 @@ class ModbusHandler:
         if not self.client.connect():
             error_message = f"Failed to connect to Modbus device at port {port}"
             raise ModbusError(error_message)
-        self._last_result = None
-        _logger.info(f"Initialized ModbusHandler at port: {port}")
+        _logger.info("Initialized ModbusHandler at port: %s", port)
 
     @property
     def baudrate(self) -> int:
@@ -112,7 +120,9 @@ class ModbusHandler:
     @baudrate.setter
     def baudrate(self, baudrate: int) -> None:
         if baudrate not in valid_baudrates:
-            error_message = f"Baudrate should be one of {valid_baudrates}"
+            error_message = (
+                f"Baudrate should be one of {sorted(valid_baudrates)}"
+            )
             raise ModbusError(error_message)
         self._baudrate = baudrate
 
@@ -172,8 +182,10 @@ class ModbusHandler:
                     values=values,
                 ):
                     if values is None:
-                        error_message = f"Write operation requires a \
-                                          list of values in: {request}"
+                        error_message = (
+                            "Write operation requires a list of values "
+                            f"in: {request}"
+                        )
                         raise ModbusError(error_message)
                     payload = self._build_payload(values)
                     async with self.lock:
@@ -192,28 +204,35 @@ class ModbusHandler:
                     raise ModbusError(error_message)
 
             if result.isError():
-                error_message = f"\
-                ModbusError: Error during {request.operation} \
-                on {request.register} on unit {request.address} \
-                with code {result.exception_code}"
+                error_message = (
+                    f"Error during {request.operation} on register "
+                    f"{request.register} of unit {request.address} "
+                    f"with code {result.exception_code}"
+                )
                 raise ModbusError(error_message)
 
-            error_message = f"Modbus success - unit: {request.address}, \
-                operation: {request.operation}, value: {request.values}, \
-                result: {result.registers}"
-            _logger.debug(error_message)
+            _logger.debug(
+                "Modbus success - unit: %s, operation: %s, value: %s,"
+                " result: %s",
+                request.address,
+                request.operation,
+                request.values,
+                result.registers,
+            )
         except ModbusException as err:
-            error_message = f"Modbus error during {request.operation} \
-                on {request.address}: {err}"
+            error_message = (
+                f"Modbus error during {request.operation} "
+                f"on unit {request.address}: {err}"
+            )
             raise ModbusError(error_message) from err
         else:
             return result.registers
 
     def _build_payload(self, values: list) -> list:
-        """Transform a list of values to little endian."""
+        """Encode values into 16 bit registers."""
         builder = BinaryPayloadBuilder(
-            byteorder=Endian.BIG,
-            wordorder=Endian.LITTLE,
+            byteorder=BYTE_ORDER,
+            wordorder=WORD_ORDER,
         )
         for val in values:
             match val:
@@ -230,21 +249,41 @@ class ModbusHandler:
 
         return builder.to_registers()
 
-    def decode(self, registers: tuple[int, int], cast_type: str) -> float | int:
+    def decode(
+        self,
+        registers: Sequence[int],
+        cast_type: str,
+    ) -> float | int:
         """Translate register values to variables.
 
         Parameters
         ----------
-        registers: tuple[int, int]
-            A tuple of two 16bit register values
+        registers:
+            Two 16 bit register values holding one 32 bit quantity
         cast_type:
             The type of the conversion. One of: int, float.
 
+        Raises
+        ------
+        ModbusError
+            If the register count is wrong or cast_type is unsupported.
+
         """
-        decoder = BinaryPayloadDecoder(
-            payload=registers,
-            byteorder=Endian.LITTLE,
-            wordorder=Endian.LITTLE,
+        registers = list(registers)
+        if len(registers) != REGISTERS_PER_VALUE:
+            error_message = (
+                f"decode() needs exactly {REGISTERS_PER_VALUE} registers, "
+                f"got {len(registers)}: {registers}"
+            )
+            raise ModbusError(error_message)
+
+        # fromRegisters() packs the register list into bytes for us. The
+        # previous code passed the raw ints as `payload`, which the decoder
+        # treats as a byte buffer.
+        decoder = BinaryPayloadDecoder.fromRegisters(
+            registers,
+            byteorder=BYTE_ORDER,
+            wordorder=WORD_ORDER,
         )
         match cast_type:
             case "float":
@@ -252,8 +291,10 @@ class ModbusHandler:
             case "int":
                 return decoder.decode_32bit_uint()
             case _:
-                error_message = "Only float or int are implemented \
-                                 in ModbusHandler.decode()"
+                error_message = (
+                    f"Unsupported cast_type {cast_type!r} in "
+                    "ModbusHandler.decode(): use 'float' or 'int'"
+                )
                 raise ModbusError(error_message)
 
     def close(self) -> None:

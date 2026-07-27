@@ -34,23 +34,17 @@ class ActuatorOpc:
         self.id = actuator.id
 
     def __repr__(self) -> str:
-        """Print sensor id."""
+        """Print actuator id."""
         return f"ActuatorOpc(id: {self.actuator.id})"
 
-    def __eq__(self, other: object) -> bool:
-        """Test equality by senor id."""
-        this = self.actuator.id
-        return this == other
-
     async def update_value(self) -> None:
-        """Update the actuator state in the server."""
-        this_value = await self.curr_value.get_value()  # get value in server
-        new_val = self.actuator.channel.old_value  # get value in actuator
-        self.actuator.channel.old_value = new_val  # Do we need this?
-        # Update only if value in server is different
-        if new_val != this_value:
-            await self.curr_value.write_value(float(new_val))
-            _logger.debug(f"Updated {self.id} with value {new_val}")
+        """Publish the actuator output to the server if it changed."""
+        published = await self.curr_value.get_value()
+        # old_value is what write_output() last pushed to the hardware.
+        current = self.actuator.channel.old_value
+        if current != published:
+            await self.curr_value.write_value(float(current))
+            _logger.debug("Updated %s with value %s", self.id, current)
 
     async def init_node(
         self,
@@ -65,7 +59,7 @@ class ActuatorOpc:
         self.node = await parent.add_object(idx, actuator.id)
         bnp = await parent.read_browse_name()
         bns = await self.node.read_browse_name()
-        _logger.info(f"In node {bnp.Name} added {bns.Name}")
+        _logger.info("In node %s added %s", bnp.Name, bns.Name)
 
         # Add a node with variables holding the control config
         await self.init_control_node(idx)
@@ -85,43 +79,45 @@ class ActuatorOpc:
         data: object,
     ) -> None:
         """Read the control configuration, and update the actuator."""
-        _logger.debug(f"Config update: {self.actuator.id}:{node}:{val}")
+        _logger.debug("Config update: %s:%s:%s", self.actuator.id, node, val)
         index = await self.method.get_value()
         try:
             method = control_method[index]
-            value = await self.value.get_value()
-            config = ControlConfig(method, value=value)
-
-            # Build a dictionary with the appropiate
-            # parameters based on the method variable
-            match method:
-                case "manual":
-                    self.actuator.set_control_config(config)
-                    _logger.debug(f"Control config: {config}")
-
-                case "timer":
-                    config.time_on = await self.time_on.get_value()
-                    config.time_off = await self.time_off.get_value()
-                    self.actuator.set_control_config(config)
-                    _logger.debug(f"Control config: {config}")
-
-                case "on_boundaries":
-                    config.lb = await self.lb.get_value()
-                    config.ub = await self.ub.get_value()
-                    self.actuator.set_control_config(config)
-                    _logger.debug(f"Control config: {config}")
-
-                case "pid":
-                    config.setpoint = await self.setpoint.get_value()
-                    self.actuator.set_control_config(config)
-                    _logger.debug(f"Control config: {config}")
         except KeyError:
-            _logger.exception(f"{index} not a member of {control_method}")
+            _logger.exception(
+                "%s is not a member of %s",
+                index,
+                sorted(control_method),
+            )
+            return
+
+        config = ControlConfig(method, value=await self.value.get_value())
+
+        # Only read the variables the selected method actually needs.
+        match method:
+            case ControlMethod.manual:
+                pass
+
+            case ControlMethod.timer:
+                config.time_on = await self.time_on.get_value()
+                config.time_off = await self.time_off.get_value()
+
+            case ControlMethod.on_boundaries:
+                config.lb = await self.lb.get_value()
+                config.ub = await self.ub.get_value()
+
+            case ControlMethod.pid:
+                config.setpoint = await self.setpoint.get_value()
+
+        self.actuator.set_control_config(config)
+        _logger.debug("Control config: %s", config)
 
     async def init_control_node(self, idx: int) -> None:
-        """Add configuration variables for the control method."""
-        # This is a mess, might need to think of a better way,
-        # maybe use an OPC structure instead or a Builder Class?
+        """Add configuration variables for the control method.
+
+        Every controller's parameters live side by side under one node; the
+        client writes ``method`` plus the parameters that method uses.
+        """
         # Add Node to store the control settings
         self.control_method = await self.node.add_object(
             idx,

@@ -9,14 +9,14 @@ from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, NamedTuple
 
-from reactors_czlab.core.data import Calibration, PhysicalInfo
+from reactors_czlab.core.data import ERROR_VALUE, PhysicalInfo
+from reactors_czlab.core.hardware import IN_RASPBERRYPI
 from reactors_czlab.core.modbus import (
+    REGISTERS_PER_VALUE,
     ModbusError,
     ModbusRequest,
     valid_baudrates,
 )
-from reactors_czlab.core.reactor import IN_RASPBERRYPI
-from reactors_czlab.server_info import VERBOSE
 
 if TYPE_CHECKING:
     from typing import ClassVar
@@ -26,16 +26,13 @@ if TYPE_CHECKING:
 if IN_RASPBERRYPI:
     from adafruit_as7341 import AS7341
 
-    from reactors_czlab.core.reactor import rpiplc
-
-    _i2c_lock = asyncio.Lock()  # Serialize access to i2c channel
-    _i2c_executor = ThreadPoolExecutor(
-        max_workers=1,
-        thread_name_prefix="i2c",
-    )
-
-
-ERROR_VAL = -0.111
+# Serialize access to the shared i2c bus. Defined unconditionally so
+# SpectralSensor is importable (and unit testable) off the PLC.
+_i2c_lock = asyncio.Lock()
+_i2c_executor = ThreadPoolExecutor(
+    max_workers=1,
+    thread_name_prefix="i2c",
+)
 
 _logger = logging.getLogger("server.sensors")
 
@@ -70,63 +67,43 @@ class Sensor(ABC):
 
     def __repr__(self) -> str:
         """Print sensor id."""
-        return f"Sensor(id: {self.id})"
-
-    def __eq__(self, other: object) -> bool:
-        """Test equality by senor id."""
-        this = self.id
-        return this == other
+        return f"{type(self).__name__}(id: {self.id})"
 
     @abstractmethod
     async def read(self) -> None:
         """Read all sensor channels."""
 
-    @abstractmethod
     async def write_calibration(
         self,
         cal_point: float,
         cal_value: float,
     ) -> tuple[str, float, float]:
-        """Do a one point calibration."""
+        """Do a one point calibration.
+
+        The default reports that the sensor cannot be calibrated over the
+        bus. Sensors that support it (HamiltonSensor) override this.
+        """
+        _logger.warning(
+            "%s does not support calibration (point %s, value %s)",
+            self.id,
+            cal_point,
+            cal_value,
+        )
+        return ("unsupported", 0.0, 0.0)
 
 
 class RandomSensor(Sensor):
-    """Class used for testing."""
-
-    def __init__(
-        self,
-        identifier: str,
-        config: PhysicalInfo,
-    ) -> None:
-        """Instance a random sensor class used for testing.
-
-        Parameters
-        ----------
-        identifier:
-            A unique identifier for the sensor
-        config:
-            A PhysicalInfo dataclass with sensor information
-
-        """
-        super().__init__(identifier, config)
+    """Sensor producing gaussian noise, for running without hardware."""
 
     async def read(self) -> None:
-        """Print values with a gaussian distribution."""
+        """Set every channel to a value with a gaussian distribution."""
         await asyncio.sleep(0.15)
         debug_msg = []
         for chn in self.channels:
             value = round(random.gauss(35, 1), 2)
             chn.value = value
-            debug_msg.extend([[chn.description, value]])
-        _logger.debug(f"In {self.id} - {debug_msg}")
-
-    async def write_calibration(
-        self,
-        cal_point: float,
-        cal_value: float,
-    ) -> tuple[str, float, float]:
-        """Do a one point calibration."""
-        return "ok", cal_point, cal_value
+            debug_msg.append([chn.description, value])
+        _logger.debug("In %s - %s", self.id, debug_msg)
 
 
 class HamiltonSensor(Sensor):
@@ -143,10 +120,10 @@ class HamiltonSensor(Sensor):
     BaudRate:
     - Start: 4102, No: 2, Reg1/Reg2: baudrate Level: S
     PMC1: (Units Available in register 2408)
-    - Start: 2090, No: 10, Reg1/Reg2: Selected Unit Reg3/Reg4: PMC1 Reg5/Reg4: Measurment Status
+    - Start: 2090, No: 10, Reg1/Reg2: Selected Unit Reg3/Reg4: PMC1 Reg5/Reg4: Measurement Status
         Reg7/Reg8:min_val Reg9/Reg10: max_val Level: U,A,S
     PMC6: (Units Available in register 2088)
-        Start: 2410, No: 10, Reg1/Reg2: Selected Unit Reg3/Reg4: PMC1 Reg5/Reg4: Measurment Status
+        Start: 2410, No: 10, Reg1/Reg2: Selected Unit Reg3/Reg4: PMC1 Reg5/Reg4: Measurement Status
         Reg7/Reg8:min_val Reg9/Reg10: max_val Level: U,A,S
     PA9 (moving average):
         Start: 3370, No: 2, Reg1/Reg2: Selected Unit Reg3/Reg4: Value for PA9 (1-16, default: 2)
@@ -159,7 +136,7 @@ class HamiltonSensor(Sensor):
         Start: 5190, No: 6, Reg1/Reg2: status Reg3/Reg4: unit Reg5/6: value level: A,S
     CP2:
         Start: 5194, No: 2, Reg1/Reg2: value level: A,S
-    QualityIndictator:
+    QualityIndicator:
         Start: 4872, No: 2, Reg1/Reg2: value level: U,A,S
 
     Dissolved Oxygen:
@@ -179,7 +156,7 @@ class HamiltonSensor(Sensor):
     are:
         -the stability of pH value and temperature over the last 3 minutes
         -the currently measured pH value fits to one of the calibration
-        standards defined in the selectedset of calibration standards
+        standards defined in the selected set of calibration standards
         -the limits of slope and offset at pH 7 have to be met
     """
 
@@ -206,6 +183,9 @@ class HamiltonSensor(Sensor):
         "administrator": {"code": 0x0C, "Password": 18111978},
         "specialist": {"code": 0x30, "Password": 16021966},
     }
+
+    #: Calibration points that have a writable register in REGISTERS.
+    CALIBRATION_POINTS: ClassVar = frozenset({"cp1", "cp2"})
 
     def __init__(
         self,
@@ -243,18 +223,20 @@ class HamiltonSensor(Sensor):
         """
         try:
             register = self.REGISTERS[param]
-            request = ModbusRequest(
-                operation="read_holding",
-                address=self.address,
-                register=register.address,
-                count=register.num,
-            )
-            return await self.modbus_handler.process_request(request)
         except KeyError as err:
-            error_message = f"Invalid register: {self.REGISTERS.keys()}"
+            error_message = (
+                f"Invalid register {param!r}, expected one of "
+                f"{sorted(self.REGISTERS)}"
+            )
             raise KeyError(error_message) from err
-        except ModbusError as err:
-            raise ModbusError from err
+
+        request = ModbusRequest(
+            operation="read_holding",
+            address=self.address,
+            register=register.address,
+            count=register.num,
+        )
+        return await self.modbus_handler.process_request(request)
 
     async def write_registers(
         self,
@@ -273,32 +255,44 @@ class HamiltonSensor(Sensor):
         """
         try:
             register = self.REGISTERS[param]
-            request = ModbusRequest(
-                operation="write",
-                address=self.address,
-                register=register.address,
-                values=values,
-            )
-            return await self.modbus_handler.process_request(request)
         except KeyError as err:
-            error_message = f"Invalid register: {self.REGISTERS.keys()}"
+            error_message = (
+                f"Invalid register {param!r}, expected one of "
+                f"{sorted(self.REGISTERS)}"
+            )
             raise KeyError(error_message) from err
-        except ModbusError as err:
-            raise ModbusError from err
+
+        request = ModbusRequest(
+            operation="write",
+            address=self.address,
+            register=register.address,
+            values=values,
+        )
+        return await self.modbus_handler.process_request(request)
 
     async def set_operator_level(self, level_name: str) -> None:
-        """Set the operator level for the sensor based on the operation type."""
+        """Set the operator level for the sensor based on the operation type.
+
+        Raises
+        ------
+        KeyError
+            If level_name is not one of OPERATOR_LEVELS.
+        ModbusError
+            If the sensor did not accept the new level. Callers must not
+            continue as if the level had been raised.
+
+        """
         try:
             level = self.OPERATOR_LEVELS[level_name]
-            await self.write_registers("operator", list(level.values()))
-            _logger.debug(f"Operator level '{level_name}' set successfully.")
-        except ModbusError:
-            error_message = f"Failed to set operator level for unit {self.id}"
-            _logger.exception(error_message)
-        except KeyError:
-            error_message = f"Operator level should be \
-                one of {self.OPERATOR_LEVELS.keys()}"
-            _logger.exception(error_message)
+        except KeyError as err:
+            error_message = (
+                f"Operator level should be one of "
+                f"{sorted(self.OPERATOR_LEVELS)}, got {level_name!r}"
+            )
+            raise KeyError(error_message) from err
+
+        await self.write_registers("operator", list(level.values()))
+        _logger.debug("Operator level %r set on %s", level_name, self.id)
 
     async def set_address(
         self,
@@ -310,65 +304,107 @@ class HamiltonSensor(Sensor):
             await self.write_registers("address", [new_address])
             self.address = new_address
             await self.set_operator_level("user")
-            _logger.info(f"Updated address of unit {self.id}: {new_address}")
+            _logger.info("Updated address of unit %s: %s", self.id, new_address)
         except ModbusError:
-            error_message = f"Failed to update address of unit {self.id}"
-            _logger.exception(error_message)
+            _logger.exception("Failed to update address of unit %s", self.id)
             raise
 
     async def set_baudrate(self, baudrate: int) -> None:
-        """Update the baudrate for the sensor."""
+        """Update the baudrate for the sensor.
+
+        Raises
+        ------
+        KeyError
+            If the baudrate is not supported by the sensor.
+        ModbusError
+            If the sensor did not accept the new baudrate.
+
+        """
         try:
             baudrate_code = valid_baudrates[baudrate]
+        except KeyError as err:
+            error_message = (
+                f"Baudrate should be one of {sorted(valid_baudrates)}, "
+                f"got {baudrate}"
+            )
+            raise KeyError(error_message) from err
+
+        try:
             await self.set_operator_level("specialist")
             await self.write_registers("baudrate", [baudrate_code])
             await self.set_operator_level("user")
             _logger.info(
-                f"Updated updated baudrate interface - baudrate:{baudrate}",
+                "Updated baudrate of unit %s: %s",
+                self.id,
+                baudrate,
             )
         except ModbusError:
-            error_message = f"Failed to set badu_rate of unit {self.id}"
-            _logger.exception(error_message)
-        except KeyError:
-            error_message = f"Baudrate should be one of: {valid_baudrates}"
-            _logger.exception(error_message)
+            _logger.exception("Failed to set baudrate of unit %s", self.id)
+            raise
 
     async def write_calibration(
         self,
         cal_point: float,
         cal_value: float,
     ) -> tuple[str, float, float]:
-        """Write value to calibration points."""
+        """Write a value to a calibration point and report the outcome.
+
+        Returns ("failed", 0.0, 0.0) if the sensor could not be calibrated;
+        the operator level is always dropped back to "user" afterwards.
+        """
+        cp = f"cp{int(cal_point)}"
+        if cp not in self.CALIBRATION_POINTS:
+            _logger.error(
+                "Invalid calibration point %s for %s, expected one of %s",
+                cal_point,
+                self.id,
+                sorted(self.CALIBRATION_POINTS),
+            )
+            return ("failed", 0.0, 0.0)
+
         try:
+            # A failure here must abort: writing calibration registers
+            # without specialist rights silently does nothing.
             await self.set_operator_level("specialist")
 
-            cp = "cp" + str(int(cal_point))
             await self.write_registers(cp, [cal_value])
 
-            status_response = await self.read_holding_registers(cp + "_status")
-            low, high = status_response[0], status_response[1]
-            st = self.modbus_handler.decode((low, high), "int")
-            status = "Successful" if st == 0 else "Failed"
-            low, high = status_response[4], status_response[5]
-            cal_value = self.modbus_handler.decode((low, high), "float")
+            status_response = await self.read_holding_registers(f"{cp}_status")
+            code = self.modbus_handler.decode(status_response[0:2], "int")
+            status = "Successful" if code == 0 else "Failed"
+            written_value = self.modbus_handler.decode(
+                status_response[4:6],
+                "float",
+            )
 
             quality_response = await self.read_holding_registers("quality")
-            low, high = quality_response[0], quality_response[1]
-            quality = self.modbus_handler.decode((low, high), "float")
+            quality = self.modbus_handler.decode(quality_response[0:2], "float")
 
             ph_response = await self.read_holding_registers("pmc1")
-            low, high = ph_response[2], ph_response[3]
-            ph = self.modbus_handler.decode((low, high), "float")
-            info_message = f"Calibration at {self.id} - status: {status}, \
-                            cp: {cal_value}, quality: {quality}, pH: {ph}"
-            _logger.info(info_message)
-            await self.set_operator_level("user")
+            ph = self.modbus_handler.decode(ph_response[2:4], "float")
+
+            _logger.info(
+                "Calibration at %s - status: %s, cp: %s, quality: %s, pH: %s",
+                self.id,
+                status,
+                written_value,
+                quality,
+                ph,
+            )
         except ModbusError:
-            error_message = f"Error during calibration of unit {self.id}"
-            _logger.exception(error_message)
-            return ("failed", 0, 0)
+            _logger.exception("Error during calibration of unit %s", self.id)
+            return ("failed", 0.0, 0.0)
         else:
-            return (status, quality, cal_value)
+            return (status, quality, written_value)
+        finally:
+            # Never leave the sensor sitting at specialist level.
+            try:
+                await self.set_operator_level("user")
+            except ModbusError:
+                _logger.exception(
+                    "Failed to drop %s back to user level",
+                    self.id,
+                )
 
     async def read(self) -> None:
         """Read all available channels in the sensor."""
@@ -376,81 +412,27 @@ class HamiltonSensor(Sensor):
             debug_msg = []
             for chn in self.channels:
                 result = await self.read_holding_registers(chn.register)
-                # Channel measurments are stored as u16 vars
-                # in registers 2 and 3
-                low, high = result[2], result[3]
-                value = self.modbus_handler.decode((low, high), "float")
+                # Channel measurements are stored as a 32 bit value
+                # across registers 2 and 3
+                value = self.modbus_handler.decode(
+                    result[2 : 2 + REGISTERS_PER_VALUE],
+                    "float",
+                )
                 chn.value = round(value, 3)
-                debug_msg.append([[chn.description, value]])
-            _logger.debug(f"In {self.id} - {debug_msg}")
+                debug_msg.append([chn.description, chn.value])
+            _logger.debug("In %s - %s", self.id, debug_msg)
 
-        except ModbusError as err:
-            error_message = f"Error during read of unit {self.id}\n {err}"
-            _logger.debug(error_message)
+        except ModbusError:
+            # A sensor dropping off the bus is an operational problem, not a
+            # debug detail: it must show up in record.log.
+            _logger.warning(
+                "Error during read of unit %s, channels set to %s",
+                self.id,
+                ERROR_VALUE,
+                exc_info=True,
+            )
             for chn in self.channels:
-                chn.value = ERROR_VAL
-
-
-class AnalogSensor(Sensor):
-    """Class for reading analog channels from the Raspberry."""
-
-    def __init__(
-        self,
-        identifier: str,
-        config: PhysicalInfo,
-    ) -> None:
-        """Analog sensor class. Analog input pins Range(0, 4095) (0-10V).
-
-        Parameters
-        ----------
-        identifier:
-            A unique identifier for the sensor
-        config:
-            PhysicalInfo sensor information: model, address,
-            sample_interval, channels
-
-        """
-        super().__init__(identifier, config)
-        self.cal = None
-        if IN_RASPBERRYPI:
-            for chn in self.channels:
-                rpiplc.pin_mode(chn.pin, rpiplc.INPUT)
-
-    def __repr__(self) -> str:
-        """Print sensor id."""
-        return f"AnalogSensor(id: {self.id}, channels: {self.channels})"
-
-    def get_value(self, analog: float, cal: Calibration) -> float:
-        """Apply a linear transformation to an analog value."""
-        return cal.a * analog + cal.b
-
-    def set_calibration(
-        self,
-        cal: list[tuple[str, tuple[float, float]]],
-    ) -> None:
-        """Set calibration values for all the channels.
-
-        Input:
-        -----
-        cal: list[list]
-            A list of lists with [a, b] pairs of linear regression
-            parameters for each channel
-        """
-        for i, info in enumerate(cal):
-            file, pars = info[0], info[1]
-            self.channels[i].calibration = Calibration(file, pars[0], pars[1])
-
-    async def read(self) -> None:
-        """Read analog values."""
-        await asyncio.sleep(0.0005)
-        if IN_RASPBERRYPI:
-            for chn in self.channels:
-                analog = rpiplc.analog_read(chn.pin)
-                cal = chn.calibration
-                value = self.get_value(analog, cal) if cal else analog
-                chn.value = value
-                if VERBOSE:
-                    _logger.debug(f"In {self.id} {chn.description}: {value}")
+                chn.value = ERROR_VALUE
 
 
 class SpectralSensor(Sensor):
@@ -463,25 +445,35 @@ class SpectralSensor(Sensor):
     ) -> None:
         """AS7341 spectral sensor.
 
+        Call set_i2c() with the multiplexer channel before reading.
+
         Parameters
         ----------
         identifier:
             A unique identifier for the sensor
         config:
-            PhysicalInfo sensor information: model, address,
-            sample_interval, channels
-        i2c:
-            The I2C bus device
+            PhysicalInfo sensor information: model, address, channels
 
         """
         super().__init__(identifier, config)
-        self.bus: None | AS7341 = None
+        self.bus: AS7341 | None = None
 
-    def set_i2c(self, i2c: busio.I2C) -> None:
+    def set_i2c(self, i2c: object) -> None:
+        """Attach the sensor to an I2C bus (usually a TCA9548A channel)."""
         self.bus = AS7341(i2c)
 
     async def read(self) -> None:
-        """Read spectral sensor."""
+        """Read every spectral channel over I2C."""
+        if self.bus is None:
+            _logger.warning(
+                "%s has no i2c bus, channels set to %s",
+                self.id,
+                ERROR_VALUE,
+            )
+            for chn in self.channels:
+                chn.value = ERROR_VALUE
+            return
+
         loop = asyncio.get_running_loop()
 
         def _blocking_call() -> None:
@@ -499,7 +491,17 @@ class SpectralSensor(Sensor):
             }
             for chn in self.channels:
                 chn.value = values[chn.units]
-            _logger.debug(f"In {self.id}: {values}")
+            _logger.debug("In %s: %s", self.id, values)
 
-        async with _i2c_lock:
-            await loop.run_in_executor(_i2c_executor, _blocking_call)
+        try:
+            async with _i2c_lock:
+                await loop.run_in_executor(_i2c_executor, _blocking_call)
+        except OSError:
+            _logger.warning(
+                "i2c read failed for %s, channels set to %s",
+                self.id,
+                ERROR_VALUE,
+                exc_info=True,
+            )
+            for chn in self.channels:
+                chn.value = ERROR_VALUE

@@ -28,11 +28,6 @@ class SensorOpc:
         """Print sensor id."""
         return f"SensorOpc(id: {self.sensor.id})"
 
-    def __eq__(self, other: object) -> bool:
-        """Test equality by senor id."""
-        this = self.sensor.id
-        return this == other
-
     async def init_node(self, parent: Node, idx: int, parent_id: str) -> None:
         """Add node and variables for the sensor."""
         sensor = self.sensor
@@ -40,10 +35,10 @@ class SensorOpc:
         self.node = await parent.add_object(idx, f"{sensor.id}")
         bnp = await parent.read_browse_name()
         bns = await self.node.read_browse_name()
-        _logger.info(f"In node {bnp.Name} added {bns.Name}")
+        _logger.info("In node %s added %s", bnp.Name, bns.Name)
 
         # Add channels to store data from the sensor
-        for i, channel in enumerate(sensor.channels):
+        for channel in sensor.channels:
             var = await self.node.add_variable(
                 idx,
                 f"{self.id}:{channel.units}",
@@ -94,10 +89,16 @@ class SensorOpc:
         )
 
     async def update_value(self) -> None:
-        """Update the server."""
-        for i, channel in enumerate(self.channels):
-            new_val = self.sensor.channels[i].value  # Get value in sensor
-            await channel.write_value(float(new_val))
+        """Publish the latest reading of every channel to the server."""
+        for node, channel in zip(
+            self.channels,
+            self.sensor.channels,
+            strict=True,
+        ):
+            await node.write_value(float(channel.value))
             _logger.debug(
-                f"Updated {self.id}:{channel} with value {new_val}",
+                "Updated %s:%s with value %s",
+                self.id,
+                channel.units,
+                channel.value,
             )

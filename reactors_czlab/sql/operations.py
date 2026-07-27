@@ -1,9 +1,11 @@
+"""Store and retrieve reactor readings from PostgreSQL."""
+
 from __future__ import annotations
 
 import csv
+import getpass
 import logging
 import os
-import pwd
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -17,8 +19,32 @@ if TYPE_CHECKING:
 
 _logger = logging.getLogger("client.sql")
 
-username = pwd.getpwuid(os.getuid())[0]
-dbname = "bioreactor_db"
+# Connection settings, overridable without touching the code.
+DB_NAME = os.environ.get("BIOREACTOR_DB_NAME", "bioreactor_db")
+DB_USER = os.environ.get("BIOREACTOR_DB_USER") or getpass.getuser()
+DB_HOST = os.environ.get("BIOREACTOR_DB_HOST")
+DB_PORT = os.environ.get("BIOREACTOR_DB_PORT")
+DB_PASSWORD = os.environ.get("BIOREACTOR_DB_PASSWORD")
+
+COLUMNS = ("node_id", "date", "reactor", "name", "channel", "value")
+
+SCHEMA = {
+    "node_id": pl.String,
+    "date": pl.Datetime("ms"),
+    "reactor": pl.String,
+    "name": pl.String,
+    "channel": pl.String,
+    "value": pl.Float64,
+}
+
+INSERT_DATA = (
+    "INSERT INTO data (node_id, date, reactor, name, channel, value) "
+    "VALUES (%s, %s, %s, %s, %s, %s)"
+)
+
+SELECT_DATA = (
+    "SELECT node_id, date, reactor, name, channel, value FROM data"
+)
 
 
 class SqlError(Exception):
@@ -26,51 +52,65 @@ class SqlError(Exception):
 
 
 def connect_to_db() -> Connection:
-    """Establish a connection to the PostgreSQL database."""
-    return psycopg.connect(
-        dbname=dbname,
-        user=username,
-    )
+    """Establish a connection to the PostgreSQL database.
+
+    Raises
+    ------
+    SqlError
+        If the database is unreachable.
+
+    """
+    params = {"dbname": DB_NAME, "user": DB_USER}
+    if DB_HOST:
+        params["host"] = DB_HOST
+    if DB_PORT:
+        params["port"] = DB_PORT
+    if DB_PASSWORD:
+        params["password"] = DB_PASSWORD
+
+    try:
+        return psycopg.connect(**params)
+    except psycopg.Error as err:
+        error_message = f"Error connecting to database {DB_NAME} as {DB_USER}"
+        raise SqlError(error_message) from err
 
 
 def store_data(
+    connection: Connection,
     node_id: str,
     info: dict,
 ) -> None:
-    """Insert data into respective PostgreSQL tables based on the sensor."""
+    """Insert one reading into the data table.
+
+    The caller owns the connection so it can be reused across inserts.
+
+    Raises
+    ------
+    SqlError
+        If the insert failed. The transaction is rolled back first.
+
+    """
+    values = (
+        node_id,
+        info["timestamp"].isoformat(timespec="milliseconds"),
+        info["reactor"],
+        info["name"],
+        info["channel"],
+        info["value"],
+    )
     try:
-        connection = connect_to_db()
-    except psycopg.Error as err:
-        error_message = "Error connecting to database"
-        raise SqlError(error_message) from err
-
-    cursor = connection.cursor()
-
-    # Extract sensor data
-    reactor = info["reactor"]
-    name = info["name"]
-    channel = info["channel"]
-    value = info["value"]
-    datetime = info["timestamp"].isoformat(timespec="milliseconds")
-
-    try:
-        insert_map = (
-            "INSERT INTO data \
-            (node_id, date, reactor, name, channel, value) \
-            VALUES (%s, %s, %s, %s, %s, %s)",
-            (node_id, datetime, reactor, name, channel, value),
-        )
-        query, values = insert_map
-        cursor.execute(query, values)
+        with connection.cursor() as cursor:
+            cursor.execute(INSERT_DATA, values)
         connection.commit()
-        _logger.debug(f"Commit to db: {values}")
-
     except psycopg.Error as err:
-        error_message = "Error during insert operation."
+        try:
+            connection.rollback()
+        except psycopg.Error:
+            _logger.debug("Rollback failed", exc_info=True)
+        error_message = f"Error inserting {values}"
         raise SqlError(error_message) from err
-    finally:
-        cursor.close()
-        connection.close()
+    else:
+        _logger.debug("Commit to db: %s", values)
 
 
 def get_date_filter_range(time_range: float, units: str) -> datetime | None:
@@ -81,7 +121,12 @@ def get_date_filter_range(time_range: float, units: str) -> datetime | None:
     time_range:
         A float with the desired time range
     units:
-        A time unit ("m":minutes, "h":hours, "d":days)
+        A time unit ("m": minutes, "h": hours, "d": days, "all": no cutoff)
+
+    Raises
+    ------
+    ValueError
+        If the units are not recognised.
 
     """
     now = datetime.now()
@@ -97,68 +142,56 @@ def get_date_filter_range(time_range: float, units: str) -> datetime | None:
         case "all":
             return None
         case _:
-            error_message = f"Invalid time units: {units} \
-                (valid: 'm', 'h', 'd', 'all')"
+            error_message = (
+                f"Invalid time units: {units} (valid: 'm', 'h', 'd', 'all')"
+            )
             raise ValueError(error_message)
 
 
 def query_data(time_range: tuple[float, str]) -> list:
-    """Query the SQL database by date."""
+    """Query the sql database by date.
+
+    Raises
+    ------
+    SqlError
+        If the query failed.
+
+    """
+    cutoff = get_date_filter_range(*time_range)
+
+    query = SELECT_DATA
+    params: tuple = ()
+    if cutoff is not None:
+        # "all" has no cutoff at all: adding "date >= NULL" would match
+        # nothing instead of everything.
+        query += " WHERE date >= %s"
+        params = (cutoff,)
+    query += " ORDER BY date"
+
+    connection = connect_to_db()
     try:
-        connection = connect_to_db()
-    except psycopg.Error as err:
-        error_message = "Error connecting to database"
-        raise SqlError(error_message) from err
-
-    cursor = connection.cursor()
-
-    # Determine date filter
-    time, unit = time_range
-    date_filter = get_date_filter_range(time, unit)
-    params = [date_filter]
-
-    # Queries (with optional date filter)
-    try:
-        query = "SELECT 'data' \
-            AS node_id, date, reactor, name, channel, value \
-            FROM data \
-            WHERE date >= %s"
-        cursor.execute(query, tuple(params))
-        all_rows = cursor.fetchall()
+        with connection.cursor() as cursor:
+            cursor.execute(query, params)
+            return cursor.fetchall()
     except psycopg.Error as err:
         error_message = "Error during get operation"
         raise SqlError(error_message) from err
-    else:
-        return all_rows
+    finally:
+        connection.close()
 
 
 def row_to_csv(out_name: str, rows: list) -> None:
     """Save sql queries to csv."""
     with Path(out_name).open(mode="w", newline="") as csvfile:
         writer = csv.writer(csvfile)
-        writer.writerow(
-            [
-                "node_id",
-                "date",
-                "reactor",
-                "name",
-                "channel",
-                "value",
-            ],
-        )  # Header
+        writer.writerow(COLUMNS)
         writer.writerows(rows)
 
 
 def rows_to_polars(rows: list) -> pl.DataFrame:
-    """Export sql queries to polars dataframe."""
-    columns = [
-        "node_id",
-        "date",
-        "reactor",
-        "name",
-        "channel",
-        "value",
-    ]
-    schema = {col: type(rows[0][i]) for i, col in enumerate(columns)}
-    schema["calibration"] = str
-    return pl.DataFrame(rows, schema=schema)
+    """Export sql queries to a polars dataframe.
+
+    The schema is fixed by the data table, so an empty result set still
+    produces a dataframe with the right columns.
+    """
+    return pl.DataFrame(rows, schema=SCHEMA, orient="row")
