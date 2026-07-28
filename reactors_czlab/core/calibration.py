@@ -119,13 +119,25 @@ def load_calibration(name: str) -> Calibration | None:
     hand-edited file or an unfriendly filesystem and none of them may
     take the server down.
 
+    The guard is a bare ``except Exception``, deliberately. This function
+    reads a file an operator can hand-edit into anything: earlier passes
+    only anticipated ``OSError``/``ValueError``/``TypeError`` and still
+    missed ``OverflowError`` from ``float()`` on an oversized JSON
+    integer. Enumerating every exception type ``json.loads``,
+    ``Calibration(**raw)``, ``float()`` and tuple-unpacking can raise on
+    adversarial input is not a task with a stable finish line, and the
+    function's one contract - log and return ``None`` - does not depend
+    on which exception type it was. ``BaseException`` subclasses that are
+    not ``Exception`` (``KeyboardInterrupt``, ``SystemExit``) still
+    propagate, which is correct: those are not data problems.
+
     Returns
     -------
     Calibration or None
         ``None`` when the calibration directory cannot be created, the
         file is absent, unreadable, malformed, has a field of the wrong
-        type, or holds a line that cannot be inverted. Every one of
-        those is logged and left for the operator.
+        type or value, or holds a line that cannot be inverted. Every
+        one of those is logged and left for the operator.
 
     """
     try:
@@ -143,7 +155,7 @@ def load_calibration(name: str) -> Calibration | None:
         cal.dispense_duty = float(cal.dispense_duty)
         cal.r2 = float(cal.r2)
         cal.points = [(float(d), float(f)) for d, f in cal.points]
-    except (OSError, ValueError, TypeError):
+    except Exception:  # see docstring: this function must never raise
         _logger.exception("Unreadable calibration file for %s", name)
         return None
 

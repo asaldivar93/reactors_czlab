@@ -129,6 +129,21 @@ def test_load_rejects_a_non_numeric_field_other_than_slope() -> None:
     assert load_calibration("R0_pwm0") is None
 
 
+def test_load_survives_an_oversized_integer_field() -> None:
+    """A JSON integer too big for a C double cannot escape as OverflowError.
+
+    Regression: ``float()`` raises ``OverflowError`` - not ``ValueError``
+    - converting an integer JSON can represent but a C double cannot, and
+    the guard used to only catch ``(OSError, ValueError, TypeError)``.
+    """
+    calibration_path("R0_pwm0").write_text(
+        json.dumps({"file": "R0_pwm0", "a": 10**400, "b": 1.0}),
+        encoding="utf-8",
+    )
+
+    assert load_calibration("R0_pwm0") is None
+
+
 def test_load_survives_a_directory_creation_failure(monkeypatch) -> None:
     """A permission error making the calibration dir cannot crash it.
 
