@@ -7,16 +7,21 @@ numpy nor psycopg. The fit is an ordinary least squares of ``flow`` on
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
+from collections.abc import Callable
 from dataclasses import asdict
+from datetime import UTC, datetime
 from pathlib import Path
+from time import perf_counter
 from typing import TYPE_CHECKING
 
-from reactors_czlab.core.data import Calibration
+from reactors_czlab.core.data import MAX_OUTPUT, Calibration
 
 if TYPE_CHECKING:
+    from reactors_czlab.core.actuator import Actuator
     from reactors_czlab.core.data import Channel
 
 _logger = logging.getLogger("server.calibration")
@@ -26,6 +31,12 @@ CALIBRATION_ENV = "REACTORS_CALIBRATION_DIR"
 
 #: Fewest distinct duty points a fit will accept.
 MIN_POINTS = 2
+
+#: A calibration point shorter than this cannot be measured accurately.
+MIN_RUN_SECONDS = 1.0
+
+#: Upper bound, so a mistyped duration cannot run a pump dry.
+MAX_RUN_SECONDS = 600.0
 
 
 def calibration_dir() -> Path:
@@ -187,3 +198,183 @@ def load_into(channel: Channel) -> bool:
 
     channel.calibration = stored
     return True
+
+
+class CalibrationRun:
+    """Collect calibration points from one actuator and fit them.
+
+    Every method returns a status string: the operator drives this from a
+    generic OPC client and reads the result straight off the method call.
+    """
+
+    def __init__(
+        self,
+        actuator: Actuator,
+        clock: Callable[[], float] = perf_counter,
+        sleep: Callable[[float], object] = asyncio.sleep,
+    ) -> None:
+        """Attach a run to an actuator.
+
+        Parameters
+        ----------
+        actuator:
+            The pump being calibrated.
+        clock, sleep:
+            Injectable so the tests neither wait nor guess at drift.
+
+        """
+        self.actuator = actuator
+        self.points: list[tuple[float, float]] = []
+        # Public so a test - or a bench script - can swap them after
+        # construction; ActuatorOpc builds the run itself.
+        self.clock = clock
+        self.sleep = sleep
+
+        self._pending: tuple[float, float] | None = None
+        self._running = False
+
+    def __repr__(self) -> str:
+        """Print the actuator and how many points are collected."""
+        return f"CalibrationRun({self.actuator.id}, {len(self.points)} points)"
+
+    async def calibrate_point(self, duty: float, seconds: float) -> str:
+        """Run the pump at ``duty`` for ``seconds``, then stop it.
+
+        The elapsed time is measured rather than assumed: ``asyncio.sleep``
+        overshoots, and that overshoot would go straight into the flow.
+        """
+        if self._running:
+            return f"{self.actuator.id} is already calibrating"
+        if not 0 <= duty <= MAX_OUTPUT:
+            return f"duty must be within 0 - {MAX_OUTPUT}, got {duty}"
+        if not MIN_RUN_SECONDS <= seconds <= MAX_RUN_SECONDS:
+            return (
+                f"seconds must be within {MIN_RUN_SECONDS} - "
+                f"{MAX_RUN_SECONDS}, got {seconds}"
+            )
+
+        self._running = True
+        self.actuator.calibrating = True
+        start = self.clock()
+        try:
+            self.actuator.write(duty)
+            await self.sleep(seconds)
+        finally:
+            elapsed = self.clock() - start
+            self.actuator.write(0)
+            # write() bypasses the change guard, so put old_value back in
+            # step or the control loop will not rewrite the same value.
+            self.actuator.channel.old_value = 0
+            self.actuator.calibrating = False
+            self._running = False
+
+        self._pending = (duty, elapsed)
+        _logger.info(
+            "Calibration point on %s: duty %s for %.3fs",
+            self.actuator.id,
+            duty,
+            elapsed,
+        )
+        return (
+            f"ran duty {duty} for {elapsed:.3f}s - now record the measured "
+            "volume in mL"
+        )
+
+    def record_point(self, volume_ml: float) -> str:
+        """Attach the operator's measured volume to the last run."""
+        if self._pending is None:
+            return "no point is waiting for a measurement"
+
+        duty, elapsed = self._pending
+        self._pending = None
+        flow = volume_ml / (elapsed / 60.0)
+        self.points.append((duty, flow))
+        return (
+            f"duty {duty} -> {flow:.4f} mL/min "
+            f"({len(self.points)} points collected)"
+        )
+
+    def fit(self) -> str:
+        """Fit, store and install the collected points."""
+        current = self.actuator.channel.calibration
+        if current is None:
+            return (
+                f"{self.actuator.id} has no calibration slot on its "
+                "channel; give it one in server_info.py"
+            )
+
+        try:
+            a, b, r2 = fit_line(self.points)
+        except ValueError as exc:
+            _logger.warning("Fit refused for %s: %s", self.actuator.id, exc)
+            return str(exc)
+
+        cal = Calibration(
+            file=current.file,
+            a=a,
+            b=b,
+            min_duty=self._stall_floor(a, b),
+            max_duty=current.max_duty,
+            dispense_duty=current.dispense_duty,
+            points=list(self.points),
+            fitted_at=datetime.now(UTC).isoformat(),
+            r2=r2,
+        )
+        save_calibration(cal)
+        self.actuator.channel.calibration = cal
+        self.actuator.refresh_controller_limits()
+        return (
+            f"fitted flow = {a:.6g} * duty + {b:.6g} (r2 {r2:.4f}), "
+            f"stall floor {cal.min_duty:.0f}"
+        )
+
+    def clear_points(self) -> str:
+        """Throw the collected points away, keeping the installed line."""
+        self.points = []
+        self._pending = None
+        return f"cleared the collected points for {self.actuator.id}"
+
+    def reload(self) -> str:
+        """Re-read the stored calibration from disk."""
+        current = self.actuator.channel.calibration
+        if current is None:
+            return f"{self.actuator.id} has no calibration slot on its channel"
+
+        stored = load_calibration(current.file)
+        if stored is None:
+            return f"no usable stored calibration for {current.file}"
+
+        self.actuator.channel.calibration = stored
+        self.actuator.refresh_controller_limits()
+        return f"reloaded {current.file}, fitted at {stored.fitted_at}"
+
+    def set_duties(self, min_duty: float, dispense_duty: float) -> str:
+        """Adjust the stall floor and the bolus duty without a refit."""
+        cal = self.actuator.channel.calibration
+        if cal is None:
+            return f"{self.actuator.id} has no calibration slot on its channel"
+        if dispense_duty < min_duty:
+            return (
+                f"dispense duty {dispense_duty} is below the stall floor "
+                f"{min_duty}; a bolus at that duty would never finish"
+            )
+        if not 0 <= dispense_duty <= MAX_OUTPUT:
+            return f"dispense duty must be within 0 - {MAX_OUTPUT}"
+
+        cal.min_duty = min_duty
+        cal.dispense_duty = dispense_duty
+        save_calibration(cal)
+        self.actuator.refresh_controller_limits()
+        return f"min duty {min_duty}, dispense duty {dispense_duty}"
+
+    def _stall_floor(self, a: float, b: float) -> float:
+        """Lowest duty the pump is believed to actually turn at.
+
+        The fitted x-intercept is the estimate; a point that measured no
+        volume at all is direct evidence and overrides it.
+        """
+        floor = max(0.0, -b / a)
+        measured = [duty for duty, flow in self.points if flow <= 0]
+        if measured:
+            floor = max(floor, max(measured))
+        return floor

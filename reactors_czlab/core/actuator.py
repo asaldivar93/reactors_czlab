@@ -218,6 +218,27 @@ class Actuator(ABC):
                 self.dispenser.unit,
             )
 
+    def refresh_controller_limits(self) -> None:
+        """Re-derive the controller's clamp range from the dispenser.
+
+        A pump calibration refit changes what ``self.dispenser.
+        demand_limits()`` returns (e.g. a steeper slope means the same
+        max duty now delivers more mL/min), but it changes neither the
+        control method nor its configuration, so ``set_control_config``
+        would not rebuild the controller for it - nothing else picks the
+        new range up on its own.
+
+        ``min_val``/``max_val`` are mutated on the existing controller
+        object rather than swapping in one built by ``ControlFactory``,
+        so a running PID keeps its integral sum, its last measurement
+        and its identity (``actuator.controller is`` the same object
+        before and after). Rebuilding it would zero that state for a
+        write that changed nothing about the configuration.
+        """
+        min_val, max_val = self.dispenser.demand_limits()
+        self.controller.min_val = min_val
+        self.controller.max_val = max_val
+
     @abstractmethod
     def write(self, value: float) -> None:
         """Write actuator method."""
