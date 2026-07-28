@@ -238,26 +238,37 @@ class Actuator(ABC):
         controller that derives extra state from the range - the PID's
         anti-windup band - follows it too, instead of only the clamp.
 
-        A non-positive upper limit is refused rather than installed: it
-        would mean ``min_val >= max_val``, a range ``fit()``/
-        ``set_duties()`` never allow onto a channel's calibration but
-        that a hand-edited file loaded through ``reload()`` still could.
-        Pushing it onto a live controller would pin a PID to zero
-        demand permanently, or hand a manual/volume controller a
-        negative bolus duration.
+        A non-positive upper limit (``min_val >= max_val``) is zeroed
+        rather than installed as-is: ``fit()``/``set_duties()`` refuse
+        to install a calibration that produces one, but a hand-edited
+        file loaded through ``reload()`` still could, and this is the
+        last line of defense. Earlier this method *kept the stale
+        range* on refusal instead - which is what let a PID go on
+        commanding a positive demand against a calibration that could
+        no longer deliver it, dividing by zero in
+        ``Dispenser._start_bolus``. Zeroing forces every clamped
+        controller to demand nothing until the calibration is fixed,
+        rather than continuing to demand something the pump can no
+        longer express. Manual/timer/on-boundaries controllers do not
+        consult ``min_val``/``max_val`` at all, so this by itself is
+        not the primary guard against a bad calibration reaching those
+        - ``fit()``/``set_duties()``/``reload()`` refusing to install
+        one is - but it closes the gap for the controller that does.
         """
         min_val, max_val = self.dispenser.demand_limits()
         if max_val <= min_val:
             _logger.warning(
-                "Refusing to refresh %s controller limits to "
-                "(%s, %s); keeping (%s, %s)",
+                "%s demand range (%s, %s) is non-positive; zeroing the "
+                "controller's limits instead of leaving the old (%s, "
+                "%s) in place, since that range is no longer "
+                "deliverable under the calibration now on the channel",
                 self.id,
                 min_val,
                 max_val,
                 self.controller.min_val,
                 self.controller.max_val,
             )
-            return
+            min_val, max_val = 0.0, 0.0
         self.controller.min_val = min_val
         self.controller.max_val = max_val
         self.controller.refresh_derived_limits()

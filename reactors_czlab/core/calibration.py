@@ -310,14 +310,6 @@ class CalibrationRun:
             return str(exc)
 
         min_duty = self._stall_floor(a, b, current.max_duty)
-        if current.dispense_duty < min_duty:
-            return (
-                f"fitted stall floor {min_duty:.0f} is above the current "
-                f"dispense duty {current.dispense_duty:.0f}; a bolus at "
-                "that duty would never finish - raise it with "
-                "set_duties() first, keeping the old calibration"
-            )
-
         cal = Calibration(
             file=current.file,
             a=a,
@@ -329,6 +321,29 @@ class CalibrationRun:
             fitted_at=datetime.now(UTC).isoformat(),
             r2=r2,
         )
+        # These mirror check_unit()'s own invariant exactly (<=, not <)
+        # rather than comparing duties as a proxy: Dispenser divides by
+        # flow_at(dispense_duty) in _start_bolus and reads
+        # flow_at(max_duty) as flow mode's upper demand_limits(). A
+        # calibration where either is not strictly positive must never
+        # reach the channel, whatever control mode ends up reading it -
+        # manual/timer/on_boundaries controllers do not consult
+        # min_val/max_val at all, so a guard on the controller alone is
+        # not enough.
+        if cal.flow_at(cal.dispense_duty) <= 0:
+            return (
+                f"fitted stall floor {min_duty:.0f} leaves no flow at "
+                f"the dispense duty {cal.dispense_duty:.0f}; a bolus "
+                "at that duty would never finish - raise it with "
+                "set_duties() first, keeping the old calibration"
+            )
+        if cal.flow_at(cal.max_duty) <= 0:
+            return (
+                "fitted line produces no flow anywhere up to the max "
+                f"duty {cal.max_duty:.0f}; this pump cannot be driven "
+                "from this fit, keeping the old calibration"
+            )
+
         save_calibration(cal)
         self.actuator.channel.calibration = cal
         self.actuator.refresh_controller_limits()
@@ -353,6 +368,25 @@ class CalibrationRun:
         if stored is None:
             return f"no usable stored calibration for {current.file}"
 
+        # A calibration file is operator-editable and load_calibration()
+        # only checks the slope's sign - it can still carry a
+        # dispense_duty/max_duty that produces no flow. fit() refuses
+        # that before installing; reload() is the other path that can
+        # put a calibration on the channel, so it must refuse it too.
+        if stored.is_fitted and stored.flow_at(stored.dispense_duty) <= 0:
+            return (
+                f"stored calibration for {current.file} has no flow "
+                f"at its dispense duty {stored.dispense_duty:.0f}; a "
+                "bolus at that duty would never finish - not "
+                "installing it"
+            )
+        if stored.is_fitted and stored.flow_at(stored.max_duty) <= 0:
+            return (
+                f"stored calibration for {current.file} produces no "
+                f"flow anywhere up to its max duty {stored.max_duty:.0f}"
+                "; not installing it"
+            )
+
         self.actuator.channel.calibration = stored
         self.actuator.refresh_controller_limits()
         return f"reloaded {current.file}, fitted at {stored.fitted_at}"
@@ -371,6 +405,16 @@ class CalibrationRun:
             )
         if not 0 <= dispense_duty <= MAX_OUTPUT:
             return f"dispense duty must be within 0 - {MAX_OUTPUT}"
+        # The min_duty check above is a proxy that can miss the exact
+        # boundary where the fitted line itself reaches zero flow at
+        # dispense_duty (e.g. an operator-chosen min_duty below the
+        # true stall point). Check the real invariant directly too.
+        if cal.is_fitted and cal.flow_at(dispense_duty) <= 0:
+            return (
+                f"dispense duty {dispense_duty} produces no flow under "
+                "this calibration; a bolus at that duty would never "
+                "finish"
+            )
 
         cal.min_duty = min_duty
         cal.dispense_duty = dispense_duty

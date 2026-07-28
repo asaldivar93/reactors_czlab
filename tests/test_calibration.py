@@ -18,6 +18,7 @@ from reactors_czlab.core.calibration import (
     load_into,
     save_calibration,
 )
+from reactors_czlab.core.control import _PidControl
 from reactors_czlab.core.data import (
     Calibration,
     Channel,
@@ -823,3 +824,224 @@ async def test_calibrate_point_refuses_to_run_while_already_running(
     first.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await first
+
+
+async def test_fit_at_the_exact_zero_flow_boundary_is_refused(
+    make_calibrated_actuator,
+    clock,
+) -> None:
+    """The exact boundary - flow at dispense_duty == 0.0 precisely -
+    must refuse, matching ``check_unit()``'s own ``<=``.
+
+    Regression: ``fit()``'s own check used
+    ``current.dispense_duty < min_duty`` - a duty-comparison proxy -
+    which passed at this exact boundary even though ``check_unit()``
+    and ``Dispenser._start_bolus`` both treat
+    ``flow_at(dispense_duty) <= 0`` as unusable. The calibration this
+    let through then divided by zero in ``_start_bolus`` the next time
+    the control loop wrote a positive volume demand, with no
+    controller-level clamp to catch it either - a manual controller
+    does not consult ``min_val``/``max_val`` at all, so the guard has
+    to live where the calibration is installed, not just on the
+    controller mirror.
+    """
+    actuator = make_calibrated_actuator()  # a=0.01, b=0.0, max_duty=4000
+    run = CalibrationRun(actuator, clock=clock, sleep=_FakeSleep(clock))
+    run.set_duties(0.0, 1000.0)  # dispense_duty -> 1000
+    actuator.set_control_config(
+        ControlConfig(
+            ControlMethod.manual,
+            value=1.0,
+            output_unit=OutputUnit.volume,
+        ),
+    )
+
+    # flow = 0.01 * duty - 10 -> zero flow at duty 1000, exactly the
+    # dispense_duty just configured above.
+    for duty, volume in ((2000.0, 11.0), (3000.0, 22.0)):
+        await run.calibrate_point(duty, 60.0)
+        run.record_point(volume)
+
+    result = run.fit()
+
+    assert "keeping the old calibration" in result
+    assert actuator.channel.calibration.b == pytest.approx(0.0)  # old cal
+
+    # No degenerate calibration reached the channel, so driving the
+    # control loop's write path - exactly what
+    # Reactor.update_paired_actuators()/actuator_loop() do unguarded -
+    # must not raise ZeroDivisionError.
+    actuator.write_output(0.0)
+    actuator.tick()
+
+
+async def test_a_refit_one_count_above_the_boundary_still_succeeds(
+    make_calibrated_actuator,
+    clock,
+) -> None:
+    """The guard must not be over-strict: a dispense duty ONE count
+    above the stall floor still produces positive flow and must
+    install cleanly - an over-strict guard that refuses a good
+    calibration is its own defect.
+    """
+    actuator = make_calibrated_actuator()
+    run = CalibrationRun(actuator, clock=clock, sleep=_FakeSleep(clock))
+    run.set_duties(0.0, 1001.0)  # one count above the coming stall floor
+    actuator.set_control_config(
+        ControlConfig(
+            ControlMethod.manual,
+            value=1.0,
+            output_unit=OutputUnit.volume,
+        ),
+    )
+
+    # Same line as the boundary test: flow = 0.01 * duty - 10, zero at
+    # duty 1000, so duty 1001 produces a small positive flow.
+    for duty, volume in ((2000.0, 11.0), (3000.0, 22.0)):
+        await run.calibrate_point(duty, 60.0)
+        run.record_point(volume)
+
+    result = run.fit()
+
+    assert "fitted flow" in result
+    assert actuator.channel.calibration.b == pytest.approx(-10.0)
+    assert actuator.channel.calibration.flow_at(1001.0) == pytest.approx(
+        0.01,
+    )
+
+    # And the control loop can actually use the freshly installed line
+    # without raising.
+    actuator.write_output(0.0)
+    actuator.tick()
+
+
+async def test_fit_refuses_a_line_with_no_flow_up_to_max_duty(
+    make_calibrated_actuator,
+    clock,
+) -> None:
+    """A fit whose x-intercept exceeds max_duty must not report success.
+
+    Regression (the round 2 residual): ``_stall_floor()`` clamps
+    ``min_duty`` to ``max_duty`` when the fitted line's own
+    x-intercept sits beyond it, but nothing checked whether the pump
+    can actually produce flow AT ``max_duty`` - ``fit()`` reported
+    success while flow-mode's ``demand_limits()`` (which reads
+    ``flow_at(max_duty)``) came back negative, and
+    ``refresh_controller_limits()`` silently refused to install it,
+    leaving the operator believing the refit had taken.
+    """
+    actuator = make_calibrated_actuator()  # max_duty = 4000
+    run = CalibrationRun(actuator, clock=clock, sleep=_FakeSleep(clock))
+    run.set_duties(0.0, 4090.0)  # a duty above max_duty, but still valid
+    old_cal = actuator.channel.calibration
+
+    # flow = 0.3 * duty - 1214: positive at 4050/4090, negative by 4000.
+    for duty, volume in ((4050.0, 1.1), (4090.0, 14.3)):
+        await run.calibrate_point(duty, 60.0)
+        run.record_point(volume)
+
+    result = run.fit()
+
+    assert "keeping the old calibration" in result
+    assert actuator.channel.calibration is old_cal
+
+
+async def test_set_duties_at_the_exact_zero_flow_boundary_is_refused(
+    make_calibrated_actuator,
+    clock,
+) -> None:
+    """set_duties() must catch the same exact boundary fit() does.
+
+    ``dispense_duty < min_duty`` is a proxy; the real invariant is
+    whether the calibration's own line produces positive flow at the
+    chosen dispense_duty. The default calibration's x-intercept is at
+    duty 0 (a=0.01, b=0.0), so duty 0 is the exact zero-flow boundary
+    here.
+    """
+    actuator = make_calibrated_actuator()  # a=0.01, b=0.0
+    run = CalibrationRun(actuator, clock=clock)
+
+    result = run.set_duties(0.0, 0.0)
+
+    assert "no flow" in result.lower()
+    assert actuator.channel.calibration.dispense_duty == 2000.0  # unchanged
+
+
+async def test_reload_refuses_a_stored_calibration_at_the_zero_flow_boundary(
+    make_calibrated_actuator,
+    clock,
+) -> None:
+    """reload() must catch the exact boundary too, not just fit().
+
+    A hand-edited calibration file is the one path that bypasses
+    ``fit()``'s own checks entirely; ``reload()`` is the last place
+    that can stop a zero-flow dispense_duty from reaching the channel.
+    """
+    actuator = make_calibrated_actuator()
+    old_cal = actuator.channel.calibration
+    save_calibration(
+        Calibration(
+            "R0_pwm0",
+            a=0.01,
+            b=-10.0,
+            min_duty=1000.0,
+            max_duty=4000.0,
+            dispense_duty=1000.0,  # flow_at(1000) == 0.0 exactly
+            fitted_at="2026-07-27T10:00:00+00:00",
+        ),
+    )
+    run = CalibrationRun(actuator, clock=clock)
+
+    result = run.reload()
+
+    assert "no flow" in result.lower()
+    assert actuator.channel.calibration is old_cal
+
+
+async def test_an_explicit_integral_band_survives_a_refit_untouched(
+    make_calibrated_actuator,
+    clock,
+) -> None:
+    """An operator-configured anti-windup band is a deliberate
+    override; a recalibration must move the clamp without silently
+    overwriting it.
+
+    Regression: ``refresh_derived_limits()``'s
+    ``_integral_band_is_default`` guard was added in round 1 but only
+    ever exercised with a defaulted band (the only kind
+    ``ControlFactory`` builds), so a mutation deleting the guard - or
+    hard-coding the flag to ``True`` - left the whole suite green.
+    """
+    actuator = make_calibrated_actuator()  # a=0.01, max_duty=4000
+    actuator.dispenser = Dispenser(
+        OutputUnit.flow,
+        actuator.channel,
+        actuator.control_period,
+        clock=clock,
+    )
+    controller = _PidControl(
+        setpoint=1.0,
+        min_val=0.0,
+        max_val=40.0,
+        min_integral=5.0,
+        max_integral=15.0,
+    )
+    actuator.controller = controller
+    controller._integral_sum = 12.5
+    assert controller._integral_band_is_default is False
+
+    run = CalibrationRun(actuator, clock=clock, sleep=_FakeSleep(clock))
+    for duty, volume in ((1000.0, 22.0), (3000.0, 66.0)):
+        await run.calibrate_point(duty, 60.0)
+        run.record_point(volume)
+
+    run.fit()
+
+    # The clamp still follows the refit ...
+    assert (controller.min_val, controller.max_val) == (0.0, 80.0)
+    # ... but the operator's explicit anti-windup band does not.
+    assert (controller.min_integral, controller.max_integral) == (
+        5.0,
+        15.0,
+    )
+    assert controller._integral_sum == 12.5

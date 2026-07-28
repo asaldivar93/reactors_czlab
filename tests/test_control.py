@@ -203,6 +203,36 @@ def test_pid_anti_windup_defaults_to_the_demand_range(
     assert control.max_integral == 40.0
 
 
+def test_a_defaulted_integral_band_tracks_the_limits() -> None:
+    """No band configured: refresh_derived_limits() must move it with
+    min_val/max_val, exactly like the clamp itself.
+    """
+    control = _PidControl(min_val=0.0, max_val=40.0)
+
+    assert control._integral_band_is_default is True
+    assert (control.min_integral, control.max_integral) == (0.0, 40.0)
+
+    control.min_val, control.max_val = 0.0, 80.0
+    control.refresh_derived_limits()
+
+    assert (control.min_integral, control.max_integral) == (0.0, 80.0)
+
+
+def test_a_partial_integral_band_is_treated_as_explicit() -> None:
+    """Only min_integral given: the whole band counts as a deliberate
+    override, not silently completed and then re-derived later.
+    """
+    control = _PidControl(min_val=0.0, max_val=40.0, min_integral=5.0)
+
+    assert control._integral_band_is_default is False
+    assert (control.min_integral, control.max_integral) == (5.0, 40.0)
+
+    control.min_val, control.max_val = 0.0, 80.0
+    control.refresh_derived_limits()
+
+    assert (control.min_integral, control.max_integral) == (5.0, 40.0)
+
+
 def test_a_limit_change_replaces_the_controller(
     factory: ControlFactory,
 ) -> None:
