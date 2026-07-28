@@ -113,25 +113,38 @@ def save_calibration(cal: Calibration) -> None:
 def load_calibration(name: str) -> Calibration | None:
     """Read a stored calibration.
 
+    Every step - resolving and creating the calibration directory,
+    reading the file, parsing its JSON, and coercing its fields - is
+    covered by the same guard, because any of them can fail on a
+    hand-edited file or an unfriendly filesystem and none of them may
+    take the server down.
+
     Returns
     -------
     Calibration or None
-        ``None`` when the file is absent, unreadable, malformed, or holds a
-        line that cannot be inverted. Every one of those is logged and left
-        for the operator; none of them may take the server down.
+        ``None`` when the calibration directory cannot be created, the
+        file is absent, unreadable, malformed, has a field of the wrong
+        type, or holds a line that cannot be inverted. Every one of
+        those is logged and left for the operator.
 
     """
-    path = calibration_path(name)
-    if not path.exists():
-        _logger.warning("No stored calibration for %s at %s", name, path)
-        return None
-
     try:
+        path = calibration_path(name)
+        if not path.exists():
+            _logger.warning("No stored calibration for %s at %s", name, path)
+            return None
+
         raw = json.loads(path.read_text(encoding="utf-8"))
         cal = Calibration(**raw)
+        cal.a = float(cal.a)
+        cal.b = float(cal.b)
+        cal.min_duty = float(cal.min_duty)
+        cal.max_duty = float(cal.max_duty)
+        cal.dispense_duty = float(cal.dispense_duty)
+        cal.r2 = float(cal.r2)
         cal.points = [(float(d), float(f)) for d, f in cal.points]
     except (OSError, ValueError, TypeError):
-        _logger.exception("Unreadable calibration file %s", path)
+        _logger.exception("Unreadable calibration file for %s", name)
         return None
 
     if cal.a <= 0:

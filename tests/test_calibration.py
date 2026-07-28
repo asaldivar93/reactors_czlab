@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -85,6 +86,62 @@ def test_load_rejects_a_non_positive_slope_on_disk() -> None:
         json.dumps({"file": "R0_pwm0", "a": 0.0, "b": 1.0}),
         encoding="utf-8",
     )
+
+    assert load_calibration("R0_pwm0") is None
+
+
+def test_load_survives_a_non_numeric_slope_on_disk() -> None:
+    """A slope of the wrong type cannot escape as an uncaught TypeError.
+
+    Regression: the comparison ``cal.a <= 0`` used to sit outside the
+    file's try/except, so a hand-edited "a" that is not a number raised
+    straight out of ``load_calibration``.
+    """
+    calibration_path("R0_pwm0").write_text(
+        json.dumps({"file": "R0_pwm0", "a": "oops", "b": 1.0}),
+        encoding="utf-8",
+    )
+
+    assert load_calibration("R0_pwm0") is None
+
+
+def test_load_rejects_a_non_numeric_field_other_than_slope() -> None:
+    """A wrong-typed field besides "a" cannot slip through as valid.
+
+    Regression: only "a" was ever compared or coerced inside
+    ``load_calibration``, so a bad ``min_duty`` used to come back as a
+    ``Calibration`` object carrying a string where a float belongs,
+    instead of being rejected like any other malformed file.
+    """
+    calibration_path("R0_pwm0").write_text(
+        json.dumps(
+            {
+                "file": "R0_pwm0",
+                "a": 0.01,
+                "b": -2.0,
+                "min_duty": "oops",
+                "fitted_at": "2026-07-27T10:00:00+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert load_calibration("R0_pwm0") is None
+
+
+def test_load_survives_a_directory_creation_failure(monkeypatch) -> None:
+    """A permission error making the calibration dir cannot crash it.
+
+    Regression: ``calibration_path()`` (and the ``mkdir`` inside it) used
+    to run before the try/except in ``load_calibration``, so a full disk
+    or a permission error raised straight out of the function.
+    """
+
+    def _boom(self, *args, **kwargs) -> None:
+        error_message = "permission denied"
+        raise OSError(error_message)
+
+    monkeypatch.setattr(Path, "mkdir", _boom)
 
     assert load_calibration("R0_pwm0") is None
 
