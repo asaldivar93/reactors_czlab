@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from reactors_czlab.core.actuator import RandomActuator
 from reactors_czlab.core.control import _ManualControl, _TimerControl
 from reactors_czlab.core.data import (
@@ -10,6 +12,7 @@ from reactors_czlab.core.data import (
     ControlMethod,
     OutputUnit,
 )
+from reactors_czlab.core.dispenser import Dispenser
 
 
 def test_starts_in_manual_at_zero(actuator: RandomActuator) -> None:
@@ -141,18 +144,136 @@ def test_total_volume_survives_a_config_change(
     assert actuator.dispenser.total_volume == 12.5
 
 
-def test_calibrating_blocks_both_paths(make_calibrated_actuator) -> None:
-    """A calibration run must not have a controller fighting it."""
+def test_calibrating_blocks_a_bolus_in_flight(
+    make_calibrated_actuator,
+    clock,
+    monkeypatch,
+) -> None:
+    """tick() must not finish a bolus while a calibration run owns the pump.
+
+    Regression: mutation testing showed the previous version of this
+    test stayed green with ``if self.calibrating: return`` deleted from
+    ``tick()``, because no bolus was ever armed - ``dispenser.tick()``
+    returned ``None`` regardless of the guard. This arms a real bolus,
+    lets its deadline pass, then checks that ``tick()`` does not finish
+    it while calibrating.
+
+    ``dispenser.reset()`` is stubbed out here so the ``calibrating``
+    property's own edge-triggered reset (see
+    ``test_calibrating_freezes_the_dispensers_clock``) does not clear
+    the bolus before ``tick()`` gets a chance to - this test isolates
+    ``tick()``'s own guard.
+    """
     actuator = make_calibrated_actuator()
-    actuator.set_control_config(
-        ControlConfig(ControlMethod.manual, value=150),
+    actuator.dispenser = Dispenser(
+        OutputUnit.volume,
+        actuator.channel,
+        actuator.control_period,
+        clock=clock,
     )
+    actuator.set_control_config(
+        ControlConfig(
+            ControlMethod.manual,
+            value=1.0,
+            output_unit=OutputUnit.volume,
+        ),
+    )
+    actuator.write_output(0)  # arms a 3 s bolus (1 mL at 20 mL/min)
+    clock.advance(3.0)  # past the bolus deadline
+
+    monkeypatch.setattr(actuator.dispenser, "reset", lambda: None)
+    writes = []
+    monkeypatch.setattr(actuator, "write", writes.append)
     actuator.calibrating = True
 
-    actuator.write_output(0)
     actuator.tick()
 
-    assert actuator.channel.value == ERROR_VALUE  # never written
+    assert writes == []
+
+
+def test_calibrating_freezes_the_dispensers_clock(
+    make_calibrated_actuator,
+    clock,
+) -> None:
+    """A calibration run must not inject phantom volume into the total.
+
+    Regression: ``calibrating`` used to be a plain attribute, so it
+    froze the dispenser's accrual clock without resetting it. The first
+    decision after the run ended then attributed the run's entire
+    duration to the pre-calibration duty.
+    """
+    actuator = make_calibrated_actuator()
+    actuator.dispenser = Dispenser(
+        OutputUnit.duty,
+        actuator.channel,
+        actuator.control_period,
+        clock=clock,
+    )
+    actuator.set_control_config(
+        ControlConfig(ControlMethod.manual, value=2000),
+    )
+    actuator.write_output(0)  # settles at 2000 counts -> 20 mL/min
+
+    actuator.calibrating = True
+    clock.advance(300.0)  # a long calibration run
+    actuator.calibrating = False
+
+    actuator.write_output(0)  # first real decision after the run
+
+    assert actuator.dispenser.total_volume == pytest.approx(0.0)
+
+
+def test_control_period_rejects_a_non_positive_period(
+    actuator: RandomActuator,
+) -> None:
+    """A zero or negative period would silently disable the volume guard.
+
+    Regression: ``Dispenser.__init__`` raises on a non-positive
+    ``control_period``, but the plain-attribute setter did not, so a
+    bad value was accepted silently here and only blew up later, from
+    an unrelated ``set_control_config`` call.
+    """
+    original = actuator.control_period
+
+    with pytest.raises(ValueError, match="control_period"):
+        actuator.control_period = 0.0
+
+    assert actuator.control_period == original
+    assert actuator.dispenser.control_period == original
+
+
+def test_unit_swap_accrues_the_outgoing_dispensers_partial_interval(
+    make_calibrated_actuator,
+    clock,
+) -> None:
+    """Changing units must not drop volume still in flight.
+
+    Regression: the outgoing dispenser's total was copied without
+    forcing it to accrue first, so the interval since its last
+    accounting point was silently dropped on every unit change.
+    """
+    actuator = make_calibrated_actuator()
+    actuator.dispenser = Dispenser(
+        OutputUnit.duty,
+        actuator.channel,
+        actuator.control_period,
+        clock=clock,
+    )
+    actuator.set_control_config(
+        ControlConfig(ControlMethod.manual, value=2000),
+    )
+    actuator.write_output(0)  # duty 2000 -> 20 mL/min, accruing
+    clock.advance(0.3)  # 0.3 s at 20 mL/min -> 0.1 mL
+
+    actuator.set_control_config(
+        ControlConfig(
+            ControlMethod.manual,
+            value=20,
+            output_unit=OutputUnit.flow,
+        ),
+    )
+
+    assert actuator.dispenser.total_volume == pytest.approx(0.1)
 
 
 def test_a_failed_sensor_read_holds_the_last_output(

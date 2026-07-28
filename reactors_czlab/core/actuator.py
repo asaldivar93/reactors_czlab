@@ -52,7 +52,9 @@ class Actuator(ABC):
         self.channel = config.channels[0]
         #: Set while a calibration run owns the pump. Both the sampling loop
         #: and the fast loop leave the actuator alone while it is set.
-        self.calibrating = False
+        #: Assigned directly (not through the property) - nothing has run
+        #: yet, so there is nothing for the property's reset() to bank.
+        self._calibrating = False
         self._control_period = DEFAULT_CONTROL_PERIOD
         self.dispenser = Dispenser(
             OutputUnit.duty,
@@ -80,13 +82,51 @@ class Actuator(ABC):
         self._controller = controller
 
     @property
+    def calibrating(self) -> bool:
+        """Whether a calibration run currently owns the pump."""
+        return self._calibrating
+
+    @calibrating.setter
+    def calibrating(self, calibrating: bool) -> None:
+        """Toggle the interlock, resetting the dispenser's clock on edge.
+
+        A calibration run drives the pump directly, outside
+        ``write_output()`` and ``tick()``, so the dispenser's accrual
+        clock would otherwise sit frozen at whatever duty was running
+        when the run started. The first real decision after the run
+        ends would then attribute the run's entire duration to that
+        stale duty, injecting phantom volume into the total.
+        ``Dispenser.reset()`` banks whatever was legitimately in flight
+        and re-zeroes the clock, so neither edge can span a calibration
+        run.
+        """
+        if calibrating != self._calibrating:
+            self.dispenser.reset()
+        self._calibrating = calibrating
+
+    @property
     def control_period(self) -> float:
         """Seconds between control decisions."""
         return self._control_period
 
     @control_period.setter
     def control_period(self, period: float) -> None:
-        """Set the period, keeping the dispenser's guard in step."""
+        """Set the period, keeping the dispenser's guard in step.
+
+        Raises
+        ------
+        ValueError
+            If ``period`` is not positive. Mirrors ``Dispenser.__init__``:
+            a zero or negative period would silently disable the
+            volume-mode re-trigger guard (every
+            ``now - self._last_decision`` gap satisfies
+            ``< control_period``), letting a standing manual volume
+            demand re-fire on every call instead of once per period.
+
+        """
+        if period <= 0:
+            error_message = f"control_period must be positive, got {period}"
+            raise ValueError(error_message)
         self._control_period = period
         self.dispenser.control_period = period
 
@@ -143,6 +183,10 @@ class Actuator(ABC):
                 self.channel,
                 self._control_period,
             )
+            # Force the outgoing dispenser to accrue whatever was still
+            # in flight before reading its total - otherwise the last
+            # partial accrual interval is silently dropped on the swap.
+            self.dispenser.reset()
             # The total records the physical pump, not the configuration.
             dispenser.total_volume = self.dispenser.total_volume
 
