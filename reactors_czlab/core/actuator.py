@@ -234,10 +234,33 @@ class Actuator(ABC):
         and its identity (``actuator.controller is`` the same object
         before and after). Rebuilding it would zero that state for a
         write that changed nothing about the configuration.
+        ``_Control.refresh_derived_limits()`` is called afterwards so a
+        controller that derives extra state from the range - the PID's
+        anti-windup band - follows it too, instead of only the clamp.
+
+        A non-positive upper limit is refused rather than installed: it
+        would mean ``min_val >= max_val``, a range ``fit()``/
+        ``set_duties()`` never allow onto a channel's calibration but
+        that a hand-edited file loaded through ``reload()`` still could.
+        Pushing it onto a live controller would pin a PID to zero
+        demand permanently, or hand a manual/volume controller a
+        negative bolus duration.
         """
         min_val, max_val = self.dispenser.demand_limits()
+        if max_val <= min_val:
+            _logger.warning(
+                "Refusing to refresh %s controller limits to "
+                "(%s, %s); keeping (%s, %s)",
+                self.id,
+                min_val,
+                max_val,
+                self.controller.min_val,
+                self.controller.max_val,
+            )
+            return
         self.controller.min_val = min_val
         self.controller.max_val = max_val
+        self.controller.refresh_derived_limits()
 
     @abstractmethod
     def write(self, value: float) -> None:

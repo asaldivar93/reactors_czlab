@@ -309,11 +309,20 @@ class CalibrationRun:
             _logger.warning("Fit refused for %s: %s", self.actuator.id, exc)
             return str(exc)
 
+        min_duty = self._stall_floor(a, b, current.max_duty)
+        if current.dispense_duty < min_duty:
+            return (
+                f"fitted stall floor {min_duty:.0f} is above the current "
+                f"dispense duty {current.dispense_duty:.0f}; a bolus at "
+                "that duty would never finish - raise it with "
+                "set_duties() first, keeping the old calibration"
+            )
+
         cal = Calibration(
             file=current.file,
             a=a,
             b=b,
-            min_duty=self._stall_floor(a, b),
+            min_duty=min_duty,
             max_duty=current.max_duty,
             dispense_duty=current.dispense_duty,
             points=list(self.points),
@@ -353,6 +362,8 @@ class CalibrationRun:
         cal = self.actuator.channel.calibration
         if cal is None:
             return f"{self.actuator.id} has no calibration slot on its channel"
+        if not 0 <= min_duty <= MAX_OUTPUT:
+            return f"min duty must be within 0 - {MAX_OUTPUT}, got {min_duty}"
         if dispense_duty < min_duty:
             return (
                 f"dispense duty {dispense_duty} is below the stall floor "
@@ -367,14 +378,18 @@ class CalibrationRun:
         self.actuator.refresh_controller_limits()
         return f"min duty {min_duty}, dispense duty {dispense_duty}"
 
-    def _stall_floor(self, a: float, b: float) -> float:
+    def _stall_floor(self, a: float, b: float, max_duty: float) -> float:
         """Lowest duty the pump is believed to actually turn at.
 
         The fitted x-intercept is the estimate; a point that measured no
-        volume at all is direct evidence and overrides it.
+        volume at all is direct evidence and overrides it. Either one
+        is capped at ``max_duty`` - a zero-flow reading taken above the
+        pump's own ceiling is still evidence the pump does not turn
+        there, but adopting it verbatim could push the floor past the
+        ceiling and invert the usable band.
         """
         floor = max(0.0, -b / a)
         measured = [duty for duty, flow in self.points if flow <= 0]
         if measured:
             floor = max(floor, max(measured))
-        return floor
+        return min(floor, max_duty)

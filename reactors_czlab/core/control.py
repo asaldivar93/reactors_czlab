@@ -59,6 +59,16 @@ class _Control(ABC):
         """Constrain a value to the output range of the actuator."""
         return max(self.min_val, min(value, self.max_val))
 
+    def refresh_derived_limits(self) -> None:
+        """Re-derive any state a subclass computed from the clamp range.
+
+        A no-op here. A caller that mutates ``min_val``/``max_val`` in
+        place - e.g. ``Actuator.refresh_controller_limits()`` after a
+        pump recalibration - must call this afterwards so a controller
+        that derived extra state from the old range (currently only
+        ``_PidControl``'s anti-windup band) picks up the new one too.
+        """
+
     @abstractmethod
     def get_value(self, sens_value: float) -> float:
         """Calculate the actuator output value."""
@@ -234,6 +244,19 @@ class _PidControl(_Control):
         repr=False,
         compare=False,
     )
+    # True when neither min_integral nor max_integral was configured
+    # explicitly, so refresh_derived_limits() knows it may re-derive the
+    # band from min_val/max_val without clobbering an operator's choice.
+    # ControlFactory never passes either, so this is always True today,
+    # but the sentinel (None) is consumed below and cannot be told apart
+    # from an explicit value after __post_init__ runs - so the fact of
+    # "was it defaulted" has to be recorded somewhere, and this is it.
+    _integral_band_is_default: bool = field(
+        default=True,
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
         """Validate the gains and default the anti-windup band."""
@@ -242,12 +265,39 @@ class _PidControl(_Control):
         self.kp = _as_float("kp", self.kp)
         self.ki = _as_float("ki", self.ki)
         self.kd = _as_float("kd", self.kd)
+        self._integral_band_is_default = (
+            self.min_integral is None and self.max_integral is None
+        )
         if self.min_integral is None:
             self.min_integral = self.min_val
         if self.max_integral is None:
             self.max_integral = self.max_val
         self.min_integral = _as_float("min_integral", self.min_integral)
         self.max_integral = _as_float("max_integral", self.max_integral)
+
+    def refresh_derived_limits(self) -> None:
+        """Track the anti-windup band to ``min_val``/``max_val``.
+
+        Only when the band was never configured explicitly - an
+        operator-chosen band is a deliberate override and must survive a
+        recalibration untouched.
+
+        The stored ``_integral_sum`` is reclamped immediately rather
+        than left for the next ``get_value()`` step: a refit that
+        lowers the achievable output (e.g. the pump now measures
+        slower) would otherwise leave the sum pinned arbitrarily far
+        above what the output can express until the next step catches
+        up, and until then the controller sits saturated - exactly the
+        sustained overdosing anti-windup exists to prevent.
+        """
+        if not self._integral_band_is_default:
+            return
+        self.min_integral = self.min_val
+        self.max_integral = self.max_val
+        self._integral_sum = max(
+            self.min_integral,
+            min(self._integral_sum, self.max_integral),
+        )
 
     def __repr__(self) -> str:
         """Print the setpoint and gains."""
