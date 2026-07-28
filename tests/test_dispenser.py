@@ -287,10 +287,15 @@ def test_reset_cancels_a_bolus(channel: Channel, clock) -> None:
 
 def test_check_unit_rejects_a_dispense_duty_that_does_not_pump() -> None:
     """A bolus needs a positive flow at the dispense duty or it never ends."""
+    # b=-15 puts the line's zero crossing at duty 1500: the pump does
+    # not turn at the 1000 count dispense duty, but the rest of the band
+    # is fine. (b=-50 would put the crossing at 5000, above full scale,
+    # which is the stronger "no flow anywhere in the band" defect and
+    # not the one this test is named for.)
     dead = Calibration(
         "R0_pwm0",
         a=0.01,
-        b=-50.0,
+        b=-15.0,
         dispense_duty=1000.0,
         fitted_at="2026-07-27T10:00:00+00:00",
     )
@@ -312,6 +317,14 @@ def test_check_unit_delegates_to_installable_reason(
     only ever checked the dispense-duty flow. If this passes, the
     rejection came from the shared authority, not from logic
     duplicated back into check_unit().
+
+    The `== installable_reason()` assertion alone is tautological -
+    check_unit() returns that call's result, so it holds for any input
+    and for whichever branch happens to fire. The assertions on the
+    text are what make this discriminate: they fail if the inverted
+    band stops being checked and the refusal falls through to the
+    stall-floor branch (dispense_duty 2000 < min_duty 3000 would also
+    refuse, with a different message and for a different reason).
     """
     channel.calibration.min_duty = 3000.0
     channel.calibration.max_duty = 2000.0
@@ -320,6 +333,8 @@ def test_check_unit_delegates_to_installable_reason(
 
     assert reason == channel.calibration.installable_reason()
     assert reason is not None
+    assert "no usable band" in reason
+    assert "min duty 3000 is above max duty 2000" in reason
 
 
 @pytest.mark.parametrize(

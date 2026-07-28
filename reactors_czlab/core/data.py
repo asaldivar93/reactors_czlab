@@ -13,6 +13,28 @@ ERROR_VALUE = -0.111
 #: Full scale of the PLC analog/PWM outputs (0 - 10 V).
 MAX_OUTPUT = 4095.0
 
+#: Dose the bolus-time bound below is expressed for, in mL. 1 mL is the
+#: order of magnitude an operator types into a volume demand.
+REFERENCE_BOLUS_ML = 1.0
+
+#: Longest a single reference bolus may hold the pump ON, in seconds
+#: (24 h). ``Dispenser._start_bolus`` turns a volume demand into a
+#: deadline of ``60 * demand / flow_at(dispense_duty)`` seconds and runs
+#: the pump until it passes, so an almost-flat calibration line makes
+#: that deadline effectively never come due - the same "stranded ON"
+#: hazard the non-finite demand rejection exists for, reached through
+#: the calibration instead of through the demand.
+MAX_BOLUS_SECONDS = 24 * 60 * 60.0
+
+#: Slowest flow, in mL/min, a calibration may claim at its dispense
+#: duty and still be installable: the flow that just delivers
+#: ``REFERENCE_BOLUS_ML`` within ``MAX_BOLUS_SECONDS``, i.e. 1 mL/day.
+#: Deliberately far below any pump this system can calibrate - the
+#: calibration procedure caps a single point at 600 s, so a pump this
+#: slow would deliver 7 uL in the longest run an operator can measure,
+#: and could never have produced an honest fit in the first place.
+MIN_DISPENSE_FLOW = 60.0 * REFERENCE_BOLUS_ML / MAX_BOLUS_SECONDS
+
 
 class PlcOutput(StrEnum):
     """Kind of device behind a PhysicalInfo/Channel.
@@ -142,6 +164,24 @@ class Calibration:
         ``is_fitted``. So the numbers are what get checked, regardless
         of the flag.
 
+        What an installed calibration therefore guarantees to the code
+        that drives a pump with it: ``0 <= min_duty <= dispense_duty <=
+        max_duty <= MAX_OUTPUT``, and a flow at the dispense duty of at
+        least ``MIN_DISPENSE_FLOW``. That is what makes every duty
+        ``Dispenser`` writes in-scale, and every bolus deadline it
+        computes both finite and reachable.
+
+        Every branch states the consequence that actually follows from
+        the input that triggered it. A guard whose refusal message
+        describes a different failure than the one it caught sends the
+        operator after the wrong number, so the branches are split by
+        consequence rather than merged for brevity: a dispense duty
+        under the stall floor delivers *nothing*, one at exactly zero
+        flow gives a bolus that never finishes, one below the line's
+        zero crossing gives a bolus that finishes instantly having
+        delivered nothing, and one that is merely far too slow strands
+        the pump ON for as long as the deadline says.
+
         Returns
         -------
         str or None
@@ -151,28 +191,71 @@ class Calibration:
 
         """
         if self.a <= 0:
-            return f"slope {self.a:.6g} is not positive; it cannot be inverted"
+            return (
+                f"slope {self.a:.6g} is not positive; a higher duty "
+                "would not mean more flow, so no flow or volume demand "
+                "can be turned into a duty"
+            )
+        if self.min_duty < 0:
+            return (
+                f"stall floor {self.min_duty:.0f} is negative; the "
+                "floor is what keeps a converted duty at or above zero"
+            )
         if self.min_duty > self.max_duty:
             return (
                 f"min duty {self.min_duty:.0f} is above max duty "
                 f"{self.max_duty:.0f}; there is no usable band"
             )
+        if self.max_duty > MAX_OUTPUT:
+            return (
+                f"max duty {self.max_duty:.0f} is above the "
+                f"{MAX_OUTPUT:.0f} count full scale of the output"
+            )
         if self.dispense_duty < self.min_duty:
             return (
                 f"dispense duty {self.dispense_duty:.0f} is below the "
-                f"stall floor {self.min_duty:.0f}; a bolus at that "
-                "duty would never finish"
+                f"stall floor {self.min_duty:.0f}; the pump was "
+                "measured not to turn there, so a bolus would run the "
+                "clock down while delivering nothing"
             )
-        if self.flow_at(self.dispense_duty) <= 0:
+        if self.dispense_duty > self.max_duty:
             return (
-                f"dispense duty {self.dispense_duty:.0f} produces no "
-                "flow; a bolus at that duty would never finish"
+                f"dispense duty {self.dispense_duty:.0f} is above max "
+                f"duty {self.max_duty:.0f}; a bolus is written at that "
+                "duty, so it would drive the pump past its ceiling"
             )
+        # Implied by the checks above plus the dispense-flow checks
+        # below (the slope is positive and dispense_duty <= max_duty,
+        # so flow at max_duty is the largest flow in the band), but
+        # kept explicit: flow mode never touches dispense_duty, and
+        # "nothing anywhere in the band" is the message that fits a
+        # line whose whole usable range is dead.
         if self.flow_at(self.max_duty) <= 0:
             return (
                 "this calibration produces no flow anywhere in its "
                 f"usable band (zero or negative at max duty "
                 f"{self.max_duty:.0f})"
+            )
+        flow = self.flow_at(self.dispense_duty)
+        if flow == 0:
+            return (
+                f"dispense duty {self.dispense_duty:.0f} produces no "
+                "flow; a bolus at that duty would never finish"
+            )
+        if flow < 0:
+            return (
+                f"dispense duty {self.dispense_duty:.0f} is below "
+                f"where the line reaches zero flow ({flow:.6g} "
+                "mL/min); a bolus there would end immediately having "
+                "delivered nothing"
+            )
+        if flow < MIN_DISPENSE_FLOW:
+            return (
+                f"dispense duty {self.dispense_duty:.0f} delivers only "
+                f"{flow:.6g} mL/min; {REFERENCE_BOLUS_ML:.0f} mL would "
+                f"take {60.0 * REFERENCE_BOLUS_ML / flow:.0f} s, past "
+                f"the {MAX_BOLUS_SECONDS:.0f} s a bolus may hold the "
+                "pump on"
             )
         return None
 

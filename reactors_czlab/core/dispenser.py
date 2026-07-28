@@ -217,6 +217,18 @@ class Dispenser:
         ``test_a_new_decision_supersedes_a_bolus_in_flight``), while
         buying no safety, since a standing over-demand would just re-arm
         every period and deliver the same total volume anyway.
+
+        The duty written is capped at ``max_duty``, mirroring what
+        ``_duty_for_flow`` does with a converted duty. For every
+        calibration the package installs this is a no-op -
+        ``Calibration.installable_reason()`` refuses any calibration
+        whose ``dispense_duty`` falls outside ``[min_duty, max_duty]``,
+        and that is where the decision belongs. It is kept here as
+        defense in depth for a calibration object mutated in place after
+        it was installed, where the raw field would otherwise go to the
+        pin unclamped. The deadline is computed from the same capped
+        duty, so the time the pump runs always matches the duty it is
+        actually run at.
         """
         if now - self._last_decision < self.control_period:
             return self._current_duty
@@ -244,10 +256,11 @@ class Dispenser:
             )
 
         cal = self.channel.calibration
-        seconds = _SECONDS_PER_MINUTE * demand / cal.flow_at(cal.dispense_duty)
+        duty = min(cal.dispense_duty, cal.max_duty)
+        seconds = _SECONDS_PER_MINUTE * demand / cal.flow_at(duty)
         self._bolus_until = now + seconds
         _logger.debug("Dispensing %s mL over %.3fs", demand, seconds)
-        return self._apply(cal.dispense_duty, now)
+        return self._apply(duty, now)
 
     def _apply(self, value: float, now: float) -> float:
         """Account for the duty that was running, then take the new one."""

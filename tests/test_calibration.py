@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import json
 from pathlib import Path
+from time import perf_counter
 
 import pytest
 
@@ -20,6 +21,8 @@ from reactors_czlab.core.calibration import (
 )
 from reactors_czlab.core.control import _PidControl
 from reactors_czlab.core.data import (
+    MAX_BOLUS_SECONDS,
+    MAX_OUTPUT,
     Calibration,
     Channel,
     ControlConfig,
@@ -932,10 +935,15 @@ async def test_fit_refuses_a_line_with_no_flow_up_to_max_duty(
     """
     actuator = make_calibrated_actuator()  # max_duty = 4000
     run = CalibrationRun(actuator, clock=clock, sleep=_FakeSleep(clock))
-    run.set_duties(0.0, 4090.0)  # a duty above max_duty, but still valid
+    # Dispense at the ceiling itself. A duty ABOVE max_duty is no longer
+    # installable (it is written to the pin unclamped), and refusing it
+    # here would leave dispense_duty at 2000, so the fit below would be
+    # caught by the stall-floor branch instead of the max-duty flow one
+    # this test is named for.
+    run.set_duties(0.0, 4000.0)
     old_cal = actuator.channel.calibration
 
-    # flow = 0.3 * duty - 1214: positive at 4050/4090, negative by 4000.
+    # flow = 0.33 * duty - 1335.4: positive at 4050/4090, negative by 4000.
     for duty, volume in ((4050.0, 1.1), (4090.0, 14.3)):
         await run.calibrate_point(duty, 60.0)
         run.record_point(volume)
@@ -943,6 +951,7 @@ async def test_fit_refuses_a_line_with_no_flow_up_to_max_duty(
     result = run.fit()
 
     assert "keeping the old calibration" in result
+    assert "no flow anywhere" in result
     assert actuator.channel.calibration is old_cal
 
 
@@ -1234,3 +1243,150 @@ async def test_set_duties_attack_with_a_live_manual_volume_controller(
 
     actuator.write_output(0.0)
     actuator.tick()
+
+
+async def test_set_duties_refuses_a_dispense_duty_above_the_ceiling(
+    make_calibrated_actuator,
+    clock,
+) -> None:
+    """The bolus duty is written to the pin, so the band must bound it.
+
+    Regression (D3): ``set_duties(0, 4095)`` on a ``max_duty=4000`` pump
+    installed - ``set_duties()``'s own range check only bounded the
+    argument by ``MAX_OUTPUT``, and nothing compared it against the
+    pump's own ceiling the way ``_duty_for_flow()`` does for a converted
+    duty.
+    """
+    actuator = make_calibrated_actuator()  # max_duty = 4000
+    run = CalibrationRun(actuator, clock=clock)
+
+    result = run.set_duties(0.0, 4095.0)
+
+    assert "above max duty" in result
+    assert actuator.channel.calibration.dispense_duty == 2000.0
+    assert actuator.channel.calibration.min_duty == 400.0  # nothing applied
+
+
+async def test_reload_refuses_an_out_of_scale_dispense_duty(
+    make_calibrated_actuator,
+    clock,
+) -> None:
+    """A hand-edited dispense duty must not reach the pin.
+
+    Regression (D3): ``_start_bolus`` wrote ``cal.dispense_duty``
+    unclamped, so a file carrying ``"dispense_duty": 1e9`` installed
+    through ``reload()`` and 1e9 went to the output. ``MAX_OUTPUT`` is
+    4095.
+
+    Attack: a live manual volume-mode controller is already running.
+    Manual is the mode that bites - ``_ManualControl.get_value()``
+    never calls ``clamp()``, so the controller's demand limits cannot
+    protect this path and the refusal has to happen where the
+    calibration is installed.
+    """
+    actuator = make_calibrated_actuator()
+    old_cal = actuator.channel.calibration
+    actuator.set_control_config(
+        ControlConfig(
+            ControlMethod.manual,
+            value=1.0,
+            output_unit=OutputUnit.volume,
+        ),
+    )
+    save_calibration(
+        Calibration(
+            "R0_pwm0",
+            a=0.01,
+            b=0.0,
+            min_duty=0.0,
+            max_duty=4000.0,
+            dispense_duty=1e9,  # 244000 times full scale
+            fitted_at="2026-07-27T10:00:00+00:00",
+        ),
+    )
+    run = CalibrationRun(actuator, clock=clock)
+
+    result = run.reload()
+
+    assert "unusable" in result.lower()
+    assert "above max duty" in result
+    assert actuator.channel.calibration is old_cal
+
+    # Drive the loop's write path: what lands on the pin is the old
+    # calibration's 2000 count dispense duty, inside full scale.
+    actuator.write_output(0.0)
+    actuator.tick()
+
+    assert actuator.channel.value == 2000.0
+    assert actuator.channel.value <= MAX_OUTPUT
+
+
+def test_load_into_refuses_an_out_of_scale_dispense_duty() -> None:
+    """The startup path must refuse the same file ``reload()`` does."""
+    save_calibration(
+        Calibration(
+            "R0_pwm0",
+            a=0.01,
+            b=0.0,
+            min_duty=0.0,
+            max_duty=4000.0,
+            dispense_duty=1e9,
+            fitted_at="2026-07-27T10:00:00+00:00",
+        ),
+    )
+    channel = Channel("pwm0", "pwm", calibration=Calibration("R0_pwm0"))
+
+    assert load_into(channel) is False
+    assert channel.calibration.dispense_duty == MAX_OUTPUT  # placeholder
+
+
+async def test_reload_refuses_a_line_too_flat_to_finish_a_bolus(
+    make_calibrated_actuator,
+    clock,
+) -> None:
+    """A near-flat line strands the pump ON, so it must not install.
+
+    Regression (D4): ``a=1e-12`` is a positive slope producing positive
+    flow, so every check up to this round accepted it. A 1 mL bolus
+    against it gets a deadline about 1900 years out and ``tick()`` never
+    turns the pump off - the same failure the non-finite demand
+    rejection exists to prevent, reached through the calibration.
+
+    Attack: live manual volume-mode controller, again the unclamped one.
+    """
+    actuator = make_calibrated_actuator()
+    old_cal = actuator.channel.calibration
+    actuator.set_control_config(
+        ControlConfig(
+            ControlMethod.manual,
+            value=1.0,
+            output_unit=OutputUnit.volume,
+        ),
+    )
+    save_calibration(
+        Calibration(
+            "R0_pwm0",
+            a=1e-12,
+            b=0.0,
+            min_duty=0.0,
+            max_duty=4000.0,
+            dispense_duty=1000.0,  # 1e-9 mL/min: 1 mL takes 6e10 s
+            fitted_at="2026-07-27T10:00:00+00:00",
+        ),
+    )
+    run = CalibrationRun(actuator, clock=clock)
+
+    result = run.reload()
+
+    assert "unusable" in result.lower()
+    assert "delivers only" in result
+    assert actuator.channel.calibration is old_cal
+
+    # The bolus the live controller arms next runs on the old line -
+    # 1 mL at 20 mL/min, so it comes due in about 3 s, not 6e10.
+    actuator.write_output(0.0)
+
+    assert actuator.channel.value == 2000.0
+    remaining = actuator.dispenser._bolus_until - perf_counter()
+    assert 0 < remaining < MAX_BOLUS_SECONDS
+    assert remaining == pytest.approx(3.0, abs=0.5)
