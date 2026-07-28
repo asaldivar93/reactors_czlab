@@ -55,6 +55,11 @@ def check_unit(unit: OutputUnit, channel: Channel) -> str | None:
     cal = channel.calibration
     if cal is None or not cal.is_fitted:
         return f"{unit} needs a fitted calibration on the channel"
+    if unit is OutputUnit.volume and cal.flow_at(cal.dispense_duty) <= 0:
+        return (
+            f"dispense duty {cal.dispense_duty} produces no flow, so a "
+            "bolus would never finish"
+        )
     return None
 
 
@@ -91,28 +96,21 @@ class Dispenser:
         self._clock = clock
         self._current_duty = 0.0
         self._since = clock()
+        self._bolus_until: float | None = None
+        self._last_decision = float("-inf")
 
     def __repr__(self) -> str:
         """Print the unit and how much has been delivered."""
         return f"Dispenser({self.unit}, {self.total_volume:.3f} mL)"
 
     def duty(self, demand: float) -> float:
-        """Duty counts realising ``demand``, and the new pump state.
-
-        Raises
-        ------
-        NotImplementedError
-            If the unit is ``OutputUnit.volume``. Volume mode arrives in a
-            later task.
-
-        """
+        """Duty counts realising ``demand``, and the new pump state."""
         now = self._clock()
         if self.unit is OutputUnit.duty:
             return self._apply(demand, now)
         if self.unit is OutputUnit.flow:
             return self._apply(self._duty_for_flow(demand), now)
-        error_message = f"{self.unit} is not implemented yet"
-        raise NotImplementedError(error_message)
+        return self._start_bolus(demand, now)
 
     def tick(self) -> float | None:
         """Advance the delivery of a demand already accepted.
@@ -124,19 +122,31 @@ class Dispenser:
             accrual happens either way.
 
         """
-        self._accrue(self._clock())
-        return None
+        now = self._clock()
+        if self._bolus_until is None or now < self._bolus_until:
+            self._accrue(now)
+            return None
+        self._bolus_until = None
+        return self._apply(0.0, now)
 
     def demand_limits(self) -> tuple[float, float]:
         """Range a controller may demand, in this dispenser's unit."""
         if self.unit is OutputUnit.duty:
             return (0.0, MAX_OUTPUT)
         cal = self.channel.calibration
-        return (0.0, cal.flow_at(cal.max_duty))
+        if self.unit is OutputUnit.flow:
+            return (0.0, cal.flow_at(cal.max_duty))
+        per_period = (
+            cal.flow_at(cal.dispense_duty)
+            * self.control_period
+            / _SECONDS_PER_MINUTE
+        )
+        return (0.0, per_period)
 
     def reset(self) -> None:
         """Forget any delivery in flight. Totals are kept."""
         self._accrue(self._clock())
+        self._bolus_until = None
         self._current_duty = 0.0
 
     def _duty_for_flow(self, demand: float) -> float:
@@ -153,6 +163,29 @@ class Dispenser:
             )
             duty = cal.min_duty
         return min(duty, cal.max_duty)
+
+    def _start_bolus(self, demand: float, now: float) -> float:
+        """Accept a volume demand, unless the guard is still holding.
+
+        A bolus is an event, but ``write_output()`` is called every
+        ``UNPAIRED_PERIOD`` for an unpaired actuator. Rate-limiting
+        decisions to ``control_period`` is what stops a standing manual
+        demand from being dispensed twenty times a second, and it makes
+        paired and unpaired actuators behave identically.
+        """
+        if now - self._last_decision < self.control_period:
+            return self._current_duty
+        self._last_decision = now
+
+        if demand <= 0:
+            self._bolus_until = None
+            return self._apply(0.0, now)
+
+        cal = self.channel.calibration
+        seconds = _SECONDS_PER_MINUTE * demand / cal.flow_at(cal.dispense_duty)
+        self._bolus_until = now + seconds
+        _logger.debug("Dispensing %s mL over %.3fs", demand, seconds)
+        return self._apply(cal.dispense_duty, now)
 
     def _apply(self, value: float, now: float) -> float:
         """Account for the duty that was running, then take the new one."""
