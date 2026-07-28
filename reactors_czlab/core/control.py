@@ -93,7 +93,9 @@ class _TimerControl(_Control):
     value_on: float = 0.0
 
     _is_on: bool = field(default=True, init=False, repr=False, compare=False)
-    _interval: float = field(default=0.0, init=False, repr=False, compare=False)
+    _interval: float = field(
+        default=0.0, init=False, repr=False, compare=False
+    )
     _last_time: float = field(
         default_factory=perf_counter,
         init=False,
@@ -308,13 +310,22 @@ class _PidControl(_Control):
 class ControlFactory:
     """Factory of the different control classes."""
 
-    def create_control(self, config: ControlConfig) -> _Control:
+    def create_control(
+        self,
+        config: ControlConfig,
+        min_val: float = 0.0,
+        max_val: float = MAX_OUTPUT,
+    ) -> _Control:
         """Create a control class based on the control config.
 
         Parameters
         ----------
         config:
             A dataclass with the parameters of the new configuration
+        min_val, max_val:
+            Range the controller may demand, in the unit the config asks
+            for. The defaults are the raw PLC output range, which is what
+            duty-mode configs want.
 
         Raises
         ------
@@ -322,15 +333,17 @@ class ControlFactory:
             If the method is unknown or a parameter is not a number.
 
         """
+        limits = {"min_val": min_val, "max_val": max_val}
         match config.method:
             case ControlMethod.manual:
-                return _ManualControl(value=config.value)
+                return _ManualControl(value=config.value, **limits)
 
             case ControlMethod.timer:
                 return _TimerControl(
                     time_on=config.time_on,
                     time_off=config.time_off,
                     value_on=config.value,
+                    **limits,
                 )
 
             case ControlMethod.on_boundaries:
@@ -338,10 +351,11 @@ class ControlFactory:
                     lower_bound=config.lb,
                     upper_bound=config.ub,
                     value_on=config.value,
+                    **limits,
                 )
 
             case ControlMethod.pid:
-                return _PidControl(setpoint=config.setpoint)
+                return _PidControl(setpoint=config.setpoint, **limits)
 
             case _:
                 error_message = f"Unknown control method: {config.method!r}"
