@@ -166,7 +166,7 @@ async def main(endpoint: str, *, simulated: bool = False) -> None:
                 asyncio.create_task(
                     r_i.reactor.sampling_loop(r_i.sample_ready),
                 ),
-                asyncio.create_task(r_i.reactor.unpaired_loop()),
+                asyncio.create_task(r_i.reactor.actuator_loop()),
                 asyncio.create_task(r_i.update()),
             ],
         )
