@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 from asyncua import ua
 
-from reactors_czlab.core.data import ControlConfig, ControlMethod
+from reactors_czlab.core.data import ControlConfig, ControlMethod, OutputUnit
 
 if TYPE_CHECKING:
     from asyncua import Server
@@ -24,6 +24,12 @@ control_method = {
     3: ControlMethod.pid,
 }
 
+output_unit_map = {
+    0: OutputUnit.duty,
+    1: OutputUnit.flow,
+    2: OutputUnit.volume,
+}
+
 
 class ActuatorOpc:
     """Actuator node."""
@@ -38,13 +44,22 @@ class ActuatorOpc:
         return f"ActuatorOpc(id: {self.actuator.id})"
 
     async def update_value(self) -> None:
-        """Publish the actuator output to the server if it changed."""
+        """Publish the actuator output and pump data if they changed."""
         published = await self.curr_value.get_value()
         # old_value is what write_output() last pushed to the hardware.
         current = self.actuator.channel.old_value
         if current != published:
             await self.curr_value.write_value(float(current))
             _logger.debug("Updated %s with value %s", self.id, current)
+
+        await self.total_volume.write_value(
+            float(self.actuator.dispenser.total_volume),
+        )
+        cal = self.actuator.channel.calibration
+        if cal is not None:
+            await self.cal_a.write_value(float(cal.a))
+            await self.cal_b.write_value(float(cal.b))
+            await self.cal_r2.write_value(float(cal.r2))
 
     async def init_node(
         self,
@@ -91,7 +106,22 @@ class ActuatorOpc:
             )
             return
 
-        config = ControlConfig(method, value=await self.value.get_value())
+        unit_index = await self.output_unit.get_value()
+        try:
+            unit = output_unit_map[unit_index]
+        except KeyError:
+            _logger.exception(
+                "%s is not a member of %s",
+                unit_index,
+                sorted(output_unit_map),
+            )
+            return
+
+        config = ControlConfig(
+            method,
+            value=await self.value.get_value(),
+            output_unit=unit,
+        )
 
         # Only read the variables the selected method actually needs.
         match method:
@@ -140,6 +170,21 @@ class ActuatorOpc:
         )
         await self.curr_value.set_writable()
 
+        # Published pump data. The browse names follow the
+        # <reactor>:<name>:<channel> contract, so they reach the data table.
+        self.total_volume = await self.node.add_variable(
+            idx,
+            f"{self.id}:total_volume",
+            0.0,
+        )
+        self.cal_a = await self.node.add_variable(idx, f"{self.id}:cal_a", 0.0)
+        self.cal_b = await self.node.add_variable(idx, f"{self.id}:cal_b", 0.0)
+        self.cal_r2 = await self.node.add_variable(
+            idx,
+            f"{self.id}:cal_r2",
+            0.0,
+        )
+
         # ControlMethod
         self.method = await self.control_method.add_variable(
             idx,
@@ -156,6 +201,24 @@ class ActuatorOpc:
             ua.ObjectIds.MultiStateDiscreteType_EnumStrings,
             "EnumStrings",
             enum_strings_variant,
+        )
+
+        # Unit the demand is expressed in: raw counts, mL/min, or mL.
+        self.output_unit = await self.control_method.add_variable(
+            idx,
+            f"{self.id}:output_unit",
+            0,
+            varianttype=ua.VariantType.UInt32,
+        )
+        await self.output_unit.set_writable()
+        unit_strings_variant = ua.Variant(
+            [ua.LocalizedText(output_unit_map[k]) for k in output_unit_map],
+            ua.VariantType.LocalizedText,
+        )
+        await self.output_unit.add_property(
+            ua.ObjectIds.MultiStateDiscreteType_EnumStrings,
+            "EnumStrings",
+            unit_strings_variant,
         )
 
         # TimerControl
