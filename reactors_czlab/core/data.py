@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum, auto
 
 #: Written to a channel when the underlying device could not be read.
@@ -54,11 +54,77 @@ class Channel:
 
 @dataclass
 class Calibration:
-    """Class holding linear regression parameters y = a*x + b."""
+    """Linear calibration of a pump: ``flow = a * duty + b``.
+
+    Flow is mL/min and duty is raw PLC counts. ``fitted_at`` empty means the
+    calibration has never been fitted and must not be used to convert.
+
+    Parameters
+    ----------
+    file:
+        File stem the calibration is stored under, e.g. ``R0_pwm0``.
+    a, b:
+        Slope and intercept of the fitted line.
+    min_duty:
+        Stall floor. Below this the pump does not turn.
+    max_duty:
+        Highest duty the pump may be driven at.
+    dispense_duty:
+        Duty used for volume boluses.
+    points:
+        Measured ``(duty, flow)`` pairs the fit was built from.
+    fitted_at:
+        ISO timestamp of the fit, empty when unfitted.
+    r2:
+        Fit quality. Informational: it is trivially 1.0 for two points.
+
+    """
 
     file: str
-    a: float = 1
-    b: float = 0
+    a: float = 1.0
+    b: float = 0.0
+    min_duty: float = 0.0
+    max_duty: float = MAX_OUTPUT
+    dispense_duty: float = MAX_OUTPUT
+    points: list[tuple[float, float]] = field(default_factory=list)
+    fitted_at: str = ""
+    r2: float = 0.0
+
+    @property
+    def is_fitted(self) -> bool:
+        """Whether the calibration has ever been fitted."""
+        return bool(self.fitted_at)
+
+    def flow_at(self, duty: float) -> float:
+        """Flow in mL/min produced at ``duty`` counts."""
+        return self.a * duty + self.b
+
+    def duty_for(self, flow: float) -> float:
+        """Duty counts needed for ``flow`` mL/min.
+
+        Raises
+        ------
+        ZeroDivisionError
+            If the slope is zero. Loading and fitting both reject a
+            non-positive slope, so this only happens on a hand-edited
+            object.
+
+        """
+        return (flow - self.b) / self.a
+
+
+class OutputUnit(StrEnum):
+    """Unit a controller's demand is expressed in.
+
+    Parameters
+    ----------
+    duty, flow, volume
+
+    """
+
+    duty = auto()
+    flow = auto()
+    volume = auto()
 
 
 class ControlMethod(StrEnum):
@@ -96,6 +162,8 @@ class ControlConfig:
         float (default: 0.0)
     value:
         float (default: 0.0)
+    output_unit:
+        OutputUnit (default: OutputUnit.duty)
 
     """
 
@@ -106,3 +174,4 @@ class ControlConfig:
     ub: float = 0.0
     setpoint: float = 0.0
     value: float = 0.0
+    output_unit: OutputUnit = OutputUnit.duty
