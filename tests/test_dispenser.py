@@ -302,6 +302,26 @@ def test_check_unit_rejects_a_dispense_duty_that_does_not_pump() -> None:
     assert "dispense" in reason
 
 
+def test_check_unit_delegates_to_installable_reason(
+    channel: Channel,
+) -> None:
+    """check_unit() must not carry its own copy of these invariants.
+
+    An inverted band (min_duty > max_duty) is a case check_unit() never
+    checked for itself even before installable_reason() existed - it
+    only ever checked the dispense-duty flow. If this passes, the
+    rejection came from the shared authority, not from logic
+    duplicated back into check_unit().
+    """
+    channel.calibration.min_duty = 3000.0
+    channel.calibration.max_duty = 2000.0
+
+    reason = check_unit(OutputUnit.flow, channel)
+
+    assert reason == channel.calibration.installable_reason()
+    assert reason is not None
+
+
 @pytest.mark.parametrize(
     "demand",
     [float("inf"), float("-inf"), float("nan")],

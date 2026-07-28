@@ -112,6 +112,70 @@ class Calibration:
         """
         return (flow - self.b) / self.a
 
+    def installable_reason(self) -> str | None:
+        """Why this calibration may not replace what is on a channel.
+
+        The single authority for "is this calibration safe to
+        install", called by every site that can put a ``Calibration``
+        onto a ``Channel.calibration`` - ``CalibrationRun.fit()``,
+        ``set_duties()``, ``reload()``, ``load_into()`` - and by
+        ``core.dispenser.check_unit()`` for the same question asked at
+        control-config time. Before this existed, each of those sites
+        wrote its own arithmetic, and every round of review found a
+        pair that disagreed: ``<`` where another used ``<=``, a
+        stall-floor check dropped in favour of a flow check that could
+        not see the same evidence, a guard gated behind ``is_fitted``
+        that a hand-edited file could route around by leaving
+        ``fitted_at`` empty. There is now exactly one place this logic
+        lives.
+
+        Deliberately NOT gated on ``is_fitted``: an unfitted
+        calibration is only actually safe when its numbers happen to
+        be self-consistent, which the placeholder
+        ``server_info.py`` constructs for every pump always is (``a=1.0,
+        min_duty=0.0, max_duty=dispense_duty=MAX_OUTPUT``) - it passes
+        every check below on its own merits, not because it is
+        exempted. A hand-edited file can set ``fitted_at`` to the empty
+        string while leaving dangerous numbers in the rest of the
+        fields, and ``Dispenser._start_bolus`` divides by
+        ``flow_at(dispense_duty)`` without ever consulting
+        ``is_fitted``. So the numbers are what get checked, regardless
+        of the flag.
+
+        Returns
+        -------
+        str or None
+            ``None`` when ``self`` may be installed. Otherwise a
+            human-readable reason, safe to return to the operator
+            verbatim.
+
+        """
+        if self.a <= 0:
+            return f"slope {self.a:.6g} is not positive; it cannot be inverted"
+        if self.min_duty > self.max_duty:
+            return (
+                f"min duty {self.min_duty:.0f} is above max duty "
+                f"{self.max_duty:.0f}; there is no usable band"
+            )
+        if self.dispense_duty < self.min_duty:
+            return (
+                f"dispense duty {self.dispense_duty:.0f} is below the "
+                f"stall floor {self.min_duty:.0f}; a bolus at that "
+                "duty would never finish"
+            )
+        if self.flow_at(self.dispense_duty) <= 0:
+            return (
+                f"dispense duty {self.dispense_duty:.0f} produces no "
+                "flow; a bolus at that duty would never finish"
+            )
+        if self.flow_at(self.max_duty) <= 0:
+            return (
+                "this calibration produces no flow anywhere in its "
+                f"usable band (zero or negative at max duty "
+                f"{self.max_duty:.0f})"
+            )
+        return None
+
 
 class OutputUnit(StrEnum):
     """Unit a controller's demand is expressed in.

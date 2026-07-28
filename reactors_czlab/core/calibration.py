@@ -12,7 +12,7 @@ import json
 import logging
 import os
 from collections.abc import Callable
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from time import perf_counter
@@ -187,6 +187,9 @@ def load_into(channel: Channel) -> bool:
     -------
     bool
         True when a stored calibration replaced the channel's placeholder.
+        False when there was nothing stored, or what was stored is not
+        safe to install - either way the channel keeps its previous
+        (placeholder or otherwise) calibration.
 
     """
     if channel.calibration is None:
@@ -194,6 +197,16 @@ def load_into(channel: Channel) -> bool:
 
     stored = load_calibration(channel.calibration.file)
     if stored is None:
+        return False
+
+    reason = stored.installable_reason()
+    if reason is not None:
+        _logger.warning(
+            "Stored calibration for %s is unusable, keeping the "
+            "existing one: %s",
+            channel.calibration.file,
+            reason,
+        )
         return False
 
     channel.calibration = stored
@@ -321,28 +334,10 @@ class CalibrationRun:
             fitted_at=datetime.now(UTC).isoformat(),
             r2=r2,
         )
-        # These mirror check_unit()'s own invariant exactly (<=, not <)
-        # rather than comparing duties as a proxy: Dispenser divides by
-        # flow_at(dispense_duty) in _start_bolus and reads
-        # flow_at(max_duty) as flow mode's upper demand_limits(). A
-        # calibration where either is not strictly positive must never
-        # reach the channel, whatever control mode ends up reading it -
-        # manual/timer/on_boundaries controllers do not consult
-        # min_val/max_val at all, so a guard on the controller alone is
-        # not enough.
-        if cal.flow_at(cal.dispense_duty) <= 0:
-            return (
-                f"fitted stall floor {min_duty:.0f} leaves no flow at "
-                f"the dispense duty {cal.dispense_duty:.0f}; a bolus "
-                "at that duty would never finish - raise it with "
-                "set_duties() first, keeping the old calibration"
-            )
-        if cal.flow_at(cal.max_duty) <= 0:
-            return (
-                "fitted line produces no flow anywhere up to the max "
-                f"duty {cal.max_duty:.0f}; this pump cannot be driven "
-                "from this fit, keeping the old calibration"
-            )
+        reason = cal.installable_reason()
+        if reason is not None:
+            _logger.warning("Fit refused for %s: %s", self.actuator.id, reason)
+            return f"{reason} - keeping the old calibration"
 
         save_calibration(cal)
         self.actuator.channel.calibration = cal
@@ -368,23 +363,17 @@ class CalibrationRun:
         if stored is None:
             return f"no usable stored calibration for {current.file}"
 
-        # A calibration file is operator-editable and load_calibration()
-        # only checks the slope's sign - it can still carry a
-        # dispense_duty/max_duty that produces no flow. fit() refuses
-        # that before installing; reload() is the other path that can
-        # put a calibration on the channel, so it must refuse it too.
-        if stored.is_fitted and stored.flow_at(stored.dispense_duty) <= 0:
+        # A calibration file is operator-editable, and load_calibration()
+        # only checks the slope's sign. installable_reason() is the one
+        # place that decides whether the rest of the numbers are safe to
+        # drive a pump with - not gated on is_fitted, since a hand-edited
+        # file can set fitted_at to "" while leaving dangerous numbers in
+        # the rest of the fields.
+        reason = stored.installable_reason()
+        if reason is not None:
             return (
-                f"stored calibration for {current.file} has no flow "
-                f"at its dispense duty {stored.dispense_duty:.0f}; a "
-                "bolus at that duty would never finish - not "
-                "installing it"
-            )
-        if stored.is_fitted and stored.flow_at(stored.max_duty) <= 0:
-            return (
-                f"stored calibration for {current.file} produces no "
-                f"flow anywhere up to its max duty {stored.max_duty:.0f}"
-                "; not installing it"
+                f"stored calibration for {current.file} is unusable: "
+                f"{reason} - not installing it"
             )
 
         self.actuator.channel.calibration = stored
@@ -398,23 +387,19 @@ class CalibrationRun:
             return f"{self.actuator.id} has no calibration slot on its channel"
         if not 0 <= min_duty <= MAX_OUTPUT:
             return f"min duty must be within 0 - {MAX_OUTPUT}, got {min_duty}"
-        if dispense_duty < min_duty:
-            return (
-                f"dispense duty {dispense_duty} is below the stall floor "
-                f"{min_duty}; a bolus at that duty would never finish"
-            )
         if not 0 <= dispense_duty <= MAX_OUTPUT:
             return f"dispense duty must be within 0 - {MAX_OUTPUT}"
-        # The min_duty check above is a proxy that can miss the exact
-        # boundary where the fitted line itself reaches zero flow at
-        # dispense_duty (e.g. an operator-chosen min_duty below the
-        # true stall point). Check the real invariant directly too.
-        if cal.is_fitted and cal.flow_at(dispense_duty) <= 0:
-            return (
-                f"dispense duty {dispense_duty} produces no flow under "
-                "this calibration; a bolus at that duty would never "
-                "finish"
-            )
+
+        # Validate a candidate rather than the live object, so a refused
+        # change cannot leave the channel's calibration half-updated.
+        candidate = replace(
+            cal,
+            min_duty=min_duty,
+            dispense_duty=dispense_duty,
+        )
+        reason = candidate.installable_reason()
+        if reason is not None:
+            return reason
 
         cal.min_duty = min_duty
         cal.dispense_duty = dispense_duty

@@ -8,6 +8,7 @@ from reactors_czlab.core.actuator import RandomActuator
 from reactors_czlab.core.control import _ManualControl, _TimerControl
 from reactors_czlab.core.data import (
     ERROR_VALUE,
+    Calibration,
     ControlConfig,
     ControlMethod,
     OutputUnit,
@@ -306,3 +307,51 @@ def test_control_period_reaches_the_dispenser(
     actuator.control_period = 42.0
 
     assert actuator.dispenser.control_period == 42.0
+
+
+def test_refresh_controller_limits_zeros_a_non_positive_range(
+    make_calibrated_actuator,
+) -> None:
+    """A demand range that has gone non-positive is zeroed, not left
+    stale.
+
+    Regression: this method used to ``return`` on a non-positive range,
+    leaving the controller's old (positive) limits in place. A clamped
+    controller (PID) could then still command a positive demand against
+    a calibration that could no longer deliver it, dividing by zero in
+    ``Dispenser._start_bolus``.
+
+    ``CalibrationRun.fit()``/``set_duties()``/``reload()`` all now
+    refuse a calibration that would produce this range before it ever
+    reaches the channel (``Calibration.installable_reason()``), so this
+    path is not expected to be reachable through them any more. It is
+    pinned here by installing the bad calibration directly - exactly
+    what a bench script or a future install site that forgets to
+    validate could still do - to verify this method's own behaviour
+    independently of those guards.
+    """
+    actuator = make_calibrated_actuator()  # a=0.01, max_duty=4000
+    actuator.set_control_config(
+        ControlConfig(
+            ControlMethod.pid,
+            setpoint=1.0,
+            output_unit=OutputUnit.flow,
+        ),
+    )
+    controller = actuator.controller
+    assert (controller.min_val, controller.max_val) == (0.0, 40.0)
+
+    # Bypass every install-site guard and corrupt the live calibration
+    # directly - flow mode's demand_limits() reads flow_at(max_duty),
+    # which is negative for this line.
+    actuator.channel.calibration = Calibration(
+        "R0_pwm0",
+        a=0.01,
+        b=-50.0,
+        max_duty=4000.0,
+        fitted_at="2026-07-27T10:00:00+00:00",
+    )
+
+    actuator.refresh_controller_limits()
+
+    assert (controller.min_val, controller.max_val) == (0.0, 0.0)

@@ -49,6 +49,20 @@ def check_unit(unit: OutputUnit, channel: Channel) -> str | None:
         reject the config rather than silently treating mL/min as raw
         counts, which would peg a pump.
 
+    Notes
+    -----
+    ``duty`` mode needs nothing from the calibration and is always
+    allowed. ``flow``/``volume`` additionally need a *fitted*
+    calibration - unlike ``Calibration.installable_reason()``, which
+    intentionally does not gate on ``fitted_at`` (a channel is allowed
+    to hold an unfitted placeholder), a control mode that is about to
+    convert mL/min or mL into duty needs a calibration that was
+    actually produced by a fit, not just one whose numbers happen to be
+    self-consistent. Past that gate, the remaining question - is this
+    specific fitted line safe to drive the pump with - is delegated to
+    ``installable_reason()`` rather than re-checked here, so the two
+    functions cannot drift apart the way the install sites once did.
+
     """
     if unit is OutputUnit.duty:
         return None
@@ -56,12 +70,7 @@ def check_unit(unit: OutputUnit, channel: Channel) -> str | None:
     cal = channel.calibration
     if cal is None or not cal.is_fitted:
         return f"{unit} needs a fitted calibration on the channel"
-    if unit is OutputUnit.volume and cal.flow_at(cal.dispense_duty) <= 0:
-        return (
-            f"dispense duty {cal.dispense_duty} produces no flow, so a "
-            "bolus would never finish"
-        )
-    return None
+    return cal.installable_reason()
 
 
 class Dispenser:

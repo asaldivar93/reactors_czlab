@@ -1045,3 +1045,192 @@ async def test_an_explicit_integral_band_survives_a_refit_untouched(
         15.0,
     )
     assert controller._integral_sum == 12.5
+
+
+async def test_fit_respects_the_measured_stall_floor_not_just_the_line(
+    make_calibrated_actuator,
+    clock,
+) -> None:
+    """A measured zero-flow point raises the real stall floor above
+    what the fitted line's own x-intercept predicts; fit() must still
+    refuse a dispense_duty below that raised floor even though the raw
+    line predicts a small positive flow there.
+
+    Regression: round 2 replaced the ``dispense_duty < min_duty`` check
+    with only ``flow_at(dispense_duty) <= 0``, which cannot see
+    evidence that came from a measured zero-flow point rather than the
+    fitted intercept - exactly the case ``_stall_floor()``'s override
+    exists for. ``installable_reason()`` checks both, in that order.
+    """
+    actuator = make_calibrated_actuator()
+    run = CalibrationRun(actuator, clock=clock, sleep=_FakeSleep(clock))
+    run.set_duties(0.0, 1450.0)
+    old_a = actuator.channel.calibration.a
+
+    # The line's own x-intercept sits below 1500, but 1500 measured
+    # zero flow directly: the real stall floor is 1500, not the
+    # intercept, and 1450 < 1500.
+    for duty, volume in ((1500.0, 0.0), (2000.0, 22.0), (3000.0, 44.0)):
+        await run.calibrate_point(duty, 60.0)
+        run.record_point(volume)
+
+    result = run.fit()
+
+    assert "stall" in result.lower()
+    assert actuator.channel.calibration.a == pytest.approx(old_a)
+
+
+async def test_reload_refuses_an_unfitted_file_with_poisoned_numbers(
+    make_calibrated_actuator,
+    clock,
+) -> None:
+    """A hand-edited file with ``fitted_at`` left empty must not bypass
+    validation just because ``is_fitted`` is False.
+
+    Regression: both round 2 guards were gated behind
+    ``stored.is_fitted``, so a file with ``fitted_at: ""`` sailed
+    through with whatever numbers the rest of the file carried -
+    ``Dispenser._start_bolus`` does not check ``is_fitted`` before
+    dividing by ``flow_at(dispense_duty)``.
+
+    Attack: a live manual (unclamped) volume-mode controller is already
+    running before the reload, so this also proves the invariant holds
+    for the one control mode that never consults ``min_val``/
+    ``max_val`` at all.
+    """
+    actuator = make_calibrated_actuator()
+    old_cal = actuator.channel.calibration
+    actuator.set_control_config(
+        ControlConfig(
+            ControlMethod.manual,
+            value=1.0,
+            output_unit=OutputUnit.volume,
+        ),
+    )
+    save_calibration(
+        Calibration(
+            "R0_pwm0",
+            a=0.01,
+            b=-10.0,
+            min_duty=1000.0,
+            max_duty=4000.0,
+            dispense_duty=1000.0,  # flow_at(1000) == 0.0 exactly
+            fitted_at="",  # NOT fitted - the bypass round 2 missed
+        ),
+    )
+    run = CalibrationRun(actuator, clock=clock)
+
+    result = run.reload()
+
+    assert "unusable" in result.lower()
+    assert actuator.channel.calibration is old_cal
+
+    # No degenerate calibration reached the channel: driving the
+    # control loop's write path must not raise.
+    actuator.write_output(0.0)
+    actuator.tick()
+
+
+def test_load_into_refuses_an_unfitted_file_with_poisoned_numbers() -> None:
+    """The startup path must reject a hand-edited file's bad numbers
+    too, not just skip validation because ``fitted_at`` is empty.
+
+    ``load_into()`` had no guards at all before this round - even a
+    FITTED poisoned file would have installed - so this is the same
+    attack as the ``reload()`` test above, aimed at the other site that
+    can put a ``Calibration`` on a channel outside ``CalibrationRun``.
+    """
+    save_calibration(
+        Calibration(
+            "R0_pwm0",
+            a=0.01,
+            b=-10.0,
+            min_duty=1000.0,
+            max_duty=4000.0,
+            dispense_duty=1000.0,
+            fitted_at="",
+        ),
+    )
+    channel = Channel("pwm0", "pwm", calibration=Calibration("R0_pwm0"))
+
+    assert load_into(channel) is False
+    assert channel.calibration.is_fitted is False  # placeholder kept
+    assert channel.calibration.b == 0.0  # not the poisoned -10.0
+
+
+async def test_load_into_attack_then_manual_volume_write_is_safe() -> None:
+    """After ``load_into()`` refuses a poisoned file, wiring up a live
+    manual volume-mode controller against the kept placeholder must
+    still be rejected by ``check_unit()`` - the placeholder is
+    unfitted - and duty mode must keep working regardless.
+    """
+    from reactors_czlab.core.actuator import RandomActuator
+    from reactors_czlab.core.data import PhysicalInfo, PlcOutput
+
+    save_calibration(
+        Calibration(
+            "R0_pwm0",
+            a=0.01,
+            b=-10.0,
+            min_duty=1000.0,
+            max_duty=4000.0,
+            dispense_duty=1000.0,
+            fitted_at="",
+        ),
+    )
+    info = PhysicalInfo(
+        model="pwm",
+        address=0,
+        type=PlcOutput.pwm,
+        channels=[
+            Channel(
+                "pwm0",
+                "pwm",
+                pin="Q2.7",
+                calibration=Calibration("R0_pwm0"),
+            ),
+        ],
+    )
+    actuator = RandomActuator("R0:pwm0", info)
+
+    assert load_into(actuator.channel) is False
+
+    actuator.set_control_config(
+        ControlConfig(
+            ControlMethod.manual,
+            value=1.0,
+            output_unit=OutputUnit.volume,
+        ),
+    )
+    # Rejected: the kept placeholder is unfitted, so volume mode never
+    # engages and the dispenser stays in duty mode.
+    assert actuator.dispenser.unit is OutputUnit.duty
+
+    actuator.write_output(0.0)
+
+
+async def test_set_duties_attack_with_a_live_manual_volume_controller(
+    make_calibrated_actuator,
+    clock,
+) -> None:
+    """Attack set_duties() with a live manual (unclamped) volume-mode
+    controller already running: an attempted zero-flow dispense duty
+    must be refused and write_output() must not raise afterwards.
+    """
+    actuator = make_calibrated_actuator()  # a=0.01, b=0.0
+    actuator.set_control_config(
+        ControlConfig(
+            ControlMethod.manual,
+            value=1.0,
+            output_unit=OutputUnit.volume,
+        ),
+    )
+    run = CalibrationRun(actuator, clock=clock)
+
+    result = run.set_duties(0.0, 0.0)  # flow_at(0) == 0.0 exactly
+
+    assert "no flow" in result.lower()
+    assert actuator.channel.calibration.dispense_duty == 2000.0
+
+    actuator.write_output(0.0)
+    actuator.tick()
