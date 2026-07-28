@@ -300,3 +300,110 @@ def test_check_unit_rejects_a_dispense_duty_that_does_not_pump() -> None:
 
     assert reason is not None
     assert "dispense" in reason
+
+
+@pytest.mark.parametrize(
+    "demand",
+    [float("inf"), float("-inf"), float("nan")],
+)
+def test_a_non_finite_demand_leaves_the_pump_off(
+    channel: Channel,
+    clock,
+    demand: float,
+) -> None:
+    """Every non-finite demand is rejected before a deadline is computed.
+
+    Regression: `now < math.inf` is always True, so tick() could never
+    turn an infinite bolus off, stranding the pump ON forever. NaN slips
+    past a bare `demand <= 0` check (NaN comparisons are always False),
+    so it could fire a spurious dispense_duty write before the next tick
+    noticed `now < nan` was also False and stopped it.
+    """
+    disp = Dispenser(
+        OutputUnit.volume,
+        channel,
+        control_period=10.0,
+        clock=clock,
+    )
+
+    assert disp.duty(demand) == 0.0
+    assert disp._current_duty == 0.0
+
+    clock.advance(1e6)
+    assert disp.tick() is None
+    assert disp._current_duty == 0.0
+
+
+def test_an_oversized_demand_still_gets_its_full_bolus(
+    channel: Channel,
+    clock,
+) -> None:
+    """A finite demand beyond demand_limits() is dispensed in full.
+
+    Silently clamping to the per-period limit would make every bolus
+    exactly one control_period long, foreclosing the supersession model
+    that test_a_new_decision_supersedes_a_bolus_in_flight pins, while
+    buying no real safety: a standing over-demand would just re-arm
+    every period instead of running once, delivering the same total
+    volume to the reactor either way.
+    """
+    disp = Dispenser(
+        OutputUnit.volume,
+        channel,
+        control_period=1.0,
+        clock=clock,
+    )
+    upper = disp.demand_limits()[1]  # 0.333 mL
+    demand = 1.0  # well beyond the one-period limit
+
+    assert demand > upper
+    assert disp.duty(demand) == 2000.0
+
+    # 1 mL at 20 mL/min is 3 s of running - outlives the 1 s control_period.
+    clock.advance(2.9)
+    assert disp.tick() is None
+
+    clock.advance(0.2)
+    assert disp.tick() == 0.0
+
+
+def test_reset_re_arms_the_guard(channel: Channel, clock) -> None:
+    """After a reset, the operator's next dose must not be silently
+    swallowed by the re-trigger guard.
+
+    Regression: __init__ starts `_last_decision` at -inf precisely so the
+    very first demand is accepted immediately; reset() must restore that
+    invariant, or a stop/start leaves the next manual dose blocked for up
+    to control_period seconds with no log line to explain why.
+    """
+    disp = Dispenser(
+        OutputUnit.volume,
+        channel,
+        control_period=10.0,
+        clock=clock,
+    )
+    disp.duty(1.0)
+    clock.advance(1.0)
+
+    disp.reset()
+
+    # No time has passed since reset, yet the guard must not hold this off.
+    assert disp.duty(1.0) == 2000.0
+
+
+@pytest.mark.parametrize("control_period", [0.0, -1.0])
+def test_control_period_must_be_positive(
+    channel: Channel,
+    clock,
+    control_period: float,
+) -> None:
+    """A zero or negative period would silently disable the volume-mode
+    re-trigger guard, so it is rejected at construction.
+    """
+    with pytest.raises(ValueError, match="control_period"):
+        Dispenser(
+            OutputUnit.volume,
+            channel,
+            control_period=control_period,
+            clock=clock,
+        )

@@ -11,6 +11,7 @@ Standard library only - this runs on the Pi.
 from __future__ import annotations
 
 import logging
+import math
 from collections.abc import Callable
 from time import perf_counter
 from typing import TYPE_CHECKING
@@ -87,7 +88,22 @@ class Dispenser:
         clock:
             Monotonic clock, injectable so bolus timing is testable.
 
+        Raises
+        ------
+        ValueError
+            If ``control_period`` is not positive. A zero or negative
+            period would silently disable the volume-mode re-trigger
+            guard (every ``now - self._last_decision`` gap satisfies
+            ``< control_period``), which is exactly the regression the
+            guard exists to prevent.
+
         """
+        if control_period <= 0:
+            error_message = (
+                f"control_period must be positive, got {control_period}"
+            )
+            raise ValueError(error_message)
+
         self.unit = unit
         self.channel = channel
         self.control_period = control_period
@@ -144,10 +160,18 @@ class Dispenser:
         return (0.0, per_period)
 
     def reset(self) -> None:
-        """Forget any delivery in flight. Totals are kept."""
+        """Forget any delivery in flight. Totals are kept.
+
+        Returns nothing, unlike every other off-path here, which returns
+        ``0.0`` for the caller to write through to the PLC. The caller
+        must write 0 to the actuator itself after calling this - no
+        later ``tick()`` will do it, since there is no bolus left to
+        expire.
+        """
         self._accrue(self._clock())
         self._bolus_until = None
         self._current_duty = 0.0
+        self._last_decision = float("-inf")
 
     def _duty_for_flow(self, demand: float) -> float:
         """Invert the calibration line, respecting the pump's usable band."""
@@ -172,14 +196,43 @@ class Dispenser:
         decisions to ``control_period`` is what stops a standing manual
         demand from being dispensed twenty times a second, and it makes
         paired and unpaired actuators behave identically.
+
+        A non-finite demand (``inf``, ``-inf`` or ``nan``) is rejected
+        outright: ``tick()`` compares ``now < self._bolus_until``, and an
+        infinite deadline would never come due, stranding the pump ON.
+        A finite demand beyond what ``demand_limits()`` says one
+        ``control_period`` can deliver is dispensed in full rather than
+        reduced - clamping it would cap every bolus at exactly one
+        ``control_period`` and foreclose a dose legitimately outliving
+        one (the next decision supersedes it instead; see
+        ``test_a_new_decision_supersedes_a_bolus_in_flight``), while
+        buying no safety, since a standing over-demand would just re-arm
+        every period and deliver the same total volume anyway.
         """
         if now - self._last_decision < self.control_period:
             return self._current_duty
         self._last_decision = now
 
+        if not math.isfinite(demand):
+            _logger.warning(
+                "Rejecting non-finite volume demand %s; leaving pump off",
+                demand,
+            )
+            self._bolus_until = None
+            return self._apply(0.0, now)
+
         if demand <= 0:
             self._bolus_until = None
             return self._apply(0.0, now)
+
+        upper = self.demand_limits()[1]
+        if demand > upper:
+            _logger.warning(
+                "Volume demand %s mL exceeds the %.3f mL one "
+                "control_period can deliver; dispensing it in full",
+                demand,
+                upper,
+            )
 
         cal = self.channel.calibration
         seconds = _SECONDS_PER_MINUTE * demand / cal.flow_at(cal.dispense_duty)
