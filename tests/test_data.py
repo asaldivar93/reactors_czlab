@@ -85,7 +85,7 @@ def test_the_baseline_of_these_tests_is_installable() -> None:
 
 
 def test_the_startup_placeholder_is_installable() -> None:
-    """server_info.py builds `Calibration("pump_0")` for every pump.
+    """server_info.py builds a bare `Calibration(<name>)` for every pump.
 
     An authority that refused it would stop duty mode working on a
     never-calibrated pump - over-strict is its own defect.

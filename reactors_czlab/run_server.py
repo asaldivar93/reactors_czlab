@@ -7,6 +7,7 @@ import asyncio
 import logging
 
 from reactors_czlab.core.actuator import PlcActuator, RandomActuator
+from reactors_czlab.core.calibration import load_into
 from reactors_czlab.core.hardware import init_hardware
 from reactors_czlab.core.modbus import ModbusError, ModbusHandler
 from reactors_czlab.core.sensor import (
@@ -67,34 +68,41 @@ def build_reactors(*, simulated: bool = False) -> list[ReactorOpc]:
 
     """
     if simulated:
-        return [
-            ReactorOpc(
-                r,
-                volume=REACTOR_VOLUME,
-                sensors=[
-                    *(
-                        RandomSensor(k, cfg)
-                        for k, cfg in HAMILTON_SENSORS[r].items()
-                    ),
-                    *(
-                        RandomSensor(k, cfg)
-                        for k, cfg in BIOMASS_SENSORS[r].items()
-                    ),
-                ],
-                actuators=[
-                    *(
-                        RandomActuator(k, cfg)
-                        for k, cfg in ANALOG_ACTUATORS[r].items()
-                    ),
-                    *(
-                        RandomActuator(k, cfg)
-                        for k, cfg in MFC_ACTUATORS[r].items()
-                    ),
-                ],
-                period=SAMPLE_PERIOD,
+        reactors = []
+        for r in REACTORS:
+            sensors = [
+                *(
+                    RandomSensor(k, cfg)
+                    for k, cfg in HAMILTON_SENSORS[r].items()
+                ),
+                *(
+                    RandomSensor(k, cfg)
+                    for k, cfg in BIOMASS_SENSORS[r].items()
+                ),
+            ]
+            actuators = [
+                *(
+                    RandomActuator(k, cfg)
+                    for k, cfg in ANALOG_ACTUATORS[r].items()
+                ),
+                *(
+                    RandomActuator(k, cfg)
+                    for k, cfg in MFC_ACTUATORS[r].items()
+                ),
+            ]
+            for actuator in actuators:
+                load_into(actuator.channel)
+
+            reactors.append(
+                ReactorOpc(
+                    r,
+                    volume=REACTOR_VOLUME,
+                    sensors=sensors,
+                    actuators=actuators,
+                    period=SAMPLE_PERIOD,
+                ),
             )
-            for r in REACTORS
-        ]
+        return reactors
 
     import adafruit_tca9548a
     import board
@@ -134,6 +142,10 @@ def build_reactors(*, simulated: bool = False) -> list[ReactorOpc]:
         actuators.extend(
             RandomActuator(k, cfg) for k, cfg in MFC_ACTUATORS[r].items()
         )
+        # Install any stored pump calibration. Explicit, like
+        # init_hardware(): nothing reads the filesystem at import time.
+        for actuator in actuators:
+            load_into(actuator.channel)
 
         reactors.append(
             ReactorOpc(

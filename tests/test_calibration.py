@@ -200,6 +200,18 @@ def test_load_into_ignores_a_channel_with_no_calibration() -> None:
     assert load_into(Channel("pwm1", "pwm")) is False
 
 
+def test_load_into_is_idempotent() -> None:
+    """Startup wiring may run more than once without drifting."""
+    save_calibration(
+        Calibration("R0_pwm0", a=0.01, fitted_at="2026-07-27T10:00:00+00:00"),
+    )
+    channel = Channel("pwm0", "pwm", calibration=Calibration("R0_pwm0"))
+
+    assert load_into(channel) is True
+    assert load_into(channel) is True
+    assert channel.calibration.a == 0.01
+
+
 class _FakeSleep:
     """Records how long the run asked to sleep and advances a clock."""
 
