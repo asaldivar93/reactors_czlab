@@ -5,8 +5,9 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from asyncua import ua
+from asyncua import ua, uamethod
 
+from reactors_czlab.core.calibration import CalibrationRun
 from reactors_czlab.core.data import ControlConfig, ControlMethod, OutputUnit
 
 if TYPE_CHECKING:
@@ -38,6 +39,7 @@ class ActuatorOpc:
         """Initialize the OPC actuator node."""
         self.actuator = actuator
         self.id = actuator.id
+        self.run = CalibrationRun(actuator)
 
     def __repr__(self) -> str:
         """Print actuator id."""
@@ -80,6 +82,8 @@ class ActuatorOpc:
         await self.init_control_node(idx)
         # Start a subscription to the variables in the control
         await self.init_control_subscription(server)
+        # Expose the pump calibration workflow
+        await self.init_calibration_methods(idx)
 
     async def init_control_subscription(self, server: Server) -> None:
         """Create a subscription to the control parameters."""
@@ -265,3 +269,104 @@ class ActuatorOpc:
             varianttype=ua.VariantType.UInt32,
         )
         await self.curr_sensor.set_writable()
+
+    async def init_calibration_methods(self, idx: int) -> None:
+        """Expose the pump calibration workflow on the actuator node.
+
+        Every method answers with a status string; the operator drives the
+        run from a generic OPC client and reads the result off the call.
+        """
+        run = self.run
+
+        @uamethod
+        async def calibrate_point(
+            parent: Node,
+            duty: float,
+            seconds: float,
+        ) -> str:
+            """Run the pump at a duty for a time, then stop it."""
+            return await run.calibrate_point(duty, seconds)
+
+        @uamethod
+        def record_point(parent: Node, volume_ml: float) -> str:
+            """Record the volume measured for the last point."""
+            return run.record_point(volume_ml)
+
+        @uamethod
+        def fit_calibration(parent: Node) -> str:
+            """Fit, store and install the collected points."""
+            return run.fit()
+
+        @uamethod
+        def clear_points(parent: Node) -> str:
+            """Throw the collected points away."""
+            return run.clear_points()
+
+        @uamethod
+        def reload_calibration(parent: Node) -> str:
+            """Re-read the stored calibration from disk."""
+            return run.reload()
+
+        @uamethod
+        def set_duties(
+            parent: Node,
+            min_duty: float,
+            dispense_duty: float,
+        ) -> str:
+            """Adjust the stall floor and the bolus duty without a refit."""
+            return run.set_duties(min_duty, dispense_duty)
+
+        inarg_duty = ua.Argument()
+        inarg_duty.Name = "Duty"
+        inarg_duty.DataType = ua.NodeId(ua.ObjectIds.Float)
+        inarg_duty.Description = ua.LocalizedText(
+            Text="PLC counts to drive the pump at",
+        )
+
+        inarg_seconds = ua.Argument()
+        inarg_seconds.Name = "Seconds"
+        inarg_seconds.DataType = ua.NodeId(ua.ObjectIds.Float)
+        inarg_seconds.Description = ua.LocalizedText(
+            Text="How long to run the pump for",
+        )
+
+        inarg_volume = ua.Argument()
+        inarg_volume.Name = "Volume_ml"
+        inarg_volume.DataType = ua.NodeId(ua.ObjectIds.Float)
+        inarg_volume.Description = ua.LocalizedText(
+            Text="Measured volume delivered by the last point, in mL",
+        )
+
+        inarg_min_duty = ua.Argument()
+        inarg_min_duty.Name = "Min_duty"
+        inarg_min_duty.DataType = ua.NodeId(ua.ObjectIds.Float)
+        inarg_min_duty.Description = ua.LocalizedText(
+            Text="Stall floor: the lowest duty the pump turns at",
+        )
+
+        inarg_dispense = ua.Argument()
+        inarg_dispense.Name = "Dispense_duty"
+        inarg_dispense.DataType = ua.NodeId(ua.ObjectIds.Float)
+        inarg_dispense.Description = ua.LocalizedText(
+            Text="Duty used for volume boluses",
+        )
+
+        outarg = ua.Argument()
+        outarg.Name = "Status"
+        outarg.DataType = ua.NodeId(ua.ObjectIds.String)
+
+        for name, callback, inargs in (
+            ("calibrate_point", calibrate_point, [inarg_duty, inarg_seconds]),
+            ("record_point", record_point, [inarg_volume]),
+            ("fit_calibration", fit_calibration, []),
+            ("clear_points", clear_points, []),
+            ("reload_calibration", reload_calibration, []),
+            ("set_duties", set_duties, [inarg_min_duty, inarg_dispense]),
+        ):
+            await self.node.add_method(
+                idx,
+                f"{self.id}:{name}",
+                callback,
+                inargs,
+                [outarg],
+            )
