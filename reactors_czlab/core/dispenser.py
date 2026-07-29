@@ -129,8 +129,31 @@ class Dispenser:
         return f"Dispenser({self.unit}, {self.total_volume:.3f} mL)"
 
     def duty(self, demand: float) -> float:
-        """Duty counts realising ``demand``, and the new pump state."""
+        """Duty counts realising ``demand``, and the new pump state.
+
+        A non-finite demand (``inf``, ``-inf`` or ``nan``) is rejected
+        here, before the unit is even looked at, because each unit turns
+        one into a different failure and none of them is survivable:
+        volume computes a deadline ``tick()``'s ``now <
+        self._bolus_until`` can never reach, stranding the pump ON; flow
+        inverts it to a non-finite duty (``nan < min_duty`` and ``min(nan,
+        max_duty)`` both keep the ``nan``); and duty passes it straight
+        through. The last two end at ``int(value)`` in
+        ``PlcActuator.write``, which raises ``ValueError`` on a ``nan``
+        out of the sampling loop and takes every reactor on the server
+        down. Rejecting once at the single door every demand comes
+        through is what keeps the three units from needing three
+        separate guards that can drift apart.
+        """
         now = self._clock()
+        if not math.isfinite(demand):
+            _logger.warning(
+                "Rejecting non-finite %s demand %s; leaving pump off",
+                self.unit,
+                demand,
+            )
+            self._bolus_until = None
+            return self._apply(0.0, now)
         if self.unit is OutputUnit.duty:
             return self._apply(demand, now)
         if self.unit is OutputUnit.flow:
@@ -161,10 +184,11 @@ class Dispenser:
         cal = self.channel.calibration
         if self.unit is OutputUnit.flow:
             return (0.0, cal.flow_at(cal.max_duty))
+        # The same capped duty _start_bolus writes, so the limit
+        # reported is the one the bolus would actually be run at.
+        duty = min(cal.dispense_duty, cal.max_duty)
         per_period = (
-            cal.flow_at(cal.dispense_duty)
-            * self.control_period
-            / _SECONDS_PER_MINUTE
+            cal.flow_at(duty) * self.control_period / _SECONDS_PER_MINUTE
         )
         return (0.0, per_period)
 
@@ -206,9 +230,9 @@ class Dispenser:
         demand from being dispensed twenty times a second, and it makes
         paired and unpaired actuators behave identically.
 
-        A non-finite demand (``inf``, ``-inf`` or ``nan``) is rejected
-        outright: ``tick()`` compares ``now < self._bolus_until``, and an
-        infinite deadline would never come due, stranding the pump ON.
+        A non-finite demand never reaches here - ``duty()`` rejects one
+        for every unit before dispatching, since an infinite deadline
+        would never come due and would strand the pump ON.
         A finite demand beyond what ``demand_limits()`` says one
         ``control_period`` can deliver is dispensed in full rather than
         reduced - clamping it would cap every bolus at exactly one
@@ -233,14 +257,6 @@ class Dispenser:
         if now - self._last_decision < self.control_period:
             return self._current_duty
         self._last_decision = now
-
-        if not math.isfinite(demand):
-            _logger.warning(
-                "Rejecting non-finite volume demand %s; leaving pump off",
-                demand,
-            )
-            self._bolus_until = None
-            return self._apply(0.0, now)
 
         if demand <= 0:
             self._bolus_until = None
@@ -274,9 +290,24 @@ class Dispenser:
         Integrating the *actual* duty over the *actual* elapsed time, rather
         than summing demanded volumes, keeps the total right when a
         delivery is superseded, clipped or interrupted.
+
+        The accrual never goes negative. ``flow_at()`` reads negative
+        below the line's zero crossing, and ``duty`` mode - the default
+        unit on every calibrated pump - has no floor stopping a
+        controller from sitting there: ``flow`` mode raises a converted
+        duty to ``min_duty`` and ``volume`` mode only ever writes a
+        ``dispense_duty`` that ``installable_reason()`` has checked
+        delivers positive flow, but a manual duty of 100 on a pump that
+        stalls below 500 is an ordinary thing to command. The pump is
+        not turning there, so it delivers nothing; a meter that counted
+        down would be worse than one that stalled, since it hides
+        earlier real dosing.
         """
         cal = self.channel.calibration
         if cal is not None and cal.is_fitted and self._current_duty > 0:
+            flow = cal.flow_at(self._current_duty)
+            if self._current_duty < cal.min_duty or flow < 0:
+                flow = 0.0
             elapsed = (now - self._since) / _SECONDS_PER_MINUTE
-            self.total_volume += cal.flow_at(self._current_duty) * elapsed
+            self.total_volume += flow * elapsed
         self._since = now

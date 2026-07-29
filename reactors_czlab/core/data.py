@@ -35,6 +35,28 @@ MAX_BOLUS_SECONDS = 24 * 60 * 60.0
 #: and could never have produced an honest fit in the first place.
 MIN_DISPENSE_FLOW = 60.0 * REFERENCE_BOLUS_ML / MAX_BOLUS_SECONDS
 
+#: ``float("inf")``, kept module level so ``_is_finite`` costs one
+#: comparison chain. This module imports nothing outside ``dataclasses``
+#: and ``enum`` - the Pi install and the PC install have disjoint
+#: dependency sets and both carry this file - so ``math.isfinite`` is not
+#: available here.
+_INFINITY = float("inf")
+
+#: Calibration fields the pump path does arithmetic with. A non-finite
+#: value in any of them poisons every comparison downstream of it.
+_DRIVING_FIELDS = ("a", "b", "min_duty", "max_duty", "dispense_duty")
+
+
+def _is_finite(value: float) -> bool:
+    """Whether ``value`` is a real number, not ``nan``/``inf``/``-inf``.
+
+    ``math.isfinite`` without ``math`` (see ``_INFINITY``). The two
+    infinities fail the chain outright; ``nan`` fails it because every
+    comparison against ``nan`` is false, which is the same property that
+    makes a ``nan`` invisible to an ordinary range check.
+    """
+    return -_INFINITY < value < _INFINITY
+
 
 class PlcOutput(StrEnum):
     """Kind of device behind a PhysicalInfo/Channel.
@@ -165,11 +187,21 @@ class Calibration:
         of the flag.
 
         What an installed calibration therefore guarantees to the code
-        that drives a pump with it: ``0 <= min_duty <= dispense_duty <=
-        max_duty <= MAX_OUTPUT``, and a flow at the dispense duty of at
-        least ``MIN_DISPENSE_FLOW``. That is what makes every duty
-        ``Dispenser`` writes in-scale, and every bolus deadline it
-        computes both finite and reachable.
+        that drives a pump with it: every field is a finite number, ``0
+        <= min_duty <= dispense_duty <= max_duty <= MAX_OUTPUT``, and a
+        flow at the dispense duty of at least ``MIN_DISPENSE_FLOW``.
+        That is what makes every duty ``Dispenser`` writes in-scale, and
+        every bolus deadline it computes both finite and reachable.
+
+        The finiteness check has to come first, and cannot be expressed
+        as one more range comparison: ``nan`` satisfies none of the
+        branches below (``nan <= 0`` is false, and so is every other
+        comparison), so a ``nan`` slope walks through all ten of them and
+        comes out *installable*. It then survives ``json.dumps`` as the
+        literal ``NaN``, reloads at every boot, disables a PID's upper
+        clamp (``min(value, nan)`` returns ``value``) and finally reaches
+        ``int(nan)`` on the Pi, which raises out of the sampling loop and
+        takes every reactor on the server down with it.
 
         Every branch states the consequence that actually follows from
         the input that triggered it. A guard whose refusal message
@@ -190,6 +222,20 @@ class Calibration:
             verbatim.
 
         """
+        for name in _DRIVING_FIELDS:
+            value = getattr(self, name)
+            if not _is_finite(value):
+                return (
+                    f"{name} is {value}, not a finite number; no range "
+                    "check here or clamp in a controller can catch it, "
+                    "and the duty it produces cannot be written to a pin"
+                )
+        if not _is_finite(self.r2):
+            return (
+                f"fit quality r2 is {self.r2}, not a finite number; a "
+                "fit that could not score itself is not one to drive a "
+                "pump with"
+            )
         if self.a <= 0:
             return (
                 f"slope {self.a:.6g} is not positive; a higher duty "

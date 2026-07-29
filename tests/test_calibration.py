@@ -1402,3 +1402,199 @@ async def test_reload_refuses_a_line_too_flat_to_finish_a_bolus(
     remaining = actuator.dispenser._bolus_until - perf_counter()
     assert 0 < remaining < MAX_BOLUS_SECONDS
     assert remaining == pytest.approx(3.0, abs=0.5)
+
+
+@pytest.mark.parametrize(
+    "volume",
+    [float("inf"), float("-inf"), float("nan"), -1.0],
+)
+async def test_record_point_refuses_an_unmeasurable_volume(
+    make_calibrated_actuator,
+    clock,
+    volume: float,
+) -> None:
+    """The operator's measured volume is an OPC Float, so validate it.
+
+    Regression: `record_point()` validated nothing. A `Float` from a
+    generic OPC client can carry `inf` or `nan`, and the whole path
+    below it is comparisons that a NaN walks through: `fit_line`'s
+    `a <= 0`, all ten branches of `installable_reason()`, and
+    `load_calibration`'s `a <= 0`. One bad argument therefore produced
+    a NaN line, `json.dumps` wrote it out as the literal `NaN`, it
+    reloaded cleanly at every boot, and the duty it converted reached
+    `int(nan)` on the Pi - a ValueError out of the sampling loop, for
+    all three reactors, re-armed by the file on every restart.
+    """
+    actuator = make_calibrated_actuator()
+    run = CalibrationRun(actuator, clock=clock, sleep=_FakeSleep(clock))
+    await run.calibrate_point(2000.0, 60.0)
+
+    result = run.record_point(volume)
+
+    assert "volume must be" in result
+    assert run.points == []
+    # The pending point survives, so the operator can retype the number
+    # without running the pump again.
+    assert run.record_point(20.0).startswith("duty 2000.0")
+
+
+async def test_record_point_refuses_a_volume_that_overflows_the_flow(
+    make_calibrated_actuator,
+    clock,
+) -> None:
+    """A finite volume can still divide out to a non-finite flow.
+
+    The argument check alone is not enough: 1e308 mL over the shortest
+    run the procedure allows overflows to `inf` in
+    `volume / (elapsed / 60)`, which is the same poison by another
+    route.
+    """
+    actuator = make_calibrated_actuator()
+    run = CalibrationRun(actuator, clock=clock, sleep=_FakeSleep(clock))
+    await run.calibrate_point(2000.0, 1.0)
+
+    result = run.record_point(1e308)
+
+    assert "not a flow that can be represented" in result
+    assert run.points == []
+
+
+async def test_record_point_accepts_a_zero_volume(
+    make_calibrated_actuator,
+    clock,
+) -> None:
+    """Zero is a measurement, not a bad argument.
+
+    A point that delivered nothing is direct evidence of the stall
+    floor, which `_stall_floor()` reads off the collected points, so
+    the finiteness check must not be a positivity check.
+    """
+    actuator = make_calibrated_actuator()
+    run = CalibrationRun(actuator, clock=clock, sleep=_FakeSleep(clock))
+    await run.calibrate_point(300.0, 60.0)
+
+    run.record_point(0.0)
+
+    assert run.points == [(300.0, 0.0)]
+
+
+async def test_a_non_finite_calibration_never_reaches_the_channel(
+    make_calibrated_actuator,
+    clock,
+) -> None:
+    """The authority refuses a NaN file at both install sites.
+
+    The second layer under `record_point()`'s validation: a file
+    hand-edited to hold `NaN` - which is exactly what the old
+    `json.dumps` wrote - must not install through `reload()` or through
+    `load_into()` at startup.
+    """
+    actuator = make_calibrated_actuator()
+    old_cal = actuator.channel.calibration
+    calibration_path("R0_pwm0").write_text(
+        json.dumps(
+            {
+                "file": "R0_pwm0",
+                "a": float("nan"),
+                "b": float("nan"),
+                "min_duty": 0.0,
+                "max_duty": 4000.0,
+                "dispense_duty": 2000.0,
+                "points": [],
+                "fitted_at": "2026-07-27T10:00:00+00:00",
+                "r2": 1.0,
+            },
+        ),
+        encoding="utf-8",
+    )
+    run = CalibrationRun(actuator, clock=clock)
+
+    result = run.reload()
+
+    assert "finite" in result
+    assert actuator.channel.calibration is old_cal
+    assert load_into(actuator.channel) is False
+    assert actuator.channel.calibration is old_cal
+
+
+def test_reload_refuses_an_unfitted_calibration_over_a_fitted_one(
+    make_calibrated_actuator,
+    clock,
+) -> None:
+    """An unfitted line silently stops the volume meter, so refuse it.
+
+    Regression: `Dispenser._accrue()` is the only consumer that gates
+    on `fitted_at`; every other one judges the numbers. An unfitted but
+    otherwise installable calibration therefore left the pump dosing
+    exactly as before while `total_volume` stopped counting - a pump
+    that appears not to be dosing while it doses. The gate cannot be
+    dropped from `_accrue()` instead: the `server_info.py` placeholder
+    is `a=1.0, b=0`, which would report 2000 mL/min at the dispense
+    duty.
+    """
+    actuator = make_calibrated_actuator()
+    fitted = actuator.channel.calibration
+    save_calibration(
+        Calibration(
+            "R0_pwm0",
+            a=0.01,
+            b=0.0,
+            min_duty=400.0,
+            max_duty=4000.0,
+            dispense_duty=2000.0,
+            fitted_at="",  # installable on its numbers, never fitted
+        ),
+    )
+    run = CalibrationRun(actuator, clock=clock)
+
+    result = run.reload()
+
+    assert "never been fitted" in result
+    assert actuator.channel.calibration is fitted
+
+
+def test_load_into_refuses_an_unfitted_calibration_over_a_fitted_one(
+    calibration: Calibration,
+) -> None:
+    """The startup path asks the same replacement question reload does.
+
+    Both install sites go through `replacement_reason()`, so a restart
+    cannot undo what `reload()` refused.
+    """
+    channel = Channel("pwm0", "pwm", calibration=calibration)
+    save_calibration(
+        Calibration(
+            "R0_pwm0",
+            a=0.01,
+            min_duty=400.0,
+            max_duty=4000.0,
+            dispense_duty=2000.0,
+            fitted_at="",
+        ),
+    )
+
+    assert load_into(channel) is False
+    assert channel.calibration is calibration
+
+
+def test_load_into_installs_an_unfitted_file_over_a_placeholder() -> None:
+    """The refusal is about replacing a fit, not about unfitted files.
+
+    A channel holding the `server_info.py` placeholder has no fit to
+    lose, so a stored unfitted calibration - an operator's hand-written
+    duty band, say - still installs.
+    """
+    channel = Channel("pwm0", "pwm", calibration=Calibration("R0_pwm0"))
+    save_calibration(
+        Calibration(
+            "R0_pwm0",
+            a=0.01,
+            min_duty=400.0,
+            max_duty=4000.0,
+            dispense_duty=2000.0,
+            fitted_at="",
+        ),
+    )
+
+    assert load_into(channel) is True
+    assert channel.calibration.min_duty == 400.0

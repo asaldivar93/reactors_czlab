@@ -262,3 +262,50 @@ def test_a_legitimately_slow_pump_is_still_installable() -> None:
     assert slow.flow_at(1000.0) > MIN_DISPENSE_FLOW
     assert slow.installable_reason() is None
     assert barely.installable_reason() is None
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["a", "b", "min_duty", "max_duty", "dispense_duty", "r2"],
+)
+@pytest.mark.parametrize(
+    "bad",
+    [float("nan"), float("inf"), float("-inf")],
+)
+def test_installable_reason_rejects_a_non_finite_field(
+    field: str,
+    bad: float,
+) -> None:
+    """A non-finite field is refused before any comparison is made.
+
+    Regression: every one of the ten branches below the finiteness
+    check is a comparison, and a comparison against NaN is False, so a
+    NaN slope walked through all of them and came out *installable*.
+    `CalibrationRun.record_point()` accepted an operator's `inf` from a
+    generic OPC client, `fit_line`'s `a <= 0` did not catch the NaN
+    slope it produced, `json.dumps` wrote the literal `NaN`, and
+    `load_calibration`'s `a <= 0` reloaded it at every boot. The duty
+    that came out reached `int(nan)` in `PlcActuator.write`, whose
+    ValueError propagates out of the sampling loop and stops every
+    reactor on the server.
+    """
+    cal = _cal(**{field: bad})
+
+    reason = cal.installable_reason()
+
+    assert reason is not None
+    assert "finite" in reason
+    assert field in reason
+
+
+def test_a_non_finite_field_is_refused_before_the_comparisons() -> None:
+    """The finiteness check has to come first, not last.
+
+    A NaN slope is also a non-positive slope as far as the operator is
+    concerned, but `nan <= 0` is False - so if the ordering ever flips,
+    the branch that would catch it cannot.
+    """
+    cal = _cal(a=float("nan"))
+
+    assert (cal.a <= 0) is False
+    assert "not a finite number" in cal.installable_reason()

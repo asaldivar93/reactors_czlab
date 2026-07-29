@@ -243,3 +243,54 @@ def test_a_limit_change_replaces_the_controller(
     wide = factory.create_control(config, max_val=4095.0)
 
     assert narrow != wide
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [float("nan"), float("inf"), float("-inf")],
+)
+def test_rejects_a_non_finite_config_value(
+    factory: ControlFactory,
+    bad: float,
+) -> None:
+    """A non-finite parameter is not a number a controller can use.
+
+    `_as_float` validated the type and stopped there, so a NaN from an
+    OPC `Float` was accepted by every controller. NaN does not fail
+    loudly - every comparison against it is false, so it disables the
+    check it appears in - and the failures differ per field: a NaN
+    `time_on` leaves `elapsed > self._interval` false forever, so the
+    timer never leaves the ON phase it starts in and the pump it drives
+    never turns off.
+    """
+    with pytest.raises(TypeError, match="finite"):
+        factory.create_control(
+            ControlConfig(ControlMethod.manual, value=bad),
+        )
+    with pytest.raises(TypeError, match="finite"):
+        factory.create_control(
+            ControlConfig(ControlMethod.timer, time_on=bad, time_off=1.0),
+        )
+
+
+def test_a_non_finite_config_leaves_the_running_controller_alone(
+    make_calibrated_actuator,
+) -> None:
+    """The TypeError lands on a path set_control_config already handles.
+
+    The actuator logs the offending config and keeps the controller it
+    was running, rather than propagating out of the OPC datachange
+    callback.
+    """
+    actuator = make_calibrated_actuator()
+    actuator.set_control_config(
+        ControlConfig(ControlMethod.manual, value=1500.0),
+    )
+    running = actuator.controller
+
+    actuator.set_control_config(
+        ControlConfig(ControlMethod.manual, value=float("nan")),
+    )
+
+    assert actuator.controller is running
+    assert actuator.controller.value == 1500.0

@@ -180,6 +180,47 @@ def load_calibration(name: str) -> Calibration | None:
     return cal
 
 
+def replacement_reason(
+    current: Calibration,
+    stored: Calibration,
+) -> str | None:
+    """Why ``stored`` may not replace ``current`` on a channel.
+
+    A different question from ``Calibration.installable_reason()``, and
+    deliberately kept out of it. That one asks *is this calibration safe
+    to drive a pump with at all*, judges nothing but the numbers, and is
+    the single authority every install site defers to. This one asks
+    *may this replace what is already there*, which only has an answer
+    relative to the calibration being replaced - so it lives at the two
+    sites that replace one, ``load_into()`` and ``CalibrationRun.reload()``,
+    and is written once here so those two cannot drift apart.
+
+    The one case it refuses: an unfitted line landing on top of a fitted
+    one. ``Dispenser._accrue()`` is the only consumer that gates on
+    ``fitted_at`` - every other one judges the numbers - so an unfitted
+    calibration leaves the pump dosing exactly as before while
+    ``total_volume`` silently stops counting. The gate cannot simply be
+    dropped from ``_accrue`` instead: the placeholder ``server_info.py``
+    builds for an uncalibrated pump is ``a=1.0, b=0``, which would report
+    ``flow_at(2000) = 2000`` mL/min.
+
+    Returns
+    -------
+    str or None
+        ``None`` when the replacement is allowed, otherwise a
+        human-readable reason, safe to show the operator verbatim.
+
+    """
+    if current.is_fitted and not stored.is_fitted:
+        return (
+            f"the stored calibration for {current.file} has never been "
+            "fitted, and a fitted one is installed; installing it would "
+            "leave the pump dosing while the delivered volume stopped "
+            "being counted"
+        )
+    return None
+
+
 def load_into(channel: Channel) -> bool:
     """Install the stored calibration for ``channel``, if there is one.
 
@@ -199,7 +240,10 @@ def load_into(channel: Channel) -> bool:
     if stored is None:
         return False
 
-    reason = stored.installable_reason()
+    reason = stored.installable_reason() or replacement_reason(
+        channel.calibration,
+        stored,
+    )
     if reason is not None:
         _logger.warning(
             "Stored calibration for %s is unusable, keeping the "
@@ -294,13 +338,42 @@ class CalibrationRun:
         )
 
     def record_point(self, volume_ml: float) -> str:
-        """Attach the operator's measured volume to the last run."""
+        """Attach the operator's measured volume to the last run.
+
+        The volume arrives from a generic OPC client as a ``Float``, so
+        it can be ``inf`` or ``nan``, and neither is caught downstream:
+        ``fit_line``'s ``a <= 0`` and every branch of
+        ``Calibration.installable_reason()`` are comparisons, and a
+        comparison against ``nan`` is false. A single bad argument
+        therefore used to reach the calibration file and reload from it
+        at every boot. Zero is accepted - a point that measured no
+        volume is direct evidence of the stall floor, which
+        ``_stall_floor`` reads.
+
+        The derived flow is checked as well as the argument: a finite
+        but enormous volume over the shortest allowed run still
+        overflows to ``inf`` in the division.
+
+        A refused measurement leaves the pending point in place, so the
+        operator can retype the number without re-running the pump.
+        """
         if self._pending is None:
             return "no point is waiting for a measurement"
+        if not 0 <= volume_ml < float("inf"):
+            return (
+                "volume must be a finite number of mL, zero or more, "
+                f"got {volume_ml}"
+            )
 
         duty, elapsed = self._pending
-        self._pending = None
         flow = volume_ml / (elapsed / 60.0)
+        if not 0 <= flow < float("inf"):
+            return (
+                f"volume {volume_ml} mL over {elapsed:.3f}s is not a "
+                "flow that can be represented; measure a smaller volume"
+            )
+
+        self._pending = None
         self.points.append((duty, flow))
         return (
             f"duty {duty} -> {flow:.4f} mL/min "
@@ -368,8 +441,14 @@ class CalibrationRun:
         # place that decides whether the rest of the numbers are safe to
         # drive a pump with - not gated on is_fitted, since a hand-edited
         # file can set fitted_at to "" while leaving dangerous numbers in
-        # the rest of the fields.
-        reason = stored.installable_reason()
+        # the rest of the fields. replacement_reason() then asks the one
+        # question that does depend on fitted_at, and that
+        # installable_reason() cannot answer because it never sees what
+        # is being replaced.
+        reason = stored.installable_reason() or replacement_reason(
+            current,
+            stored,
+        )
         if reason is not None:
             return (
                 f"stored calibration for {current.file} is unusable: "

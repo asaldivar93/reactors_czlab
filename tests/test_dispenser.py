@@ -442,3 +442,108 @@ def test_control_period_must_be_positive(
             control_period=control_period,
             clock=clock,
         )
+
+
+def test_duty_below_the_stall_floor_does_not_run_the_meter_backwards(
+    channel: Channel,
+    clock,
+) -> None:
+    """A stalled pump delivers nothing; it does not un-deliver.
+
+    Regression: `flow_at()` reads negative below the line's zero
+    crossing, and duty mode - the default unit on every calibrated pump
+    - has no floor keeping a controller out of that region, unlike flow
+    mode (which raises a converted duty to `min_duty`) and volume mode
+    (whose dispense duty `installable_reason()` has checked). A manual
+    duty of 100 counts on a pump that stalls below 500 counted `-4`
+    mL/min down, without bound, while the pump sat still.
+    """
+    channel.calibration.b = -5.0  # flow = 0.01 * duty - 5, zero at 500
+    channel.calibration.min_duty = 500.0
+    disp = Dispenser(OutputUnit.duty, channel, clock=clock)
+    disp.duty(100.0)
+
+    clock.advance(360.0)
+    disp.tick()
+
+    assert channel.calibration.flow_at(100.0) == pytest.approx(-4.0)
+    assert disp.total_volume == 0.0
+
+
+def test_a_stalled_duty_still_accrues_once_it_is_above_the_floor(
+    channel: Channel,
+    clock,
+) -> None:
+    """The floor must not swallow a duty the pump really does turn at.
+
+    Guards the fix above against being a blanket "never accrue in duty
+    mode": the same channel, one count above the stall floor, still
+    counts what it delivers.
+    """
+    channel.calibration.b = -5.0
+    channel.calibration.min_duty = 500.0
+    disp = Dispenser(OutputUnit.duty, channel, clock=clock)
+    disp.duty(1500.0)  # 10 mL/min
+
+    clock.advance(60.0)
+    disp.tick()
+
+    assert disp.total_volume == pytest.approx(10.0)
+
+
+def test_volume_demand_limits_use_the_capped_dispense_duty(
+    channel: Channel,
+    clock,
+) -> None:
+    """The limit reported must be for the duty a bolus is really run at.
+
+    `_start_bolus` writes `min(dispense_duty, max_duty)`; before this,
+    `demand_limits()` read the raw `dispense_duty`, so a calibration
+    mutated in place after installation had a controller clamped to a
+    per-period volume the pump was never going to deliver.
+    """
+    channel.calibration.dispense_duty = 6000.0  # above the 4000 ceiling
+    disp = Dispenser(
+        OutputUnit.volume,
+        channel,
+        control_period=60.0,
+        clock=clock,
+    )
+
+    # 4000 counts is 40 mL/min, so 40 mL in the 60 s period - not the
+    # 60 mL the uncapped 6000 counts would suggest.
+    assert disp.demand_limits() == (0.0, pytest.approx(40.0))
+
+
+@pytest.mark.parametrize(
+    "unit",
+    [OutputUnit.duty, OutputUnit.flow, OutputUnit.volume],
+)
+@pytest.mark.parametrize(
+    "demand",
+    [float("inf"), float("-inf"), float("nan")],
+)
+def test_a_non_finite_demand_is_refused_in_every_unit(
+    channel: Channel,
+    clock,
+    unit: OutputUnit,
+    demand: float,
+) -> None:
+    """No unit may pass a non-finite demand through to the pin.
+
+    Regression: the rejection lived inside `_start_bolus`, so only
+    volume mode had it. Duty mode passed a NaN straight through, and
+    flow mode kept it (`duty_for(nan)` is NaN, `nan < min_duty` is
+    False, and `min(nan, max_duty)` returns the NaN). Both end at
+    `int(value)` in `PlcActuator.write`, whose ValueError propagates
+    out of `write_output`, out of `update_paired_actuators` and stops
+    the sampling loop for every reactor the server owns.
+    """
+    disp = Dispenser(unit, channel, control_period=10.0, clock=clock)
+
+    assert disp.duty(demand) == 0.0
+    assert disp._current_duty == 0.0
+
+    clock.advance(1e6)
+    assert disp.tick() is None
+    assert disp._current_duty == 0.0
