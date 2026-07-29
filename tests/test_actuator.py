@@ -224,6 +224,87 @@ def test_calibrating_freezes_the_dispensers_clock(
     assert actuator.dispenser.total_volume == pytest.approx(0.0)
 
 
+def test_calibrating_blocks_a_decision(
+    make_calibrated_actuator,
+    monkeypatch,
+) -> None:
+    """write_output() must not drive a pump a calibration run owns.
+
+    Regression: mutation testing showed the suite stayed green with
+    ``if self.calibrating: return`` deleted from ``write_output()`` -
+    the exact twin of the ``tick()`` guard that
+    ``test_calibrating_blocks_a_bolus_in_flight`` pins. Both arms of
+    the interlock now have a test; without this one, a calibration
+    point's own duty could be overwritten mid-measurement by the
+    sampling loop, silently corrupting the fit that follows.
+    """
+    actuator = make_calibrated_actuator()
+    actuator.set_control_config(
+        ControlConfig(ControlMethod.manual, value=2000),
+    )
+    actuator.calibrating = True
+    writes = []
+    monkeypatch.setattr(actuator, "write", writes.append)
+
+    actuator.write_output(0)
+
+    assert writes == []
+
+
+def test_a_unit_swap_stops_a_bolus_in_flight(
+    make_calibrated_actuator,
+    clock,
+) -> None:
+    """Changing the output unit mid-bolus must turn the pump off.
+
+    Regression: the swap called ``Dispenser.reset()``, which discards
+    the bolus deadline, but never honoured that method's "the caller
+    must write 0" contract - the other two callers, ``Reactor.stop()``
+    and ``CalibrationRun.calibrate_point()``, do. The pump was left at
+    the dispense duty with nothing that would ever stop it: the new
+    dispenser has no deadline to expire and, in duty or flow mode, its
+    ``tick()`` returns ``None`` forever. Only the next successful
+    ``write_output()`` could clear it, and ``write_output()`` returns
+    early for as long as the reference sensor reads ``ERROR_VALUE`` -
+    so on a failed probe the pump ran unbounded, from one ordinary
+    operator write of ``output_unit``.
+    """
+    actuator = make_calibrated_actuator()
+    actuator.dispenser = Dispenser(
+        OutputUnit.volume,
+        actuator.channel,
+        actuator.control_period,
+        clock=clock,
+    )
+    actuator.set_control_config(
+        ControlConfig(
+            ControlMethod.manual,
+            value=1.0,
+            output_unit=OutputUnit.volume,
+        ),
+    )
+    actuator.write_output(0)  # arms a 3 s bolus at 2000 counts
+    assert actuator.channel.value == 2000
+
+    actuator.set_control_config(
+        ControlConfig(ControlMethod.manual, value=0),
+    )
+
+    assert actuator.channel.value == 0
+    # old_value has to follow, or the next decision is compared against
+    # a duty the pin is no longer at.
+    assert actuator.channel.old_value == 0
+
+    # A dead probe holds write_output() off indefinitely; nothing may
+    # bring the pump back up on its own.
+    for _ in range(200):
+        clock.advance(1.0)
+        actuator.write_output(ERROR_VALUE)
+        actuator.tick()
+
+    assert actuator.channel.value == 0
+
+
 def test_control_period_rejects_a_non_positive_period(
     actuator: RandomActuator,
 ) -> None:

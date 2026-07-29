@@ -99,6 +99,16 @@ class Actuator(ABC):
         ``Dispenser.reset()`` banks whatever was legitimately in flight
         and re-zeroes the clock, so neither edge can span a calibration
         run.
+
+        That ``reset()`` also throws away any bolus deadline, and this
+        setter deliberately does not write 0 afterwards - the caller
+        owns the pin across the whole interlock. ``CalibrationRun.
+        calibrate_point()`` is the only caller, and it writes its own
+        duty immediately after raising the flag and 0 in its ``finally``
+        before lowering it. A future caller that raises the flag without
+        taking the pin over would strand the pump at whatever duty was
+        running, exactly as the unit swap in ``set_control_config()``
+        used to.
         """
         if calibrating != self._calibrating:
             self.dispenser.reset()
@@ -187,6 +197,15 @@ class Actuator(ABC):
             # in flight before reading its total - otherwise the last
             # partial accrual interval is silently dropped on the swap.
             self.dispenser.reset()
+            # reset() throws away the bolus deadline, so nothing is left
+            # that would ever end the bolus: the incoming dispenser has
+            # no deadline to expire, and in duty/flow mode its tick()
+            # returns None forever. Stopping the pump here is the whole
+            # of Dispenser.reset()'s "the caller must write 0" contract.
+            # Going through _write_if_changed keeps channel.old_value in
+            # step, so the next decision is compared against what the
+            # pin is really at.
+            self._write_if_changed(0.0)
             # The total records the physical pump, not the configuration.
             dispenser.total_volume = self.dispenser.total_volume
 
