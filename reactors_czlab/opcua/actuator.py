@@ -46,7 +46,17 @@ class ActuatorOpc:
         return f"ActuatorOpc(id: {self.actuator.id})"
 
     async def update_value(self) -> None:
-        """Publish the actuator output and pump data if they changed."""
+        """Publish the actuator output and the pump data.
+
+        Only ``curr_value`` is change-gated: it is the one variable with
+        a cheap comparison already to hand, ``channel.old_value``, which
+        is what the actuator last pushed to the hardware. The pump
+        variables are rewritten unconditionally on every sample, and
+        asyncua notifies subscribers of a write whether or not the value
+        moved, so ``total_volume`` lands in the ``data`` table once per
+        sampling period - a sampled series of a monotone counter, which
+        is what a delivered-volume trace should be.
+        """
         published = await self.curr_value.get_value()
         # old_value is what write_output() last pushed to the hardware.
         current = self.actuator.channel.old_value
