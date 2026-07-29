@@ -205,7 +205,14 @@ class Actuator(ABC):
             # Going through _write_if_changed keeps channel.old_value in
             # step, so the next decision is compared against what the
             # pin is really at.
-            self._write_if_changed(0.0)
+            #
+            # But not while a calibration run owns the pump: an OPC
+            # output_unit write mid-run would otherwise zero the pump
+            # under the run's feet, and the run would still report the
+            # requested duration - a silently wrong calibration point.
+            # calibrate_point()'s own finally writes 0 when the run ends.
+            if not self.calibrating:
+                self._write_if_changed(0.0)
             # The total records the physical pump, not the configuration.
             dispenser.total_volume = self.dispenser.total_volume
 

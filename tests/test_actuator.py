@@ -305,6 +305,55 @@ def test_a_unit_swap_stops_a_bolus_in_flight(
     assert actuator.channel.value == 0
 
 
+def test_a_unit_swap_does_not_disturb_a_calibration_run(
+    make_calibrated_actuator,
+    clock,
+    monkeypatch,
+) -> None:
+    """An OPC output_unit write mid-calibration must not touch the pin.
+
+    Regression: the unit-swap write-0 added to stop a bolus (see
+    ``test_a_unit_swap_stops_a_bolus_in_flight``) was the one
+    pin-writing path in the class not guarded on ``calibrating`` -
+    ``write_output()`` and ``tick()`` both return early while a
+    calibration run owns the pump. A run drives the pump directly, so
+    an operator ``output_unit`` write routed through
+    ``set_control_config()`` would zero the pump under the run's feet.
+    The run still reports its requested duration, and the operator
+    records the shortened volume against the intended duty - a silently
+    wrong calibration point that then fits cleanly. ``calibrate_point()``'s
+    own ``finally`` writes 0 when the run genuinely ends.
+    """
+    actuator = make_calibrated_actuator()
+    actuator.dispenser = Dispenser(
+        OutputUnit.volume,
+        actuator.channel,
+        actuator.control_period,
+        clock=clock,
+    )
+    actuator.set_control_config(
+        ControlConfig(
+            ControlMethod.manual,
+            value=1.0,
+            output_unit=OutputUnit.volume,
+        ),
+    )
+    actuator.write_output(0)  # the pump is up at the dispense duty
+    assert actuator.channel.value == 2000
+
+    actuator.calibrating = True
+    writes = []
+    monkeypatch.setattr(actuator, "write", writes.append)
+
+    # A real unit change, so the swap branch runs and reaches the
+    # write-0 that must now be held off while calibrating.
+    actuator.set_control_config(
+        ControlConfig(ControlMethod.manual, value=0),
+    )
+
+    assert writes == []
+
+
 def test_control_period_rejects_a_non_positive_period(
     actuator: RandomActuator,
 ) -> None:
