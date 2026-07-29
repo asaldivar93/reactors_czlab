@@ -9,6 +9,7 @@ apart from "the timer toggled since the last comparison".
 from __future__ import annotations
 
 import logging
+import math
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from time import perf_counter
@@ -25,13 +26,37 @@ _logger = logging.getLogger("server.control")
 
 
 def _as_float(name: str, value: object) -> float:
-    """Validate that a config value is a real number and widen it to float."""
+    """Validate that a config value is a real number and widen it to float.
+
+    ``inf`` and ``nan`` are not real numbers either, and they do not
+    fail loudly further down - every comparison against a ``nan`` is
+    false, so it disables the check it appears in instead of tripping
+    it. A ``time_on`` of ``nan`` leaves ``elapsed > self._interval``
+    false forever, so ``_TimerControl`` never leaves the ON phase it
+    starts in and the pump it drives never turns off. All of these
+    arrive as an OPC ``Float`` an operator types into a generic client.
+
+    Raises
+    ------
+    TypeError
+        If ``value`` is not a number, or is not finite. The type is
+        deliberate rather than ``ValueError``:
+        ``Actuator.set_control_config()`` already catches ``TypeError``
+        from ``ControlFactory``, logs the offending config and keeps the
+        controller that is running, which is exactly the handling a
+        rejected config needs.
+
+    """
     if isinstance(value, bool) or not isinstance(value, int | float):
         error_message = (
             f"{name} must be a number, got {type(value).__name__}: {value!r}"
         )
         raise TypeError(error_message)
-    return float(value)
+    number = float(value)
+    if not math.isfinite(number):
+        error_message = f"{name} must be a finite number, got {number}"
+        raise TypeError(error_message)
+    return number
 
 
 @dataclass(kw_only=True)
@@ -58,6 +83,16 @@ class _Control(ABC):
     def clamp(self, value: float) -> float:
         """Constrain a value to the output range of the actuator."""
         return max(self.min_val, min(value, self.max_val))
+
+    def refresh_derived_limits(self) -> None:
+        """Re-derive any state a subclass computed from the clamp range.
+
+        A no-op here. A caller that mutates ``min_val``/``max_val`` in
+        place - e.g. ``Actuator.refresh_controller_limits()`` after a
+        pump recalibration - must call this afterwards so a controller
+        that derived extra state from the old range (currently only
+        ``_PidControl``'s anti-windup band) picks up the new one too.
+        """
 
     @abstractmethod
     def get_value(self, sens_value: float) -> float:
@@ -93,7 +128,9 @@ class _TimerControl(_Control):
     value_on: float = 0.0
 
     _is_on: bool = field(default=True, init=False, repr=False, compare=False)
-    _interval: float = field(default=0.0, init=False, repr=False, compare=False)
+    _interval: float = field(
+        default=0.0, init=False, repr=False, compare=False
+    )
     _last_time: float = field(
         default_factory=perf_counter,
         init=False,
@@ -232,6 +269,19 @@ class _PidControl(_Control):
         repr=False,
         compare=False,
     )
+    # True when neither min_integral nor max_integral was configured
+    # explicitly, so refresh_derived_limits() knows it may re-derive the
+    # band from min_val/max_val without clobbering an operator's choice.
+    # ControlFactory never passes either, so this is always True today,
+    # but the sentinel (None) is consumed below and cannot be told apart
+    # from an explicit value after __post_init__ runs - so the fact of
+    # "was it defaulted" has to be recorded somewhere, and this is it.
+    _integral_band_is_default: bool = field(
+        default=True,
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
         """Validate the gains and default the anti-windup band."""
@@ -240,12 +290,39 @@ class _PidControl(_Control):
         self.kp = _as_float("kp", self.kp)
         self.ki = _as_float("ki", self.ki)
         self.kd = _as_float("kd", self.kd)
+        self._integral_band_is_default = (
+            self.min_integral is None and self.max_integral is None
+        )
         if self.min_integral is None:
             self.min_integral = self.min_val
         if self.max_integral is None:
             self.max_integral = self.max_val
         self.min_integral = _as_float("min_integral", self.min_integral)
         self.max_integral = _as_float("max_integral", self.max_integral)
+
+    def refresh_derived_limits(self) -> None:
+        """Track the anti-windup band to ``min_val``/``max_val``.
+
+        Only when the band was never configured explicitly - an
+        operator-chosen band is a deliberate override and must survive a
+        recalibration untouched.
+
+        The stored ``_integral_sum`` is reclamped immediately rather
+        than left for the next ``get_value()`` step: a refit that
+        lowers the achievable output (e.g. the pump now measures
+        slower) would otherwise leave the sum pinned arbitrarily far
+        above what the output can express until the next step catches
+        up, and until then the controller sits saturated - exactly the
+        sustained overdosing anti-windup exists to prevent.
+        """
+        if not self._integral_band_is_default:
+            return
+        self.min_integral = self.min_val
+        self.max_integral = self.max_val
+        self._integral_sum = max(
+            self.min_integral,
+            min(self._integral_sum, self.max_integral),
+        )
 
     def __repr__(self) -> str:
         """Print the setpoint and gains."""
@@ -308,13 +385,22 @@ class _PidControl(_Control):
 class ControlFactory:
     """Factory of the different control classes."""
 
-    def create_control(self, config: ControlConfig) -> _Control:
+    def create_control(
+        self,
+        config: ControlConfig,
+        min_val: float = 0.0,
+        max_val: float = MAX_OUTPUT,
+    ) -> _Control:
         """Create a control class based on the control config.
 
         Parameters
         ----------
         config:
             A dataclass with the parameters of the new configuration
+        min_val, max_val:
+            Range the controller may demand, in the unit the config asks
+            for. The defaults are the raw PLC output range, which is what
+            duty-mode configs want.
 
         Raises
         ------
@@ -322,15 +408,17 @@ class ControlFactory:
             If the method is unknown or a parameter is not a number.
 
         """
+        limits = {"min_val": min_val, "max_val": max_val}
         match config.method:
             case ControlMethod.manual:
-                return _ManualControl(value=config.value)
+                return _ManualControl(value=config.value, **limits)
 
             case ControlMethod.timer:
                 return _TimerControl(
                     time_on=config.time_on,
                     time_off=config.time_off,
                     value_on=config.value,
+                    **limits,
                 )
 
             case ControlMethod.on_boundaries:
@@ -338,10 +426,11 @@ class ControlFactory:
                     lower_bound=config.lb,
                     upper_bound=config.ub,
                     value_on=config.value,
+                    **limits,
                 )
 
             case ControlMethod.pid:
-                return _PidControl(setpoint=config.setpoint)
+                return _PidControl(setpoint=config.setpoint, **limits)
 
             case _:
                 error_message = f"Unknown control method: {config.method!r}"

@@ -33,6 +33,17 @@ QUEUE_MAXSIZE = 1000
 #: Browse names split into exactly reactor:name:channel.
 NAME_PARTS = 3
 
+#: Actuator channels archived to the ``data`` table. Every actuator
+#: variable is published by the server and readable by any OPC client;
+#: only the ones named here are subscribed to and stored.
+#: ``curr_value`` is the duty last written to the pin, ``total_volume``
+#: the mL a pump has delivered since the server started - both are time
+#: series ``run_plots.py`` filters on. The ``cal_*`` variables are
+#: deliberately absent: they change only when a pump is refitted, so at
+#: the 500 ms publishing interval below, across every actuator on every
+#: reactor, they would fill the table with constants.
+ARCHIVED_ACTUATOR_CHANNELS = frozenset({"curr_value", "total_volume"})
+
 
 class OpcClient:
     """Browse an OPC-UA server, subscribe to it and archive the data."""
@@ -201,7 +212,7 @@ class OpcClient:
         vars_to_sub.extend(
             self.client.get_node(nodeid)
             for nodeid, info in self.actuator_vars.items()
-            if info["channel"] == "curr_value"
+            if info["channel"] in ARCHIVED_ACTUATOR_CHANNELS
         )
         await sub.subscribe_data_change(vars_to_sub)
 

@@ -13,7 +13,12 @@ from typing import Callable
 import pytest
 
 from reactors_czlab.core.actuator import RandomActuator
-from reactors_czlab.core.data import Channel, PhysicalInfo, PlcOutput
+from reactors_czlab.core.data import (
+    Calibration,
+    Channel,
+    PhysicalInfo,
+    PlcOutput,
+)
 
 
 class FakeSensor:
@@ -70,3 +75,78 @@ def sensor() -> FakeSensor:
 def actuator() -> RandomActuator:
     """A PWM actuator with the default manual controller."""
     return _build_actuator()
+
+
+class FakeClock:
+    """Monotonic clock the tests drive by hand.
+
+    Bolus timing is measured in seconds; sleeping through it would make the
+    suite slow and flaky, so the dispenser takes its clock as a parameter.
+    """
+
+    def __init__(self) -> None:
+        """Start at zero."""
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        """Read the clock, matching the perf_counter signature."""
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        """Move the clock forward."""
+        self.now += seconds
+
+
+def _build_calibration(name: str = "R0_pwm0") -> Calibration:
+    """A fitted pump line with round numbers.
+
+    flow = 0.01 * duty, so the dispense duty of 2000 gives 20 mL/min and a
+    1 mL bolus takes exactly 3 s.
+    """
+    return Calibration(
+        name,
+        a=0.01,
+        b=0.0,
+        min_duty=400.0,
+        max_duty=4000.0,
+        dispense_duty=2000.0,
+        points=[(500.0, 5.0), (2500.0, 25.0)],
+        fitted_at="2026-07-27T10:00:00+00:00",
+        r2=1.0,
+    )
+
+
+def _build_calibrated_actuator(
+    identifier: str = "R0:pwm0",
+    *,
+    fitted: bool = True,
+) -> RandomActuator:
+    """An actuator whose channel carries a pump calibration."""
+    calibration = _build_calibration() if fitted else Calibration("R0_pwm0")
+    info = PhysicalInfo(
+        model="pwm",
+        address=0,
+        type=PlcOutput.pwm,
+        channels=[
+            Channel("pwm0", "pwm", pin="Q2.7", calibration=calibration),
+        ],
+    )
+    return RandomActuator(identifier, info)
+
+
+@pytest.fixture
+def clock() -> FakeClock:
+    """A hand-driven clock."""
+    return FakeClock()
+
+
+@pytest.fixture
+def calibration() -> Calibration:
+    """A fitted pump calibration."""
+    return _build_calibration()
+
+
+@pytest.fixture
+def make_calibrated_actuator() -> Callable[..., RandomActuator]:
+    """Factory for actuators with a calibrated pump channel."""
+    return _build_calibrated_actuator

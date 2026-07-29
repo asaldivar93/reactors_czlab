@@ -19,7 +19,8 @@ _logger = logging.getLogger("server.reactor")
 #: unpaired.
 UNPAIRED_INPUT = 0.0
 
-#: How often unpaired actuators are refreshed, in seconds.
+#: How often unpaired actuators are refreshed and deliveries advanced, in
+#: seconds.
 UNPAIRED_PERIOD = 0.05
 
 
@@ -97,6 +98,11 @@ class Reactor:
         # list and unpair() puts it back.
         self.unpaired.actuators = [a.id for a in self.actuators.values()]
 
+        # The volume-mode re-trigger guard needs to know how often a paired
+        # actuator gets a decision.
+        for actuator in self.actuators.values():
+            actuator.control_period = period
+
     def __repr__(self) -> str:
         """Print the reactor id."""
         return f"Reactor(id: {self.id})"
@@ -172,15 +178,29 @@ class Reactor:
                 next_tick = now + self.period
             await asyncio.sleep(max(0.0, next_tick - now))
 
-    async def unpaired_loop(self) -> None:
-        """Refresh the actuators that are not paired to a sensor."""
+    async def actuator_loop(self) -> None:
+        """Refresh unpaired actuators and advance every delivery in flight.
+
+        Two jobs, one loop. Unpaired actuators need their controller run
+        often; paired ones are decided once per sampling period but their
+        deliveries have to be ended on a far finer grain than that.
+
+        No lock guards the tick: ``write_output()`` and ``tick()`` are both
+        synchronous and never await, so a decision from the sampling loop
+        cannot interleave with a delivery ending here.
+        """
         while True:
             async with self.unpaired.lock:
                 for aid in self.unpaired.actuators:
                     self.actuators[aid].write_output(UNPAIRED_INPUT)
+
+            for actuator in self.actuators.values():
+                actuator.tick()
+
             await asyncio.sleep(UNPAIRED_PERIOD)
 
     def stop(self) -> None:
-        """Drive every actuator to zero."""
+        """Drive every actuator to zero and cancel deliveries in flight."""
         for actuator in self.actuators.values():
+            actuator.dispenser.reset()
             actuator.write(0)

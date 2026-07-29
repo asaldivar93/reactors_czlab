@@ -8,8 +8,19 @@ stub node that captures the callables instead of registering them.
 from __future__ import annotations
 
 import pytest
+from asyncua import ua
 
 from reactors_czlab.opcua.reactor import ReactorOpc
+
+
+async def _call(method, *args):
+    """Invoke a captured @uamethod callback the way the server would.
+
+    @uamethod unwraps ua.Variant arguments and re-wraps the return value, so
+    a direct call has to supply that shape and unpack the result.
+    """
+    result = await method(ua.NodeId(), *(ua.Variant(a) for a in args))
+    return result[0].Value
 
 
 class _CapturingNode:
@@ -18,7 +29,7 @@ class _CapturingNode:
     def __init__(self) -> None:
         self.methods: dict[str, object] = {}
 
-    async def add_method(self, idx, name, callback, *args, **kwargs) -> None:  # noqa: ANN001, ANN002, ANN003, ARG002
+    async def add_method(self, idx, name, callback, *args, **kwargs) -> None:
         """Capture the callback under its bare method name."""
         self.methods[name.split(":")[-1]] = callback
 
@@ -48,7 +59,7 @@ async def test_set_pairing_succeeds(paired) -> None:
     """
     reactor_opc, set_pairing, _ = paired
 
-    assert await set_pairing(None, "R0:ph", "R0:pwm0", 0) is True
+    assert await _call(set_pairing, "R0:ph", "R0:pwm0", 0) is True
     assert dict(reactor_opc.reactor.sampling.pairings) == {
         "R0:ph": [("R0:pwm0", 0)],
     }
@@ -58,20 +69,20 @@ async def test_set_pairing_succeeds(paired) -> None:
 async def test_set_pairing_rejects_unknown_sensor(paired) -> None:
     """A sensor id from another reactor is refused."""
     _, set_pairing, _ = paired
-    assert await set_pairing(None, "R9:ph", "R0:pwm0", 0) is False
+    assert await _call(set_pairing, "R9:ph", "R0:pwm0", 0) is False
 
 
 async def test_set_pairing_rejects_unknown_actuator(paired) -> None:
     """An actuator id from another reactor is refused."""
     _, set_pairing, _ = paired
-    assert await set_pairing(None, "R0:ph", "R9:pwm0", 0) is False
+    assert await _call(set_pairing, "R0:ph", "R9:pwm0", 0) is False
 
 
 async def test_set_pairing_rejects_double_pairing(paired) -> None:
     """An actuator can only follow one sensor channel."""
     _, set_pairing, _ = paired
-    assert await set_pairing(None, "R0:ph", "R0:pwm0", 0) is True
-    assert await set_pairing(None, "R0:ph", "R0:pwm0", 1) is False
+    assert await _call(set_pairing, "R0:ph", "R0:pwm0", 0) is True
+    assert await _call(set_pairing, "R0:ph", "R0:pwm0", 1) is False
 
 
 async def test_unpair_returns_the_actuator(paired) -> None:
@@ -82,8 +93,8 @@ async def test_unpair_returns_the_actuator(paired) -> None:
     """
     reactor_opc, set_pairing, unpair = paired
 
-    await set_pairing(None, "R0:ph", "R0:pwm0", 0)
-    assert await unpair(None, "R0:ph", "R0:pwm0", 0) is True
+    await _call(set_pairing, "R0:ph", "R0:pwm0", 0)
+    assert await _call(unpair, "R0:ph", "R0:pwm0", 0) is True
 
     assert reactor_opc.reactor.sampling.pairings["R0:ph"] == []
     assert set(reactor_opc.reactor.unpaired.actuators) == {
@@ -95,7 +106,7 @@ async def test_unpair_returns_the_actuator(paired) -> None:
 async def test_unpair_rejects_a_pairing_that_does_not_exist(paired) -> None:
     """Unpairing something that was never paired is refused, not fatal."""
     _, _, unpair = paired
-    assert await unpair(None, "R0:ph", "R0:pwm1", 0) is False
+    assert await _call(unpair, "R0:ph", "R0:pwm1", 0) is False
 
 
 async def test_reactor_opc_does_not_duplicate_state(paired) -> None:
