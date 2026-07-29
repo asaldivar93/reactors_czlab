@@ -17,6 +17,8 @@ reactors_czlab/
     sensor.py      Sensor ABC + RandomSensor + HamiltonSensor + SpectralSensor
     modbus.py      ModbusHandler (RS485, pymodbus)
     reactor.py     Reactor: the two loops + pairing state
+    calibration.py Pump calibration: fit, store, reload, run state machine
+    dispenser.py   Demand (mL/min or mL) -> duty, bolus timing, volume totals
   opcua/         Server nodes (reactor/sensor/actuator) + OpcClient
   sql/           PostgreSQL schema and access
   server_info.py Hardware inventory: which sensor/actuator on which address/pin
@@ -44,14 +46,21 @@ Dependency direction: `core` never imports `opcua`. `data.py` imports nothing.
   Entry points call `init_hardware()` explicitly. Never move hardware setup back
   to module scope — it was there before and made the package untestable.
   `core/sensor.py` imports `adafruit_as7341` under `if IN_RASPBERRYPI` only.
+- **`core/calibration.py` and `core/dispenser.py` are standard library only.**
+  They run on the Pi, which has neither numpy nor psycopg. The calibration fit
+  is an ordinary least squares written out by hand for that reason.
 
 ## Model you need to hold
 
 ### Two loops, one pairing table
 
-Every actuator starts **unpaired** and is refreshed by `Reactor.unpaired_loop()`
+Every actuator starts **unpaired** and is refreshed by `Reactor.actuator_loop()`
 at 20 Hz from its own controller, with a dummy reference value of
 `UNPAIRED_INPUT` (0.0) — fine for manual/timer, meaningless for pid/on_boundaries.
+The same loop also calls `tick()` on every actuator, paired or not, so it is
+where a volume bolus in flight gets ended — a paired actuator only gets a new
+*decision* once per sample `period`, far too coarse to end a dose measured in
+fractions of a second.
 
 `ReactorOpc`'s `set_pairing(sensor_id, actuator_id, channel_index)` OPC method
 moves an actuator out of `reactor.unpaired.actuators` and into
@@ -78,6 +87,62 @@ unrelated OPC write. **When adding a field, decide which side it is on:**
 
 Validation is `_as_float()` in `__post_init__`, not per-attribute properties.
 `ControlFactory.create_control` matches on `config.method`.
+
+### Output units and the dispenser
+
+A controller answers *what should I demand?*; `core/dispenser.py` answers *how
+do I deliver that?*. `ControlConfig.output_unit` is orthogonal to
+`ControlMethod`, so PID and on_boundaries drive a pump in mL/min or mL without
+knowing pumps exist. Units are fixed: **duty is raw counts, flow is mL/min,
+volume is mL, and the calibration line is `flow = a * duty + b`**.
+
+- `duty` is the default and is a passthrough - today's behaviour exactly.
+- `flow` inverts the line, clamped into `[min_duty, max_duty]`. A demand of 0
+  writes 0, not `min_duty`.
+- `volume` runs the pump at `dispense_duty` for a computed time. The bolus is
+  ended by `Reactor.actuator_loop()` at 20 Hz, because a paired actuator only
+  gets a decision once per `period` and a dose is far shorter than that.
+
+**Volume-mode decisions are rate-limited to `control_period`.** `write_output()`
+is called every `UNPAIRED_PERIOD` for an unpaired actuator; without the guard a
+standing manual demand would be dispensed twenty times a second. Do not
+"simplify" it away - `test_dispenser.py` pins it with a `Regression:` note.
+`Actuator.control_period` is a validating property (mirrored by
+`Dispenser.__init__`): a non-positive period raises `ValueError` rather than
+silently disabling the guard, since every gap would then satisfy
+`< control_period`. `Reactor.__init__` sets it from `period` for every
+actuator, so a `Reactor` built with a non-positive sample period now raises at
+construction time, not later at the first volume demand.
+
+`Dispenser.total_volume` integrates the *actual* duty over the *actual*
+elapsed time, never the sum of demanded volumes, so a superseded bolus still
+totals correctly. It survives a control-config change: it records the pump,
+not the config.
+
+A flow or volume config against a channel with no *fitted* calibration is
+rejected by `core.dispenser.check_unit()` and logged; treating mL/min as raw
+counts would peg a pump. `_PidControl.kp` defaults to 100.0, which is tuned
+for 0-4095 counts and is wrong in mL/min - gains must be retuned per unit.
+
+**`Calibration.installable_reason()` (`core/data.py`) is the single authority
+on whether a `Calibration` may be written to `Channel.calibration`.** It is
+called by every site that can do that write - `CalibrationRun.fit()`,
+`set_duties()`, `reload()`, and `calibration.load_into()` - and
+`core.dispenser.check_unit()` delegates to it for the same question asked at
+control-config time. It exists because the four install sites used to each
+write their own version of this check and drifted apart across several review
+rounds - a `<` where another used `<=`, a stall-floor check dropped in favour
+of a flow check that could not see the same evidence, a guard gated behind
+`is_fitted` that a hand-edited calibration file could route around by leaving
+`fitted_at` empty. One of those drifts let a hand-edited file install a
+calibration whose dispense duty produced exactly zero flow, which then raised
+`ZeroDivisionError` out of `Dispenser._start_bolus` mid-dose. **A fifth
+install site must call `installable_reason()`, not write its own arithmetic.**
+It deliberately does not gate on `is_fitted` - the unfitted placeholder
+`server_info.py` builds for every pump (`a=1.0, min_duty=0.0,
+max_duty=dispense_duty=MAX_OUTPUT`) passes it on its own merits, and a
+hand-edited file with `fitted_at` cleared must still be checked on its
+numbers.
 
 ### The error sentinel
 
@@ -116,6 +181,16 @@ and breaks the plots.
   sets `__hash__ = None`.
 - Failed device reads log at `warning` (they must appear in `record.log`, which
   is INFO-level), not `debug`.
+- `Actuator.write_output()` skips the decision when the reference reading is
+  `ERROR_VALUE` and holds the last output. A failed probe reads -0.111, which
+  would otherwise make a boundaries controller dose forever. This applies to
+  every control mode, not just the pump ones - it predates output units.
+  Relatedly, `_PidControl` is the only strategy that clamps its output;
+  manual, timer and on_boundaries return their value untouched, so a
+  `_ManualControl` in volume mode is unbounded by design (an operator typing
+  a large number gets a long dose) and demand limits are not a safety
+  mechanism on their own - enforcement lives at the calibration install sites
+  via `installable_reason()`, above.
 
 ## Testing
 
@@ -147,5 +222,5 @@ uv run reactors-server --simulated --endpoint opc.tcp://localhost:4840/
 - `experiments` table exists in the schema but nothing writes to it.
 - `_TimerControl` now starts genuinely ON; previously the first ON phase lasted
   `2 * time_on`. Revert the two lines in `__post_init__` if that was deliberate.
-- README "To do" list is the feature backlog (MFC Modbus, pump calibration,
-  power-out recovery, GUIs).
+- README "To do" list is the feature backlog (MFC Modbus, power-out recovery,
+  GUIs).

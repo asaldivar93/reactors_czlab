@@ -7,7 +7,18 @@ from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
 from reactors_czlab.core.control import ControlFactory, _Control
-from reactors_czlab.core.data import ControlConfig, ControlMethod, PlcOutput
+from reactors_czlab.core.data import (
+    ERROR_VALUE,
+    ControlConfig,
+    ControlMethod,
+    OutputUnit,
+    PlcOutput,
+)
+from reactors_czlab.core.dispenser import (
+    DEFAULT_CONTROL_PERIOD,
+    Dispenser,
+    check_unit,
+)
 from reactors_czlab.core.hardware import IN_RASPBERRYPI, rpiplc
 
 if TYPE_CHECKING:
@@ -39,6 +50,17 @@ class Actuator(ABC):
         self.id = identifier
         self.info = config
         self.channel = config.channels[0]
+        #: Set while a calibration run owns the pump. Both the sampling loop
+        #: and the fast loop leave the actuator alone while it is set.
+        #: Assigned directly (not through the property) - nothing has run
+        #: yet, so there is nothing for the property's reset() to bank.
+        self._calibrating = False
+        self._control_period = DEFAULT_CONTROL_PERIOD
+        self.dispenser = Dispenser(
+            OutputUnit.duty,
+            self.channel,
+            self._control_period,
+        )
         self.controller = ControlFactory().create_control(
             ControlConfig(method=ControlMethod.manual, value=0),
         )
@@ -59,13 +81,96 @@ class Actuator(ABC):
             raise TypeError(error_message)
         self._controller = controller
 
+    @property
+    def calibrating(self) -> bool:
+        """Whether a calibration run currently owns the pump."""
+        return self._calibrating
+
+    @calibrating.setter
+    def calibrating(self, calibrating: bool) -> None:
+        """Toggle the interlock, resetting the dispenser's clock on edge.
+
+        A calibration run drives the pump directly, outside
+        ``write_output()`` and ``tick()``, so the dispenser's accrual
+        clock would otherwise sit frozen at whatever duty was running
+        when the run started. The first real decision after the run
+        ends would then attribute the run's entire duration to that
+        stale duty, injecting phantom volume into the total.
+        ``Dispenser.reset()`` banks whatever was legitimately in flight
+        and re-zeroes the clock, so neither edge can span a calibration
+        run.
+
+        That ``reset()`` also throws away any bolus deadline, and this
+        setter deliberately does not write 0 afterwards - the caller
+        owns the pin across the whole interlock. ``CalibrationRun.
+        calibrate_point()`` is the only caller, and it writes its own
+        duty immediately after raising the flag and 0 in its ``finally``
+        before lowering it. A future caller that raises the flag without
+        taking the pin over would strand the pump at whatever duty was
+        running, exactly as the unit swap in ``set_control_config()``
+        used to.
+        """
+        if calibrating != self._calibrating:
+            self.dispenser.reset()
+        self._calibrating = calibrating
+
+    @property
+    def control_period(self) -> float:
+        """Seconds between control decisions."""
+        return self._control_period
+
+    @control_period.setter
+    def control_period(self, period: float) -> None:
+        """Set the period, keeping the dispenser's guard in step.
+
+        Raises
+        ------
+        ValueError
+            If ``period`` is not positive. Mirrors ``Dispenser.__init__``:
+            a zero or negative period would silently disable the
+            volume-mode re-trigger guard (every
+            ``now - self._last_decision`` gap satisfies
+            ``< control_period``), letting a standing manual volume
+            demand re-fire on every call instead of once per period.
+
+        """
+        if period <= 0:
+            error_message = f"control_period must be positive, got {period}"
+            raise ValueError(error_message)
+        self._control_period = period
+        self.dispenser.control_period = period
+
     def write_output(self, sens_value: float) -> None:
         """Write the actuator value derived from a sensor reading."""
-        value = self.controller.get_value(sens_value)
+        if self.calibrating:
+            return
+        if sens_value == ERROR_VALUE:
+            # The sentinel is not a measurement. Acting on it would make a
+            # boundaries controller dose forever on a dead probe.
+            _logger.warning(
+                "Holding %s: the reference sensor read failed",
+                self.id,
+            )
+            return
+        demand = self.controller.get_value(sens_value)
+        self._write_if_changed(self.dispenser.duty(demand))
+
+    def tick(self) -> None:
+        """Let the dispenser finish a delivery it already started."""
+        if self.calibrating:
+            return
+        value = self.dispenser.tick()
+        if value is not None:
+            self._write_if_changed(value)
+
+    def _write_if_changed(self, value: float) -> None:
+        """Push a duty value to the hardware only when it actually moved."""
         if value != self.channel.old_value:
             self.channel.old_value = value
             self.write(value)
-            _logger.debug("Write %s to %s: %s", value, self.id, self.controller)
+            _logger.debug(
+                "Write %s to %s: %s", value, self.id, self.controller
+            )
 
     def set_control_config(self, config: ControlConfig) -> None:
         """Change the current configuration of the actuator outputs.
@@ -76,8 +181,48 @@ class Actuator(ABC):
             A dataclass with the parameters of the new controller
 
         """
+        reason = check_unit(config.output_unit, self.channel)
+        if reason is not None:
+            _logger.warning("Rejected config for %s: %s", self.id, reason)
+            return
+
+        dispenser = self.dispenser
+        if config.output_unit is not dispenser.unit:
+            dispenser = Dispenser(
+                config.output_unit,
+                self.channel,
+                self._control_period,
+            )
+            # Force the outgoing dispenser to accrue whatever was still
+            # in flight before reading its total - otherwise the last
+            # partial accrual interval is silently dropped on the swap.
+            self.dispenser.reset()
+            # reset() throws away the bolus deadline, so nothing is left
+            # that would ever end the bolus: the incoming dispenser has
+            # no deadline to expire, and in duty/flow mode its tick()
+            # returns None forever. Stopping the pump here is the whole
+            # of Dispenser.reset()'s "the caller must write 0" contract.
+            # Going through _write_if_changed keeps channel.old_value in
+            # step, so the next decision is compared against what the
+            # pin is really at.
+            #
+            # But not while a calibration run owns the pump: an OPC
+            # output_unit write mid-run would otherwise zero the pump
+            # under the run's feet, and the run would still report the
+            # requested duration - a silently wrong calibration point.
+            # calibrate_point()'s own finally writes 0 when the run ends.
+            if not self.calibrating:
+                self._write_if_changed(0.0)
+            # The total records the physical pump, not the configuration.
+            dispenser.total_volume = self.dispenser.total_volume
+
+        min_val, max_val = dispenser.demand_limits()
         try:
-            new_controller = ControlFactory().create_control(config)
+            new_controller = ControlFactory().create_control(
+                config,
+                min_val=min_val,
+                max_val=max_val,
+            )
         except TypeError:
             # Each control class checks that the values
             # passed are of the correct type
@@ -86,13 +231,73 @@ class Actuator(ABC):
 
         # Replace the controller only if the configuration actually changed,
         # so an unrelated OPC write does not reset a running timer or PID.
-        if self.controller != new_controller:
+        if (
+            self.controller != new_controller
+            or dispenser is not self.dispenser
+        ):
+            self.dispenser = dispenser
             self.controller = new_controller
             _logger.info(
-                "Control config update - %s: %s",
+                "Control config update - %s: %s in %s",
                 self.id,
                 self.controller,
+                self.dispenser.unit,
             )
+
+    def refresh_controller_limits(self) -> None:
+        """Re-derive the controller's clamp range from the dispenser.
+
+        A pump calibration refit changes what ``self.dispenser.
+        demand_limits()`` returns (e.g. a steeper slope means the same
+        max duty now delivers more mL/min), but it changes neither the
+        control method nor its configuration, so ``set_control_config``
+        would not rebuild the controller for it - nothing else picks the
+        new range up on its own.
+
+        ``min_val``/``max_val`` are mutated on the existing controller
+        object rather than swapping in one built by ``ControlFactory``,
+        so a running PID keeps its integral sum, its last measurement
+        and its identity (``actuator.controller is`` the same object
+        before and after). Rebuilding it would zero that state for a
+        write that changed nothing about the configuration.
+        ``_Control.refresh_derived_limits()`` is called afterwards so a
+        controller that derives extra state from the range - the PID's
+        anti-windup band - follows it too, instead of only the clamp.
+
+        A non-positive upper limit (``min_val >= max_val``) is zeroed
+        rather than installed as-is: ``fit()``/``set_duties()`` refuse
+        to install a calibration that produces one, but a hand-edited
+        file loaded through ``reload()`` still could, and this is the
+        last line of defense. Earlier this method *kept the stale
+        range* on refusal instead - which is what let a PID go on
+        commanding a positive demand against a calibration that could
+        no longer deliver it, dividing by zero in
+        ``Dispenser._start_bolus``. Zeroing forces every clamped
+        controller to demand nothing until the calibration is fixed,
+        rather than continuing to demand something the pump can no
+        longer express. Manual/timer/on-boundaries controllers do not
+        consult ``min_val``/``max_val`` at all, so this by itself is
+        not the primary guard against a bad calibration reaching those
+        - ``fit()``/``set_duties()``/``reload()`` refusing to install
+        one is - but it closes the gap for the controller that does.
+        """
+        min_val, max_val = self.dispenser.demand_limits()
+        if max_val <= min_val:
+            _logger.warning(
+                "%s demand range (%s, %s) is non-positive; zeroing the "
+                "controller's limits instead of leaving the old (%s, "
+                "%s) in place, since that range is no longer "
+                "deliverable under the calibration now on the channel",
+                self.id,
+                min_val,
+                max_val,
+                self.controller.min_val,
+                self.controller.max_val,
+            )
+            min_val, max_val = 0.0, 0.0
+        self.controller.min_val = min_val
+        self.controller.max_val = max_val
+        self.controller.refresh_derived_limits()
 
     @abstractmethod
     def write(self, value: float) -> None:

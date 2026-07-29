@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 
-from reactors_czlab.core.data import ControlConfig, ControlMethod
+from reactors_czlab.core.data import ControlConfig, ControlMethod, OutputUnit
 from reactors_czlab.core.reactor import Reactor
 
 
@@ -97,7 +97,7 @@ async def test_sampling_loop_reads_and_signals(
     assert reactor.sensors["R0:do"].reads >= 1
 
 
-async def test_unpaired_loop_drives_unpaired_actuators(
+async def test_actuator_loop_drives_unpaired_actuators(
     make_sensor,
     make_actuator,
 ) -> None:
@@ -114,7 +114,7 @@ async def test_unpaired_loop_drives_unpaired_actuators(
         ControlConfig(ControlMethod.manual, value=200),
     )
 
-    task = asyncio.create_task(reactor.unpaired_loop())
+    task = asyncio.create_task(reactor.actuator_loop())
     try:
         await asyncio.sleep(0.06)
     finally:
@@ -122,6 +122,130 @@ async def test_unpaired_loop_drives_unpaired_actuators(
         await asyncio.gather(task, return_exceptions=True)
 
     assert actuator.channel.value == 200
+
+
+async def test_actuator_loop_ticks_paired_actuators(
+    make_sensor,
+    make_calibrated_actuator,
+) -> None:
+    """A bolus on a paired pump is ended by the fast loop, not the sampler.
+
+    Regression: paired actuators are only refreshed once per sampling
+    period. A dose timed at that granularity would overrun by seconds.
+    """
+    reactor = Reactor(
+        "R0",
+        volume=5,
+        sensors=[make_sensor()],
+        actuators=[make_calibrated_actuator("R0:pwm0")],
+        period=10,
+    )
+    actuator = reactor.actuators["R0:pwm0"]
+    actuator.set_control_config(
+        ControlConfig(
+            ControlMethod.manual,
+            value=0.005,  # 0.005 mL at 20 mL/min = 15 ms
+            output_unit=OutputUnit.volume,
+        ),
+    )
+    actuator.write_output(0)
+    assert actuator.channel.value == 2000
+
+    task = asyncio.create_task(reactor.actuator_loop())
+    try:
+        await asyncio.sleep(0.2)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    assert actuator.channel.value == 0
+
+
+async def test_actuator_loop_ticks_a_truly_paired_actuator(
+    make_sensor,
+    make_calibrated_actuator,
+) -> None:
+    """A bolus still ends once the actuator has actually left unpaired.
+
+    ``test_actuator_loop_ticks_paired_actuators`` above never calls the
+    pairing mechanism, so its actuator is still sitting in
+    ``reactor.unpaired.actuators`` for the whole test - it would pass even
+    if ``actuator_loop`` ticked only that list. Reproduce what
+    ``ReactorOpc.set_pairing`` actually does (remove the id from
+    ``unpaired.actuators``, add it to ``sampling.pairings``) so this test
+    would fail if the tick were narrowed to unpaired actuators only.
+    """
+    sensor = make_sensor()
+    reactor = Reactor(
+        "R0",
+        volume=5,
+        sensors=[sensor],
+        actuators=[make_calibrated_actuator("R0:pwm0")],
+        period=10,
+    )
+    actuator = reactor.actuators["R0:pwm0"]
+    reactor.unpaired.actuators.remove("R0:pwm0")
+    reactor.sampling.pairings[sensor.id].append(("R0:pwm0", 0))
+
+    actuator.set_control_config(
+        ControlConfig(
+            ControlMethod.manual,
+            value=0.005,  # 0.005 mL at 20 mL/min = 15 ms
+            output_unit=OutputUnit.volume,
+        ),
+    )
+    actuator.write_output(0)
+    assert actuator.channel.value == 2000
+
+    task = asyncio.create_task(reactor.actuator_loop())
+    try:
+        await asyncio.sleep(0.2)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    assert actuator.channel.value == 0
+
+
+def test_the_reactor_stamps_its_period_on_its_actuators(
+    make_calibrated_actuator,
+    make_sensor,
+) -> None:
+    """The volume guard has to know how often decisions arrive."""
+    reactor = Reactor(
+        "R0",
+        volume=5,
+        sensors=[make_sensor()],
+        actuators=[make_calibrated_actuator("R0:pwm0")],
+        period=7.5,
+    )
+
+    assert reactor.actuators["R0:pwm0"].control_period == 7.5
+
+
+def test_stop_cancels_a_bolus(make_calibrated_actuator, make_sensor) -> None:
+    """A restart must not resume a dose that was in flight."""
+    reactor = Reactor(
+        "R0",
+        volume=5,
+        sensors=[make_sensor()],
+        actuators=[make_calibrated_actuator("R0:pwm0")],
+        period=10,
+    )
+    actuator = reactor.actuators["R0:pwm0"]
+    actuator.set_control_config(
+        ControlConfig(
+            ControlMethod.manual,
+            value=1.0,
+            output_unit=OutputUnit.volume,
+        ),
+    )
+    actuator.write_output(0)
+
+    reactor.stop()
+
+    assert actuator.channel.value == 0
+    assert actuator.dispenser.tick() is None
 
 
 def test_stop_zeroes_every_actuator(reactor: Reactor) -> None:

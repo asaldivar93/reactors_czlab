@@ -5,9 +5,10 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from asyncua import ua
+from asyncua import ua, uamethod
 
-from reactors_czlab.core.data import ControlConfig, ControlMethod
+from reactors_czlab.core.calibration import CalibrationRun
+from reactors_czlab.core.data import ControlConfig, ControlMethod, OutputUnit
 
 if TYPE_CHECKING:
     from asyncua import Server
@@ -24,6 +25,12 @@ control_method = {
     3: ControlMethod.pid,
 }
 
+output_unit_map = {
+    0: OutputUnit.duty,
+    1: OutputUnit.flow,
+    2: OutputUnit.volume,
+}
+
 
 class ActuatorOpc:
     """Actuator node."""
@@ -32,19 +39,39 @@ class ActuatorOpc:
         """Initialize the OPC actuator node."""
         self.actuator = actuator
         self.id = actuator.id
+        self.run = CalibrationRun(actuator)
 
     def __repr__(self) -> str:
         """Print actuator id."""
         return f"ActuatorOpc(id: {self.actuator.id})"
 
     async def update_value(self) -> None:
-        """Publish the actuator output to the server if it changed."""
+        """Publish the actuator output and the pump data.
+
+        Only ``curr_value`` is change-gated: it is the one variable with
+        a cheap comparison already to hand, ``channel.old_value``, which
+        is what the actuator last pushed to the hardware. The pump
+        variables are rewritten unconditionally on every sample, and
+        asyncua notifies subscribers of a write whether or not the value
+        moved, so ``total_volume`` lands in the ``data`` table once per
+        sampling period - a sampled series of a monotone counter, which
+        is what a delivered-volume trace should be.
+        """
         published = await self.curr_value.get_value()
         # old_value is what write_output() last pushed to the hardware.
         current = self.actuator.channel.old_value
         if current != published:
             await self.curr_value.write_value(float(current))
             _logger.debug("Updated %s with value %s", self.id, current)
+
+        await self.total_volume.write_value(
+            float(self.actuator.dispenser.total_volume),
+        )
+        cal = self.actuator.channel.calibration
+        if cal is not None:
+            await self.cal_a.write_value(float(cal.a))
+            await self.cal_b.write_value(float(cal.b))
+            await self.cal_r2.write_value(float(cal.r2))
 
     async def init_node(
         self,
@@ -65,6 +92,8 @@ class ActuatorOpc:
         await self.init_control_node(idx)
         # Start a subscription to the variables in the control
         await self.init_control_subscription(server)
+        # Expose the pump calibration workflow
+        await self.init_calibration_methods(idx)
 
     async def init_control_subscription(self, server: Server) -> None:
         """Create a subscription to the control parameters."""
@@ -91,7 +120,22 @@ class ActuatorOpc:
             )
             return
 
-        config = ControlConfig(method, value=await self.value.get_value())
+        unit_index = await self.output_unit.get_value()
+        try:
+            unit = output_unit_map[unit_index]
+        except KeyError:
+            _logger.exception(
+                "%s is not a member of %s",
+                unit_index,
+                sorted(output_unit_map),
+            )
+            return
+
+        config = ControlConfig(
+            method,
+            value=await self.value.get_value(),
+            output_unit=unit,
+        )
 
         # Only read the variables the selected method actually needs.
         match method:
@@ -140,6 +184,21 @@ class ActuatorOpc:
         )
         await self.curr_value.set_writable()
 
+        # Published pump data. The browse names follow the
+        # <reactor>:<name>:<channel> contract, so they reach the data table.
+        self.total_volume = await self.node.add_variable(
+            idx,
+            f"{self.id}:total_volume",
+            0.0,
+        )
+        self.cal_a = await self.node.add_variable(idx, f"{self.id}:cal_a", 0.0)
+        self.cal_b = await self.node.add_variable(idx, f"{self.id}:cal_b", 0.0)
+        self.cal_r2 = await self.node.add_variable(
+            idx,
+            f"{self.id}:cal_r2",
+            0.0,
+        )
+
         # ControlMethod
         self.method = await self.control_method.add_variable(
             idx,
@@ -156,6 +215,24 @@ class ActuatorOpc:
             ua.ObjectIds.MultiStateDiscreteType_EnumStrings,
             "EnumStrings",
             enum_strings_variant,
+        )
+
+        # Unit the demand is expressed in: raw counts, mL/min, or mL.
+        self.output_unit = await self.control_method.add_variable(
+            idx,
+            f"{self.id}:output_unit",
+            0,
+            varianttype=ua.VariantType.UInt32,
+        )
+        await self.output_unit.set_writable()
+        unit_strings_variant = ua.Variant(
+            [ua.LocalizedText(output_unit_map[k]) for k in output_unit_map],
+            ua.VariantType.LocalizedText,
+        )
+        await self.output_unit.add_property(
+            ua.ObjectIds.MultiStateDiscreteType_EnumStrings,
+            "EnumStrings",
+            unit_strings_variant,
         )
 
         # TimerControl
@@ -202,3 +279,104 @@ class ActuatorOpc:
             varianttype=ua.VariantType.UInt32,
         )
         await self.curr_sensor.set_writable()
+
+    async def init_calibration_methods(self, idx: int) -> None:
+        """Expose the pump calibration workflow on the actuator node.
+
+        Every method answers with a status string; the operator drives the
+        run from a generic OPC client and reads the result off the call.
+        """
+        run = self.run
+
+        @uamethod
+        async def calibrate_point(
+            parent: Node,
+            duty: float,
+            seconds: float,
+        ) -> str:
+            """Run the pump at a duty for a time, then stop it."""
+            return await run.calibrate_point(duty, seconds)
+
+        @uamethod
+        def record_point(parent: Node, volume_ml: float) -> str:
+            """Record the volume measured for the last point."""
+            return run.record_point(volume_ml)
+
+        @uamethod
+        def fit_calibration(parent: Node) -> str:
+            """Fit, store and install the collected points."""
+            return run.fit()
+
+        @uamethod
+        def clear_points(parent: Node) -> str:
+            """Throw the collected points away."""
+            return run.clear_points()
+
+        @uamethod
+        def reload_calibration(parent: Node) -> str:
+            """Re-read the stored calibration from disk."""
+            return run.reload()
+
+        @uamethod
+        def set_duties(
+            parent: Node,
+            min_duty: float,
+            dispense_duty: float,
+        ) -> str:
+            """Adjust the stall floor and the bolus duty without a refit."""
+            return run.set_duties(min_duty, dispense_duty)
+
+        inarg_duty = ua.Argument()
+        inarg_duty.Name = "Duty"
+        inarg_duty.DataType = ua.NodeId(ua.ObjectIds.Float)
+        inarg_duty.Description = ua.LocalizedText(
+            Text="PLC counts to drive the pump at",
+        )
+
+        inarg_seconds = ua.Argument()
+        inarg_seconds.Name = "Seconds"
+        inarg_seconds.DataType = ua.NodeId(ua.ObjectIds.Float)
+        inarg_seconds.Description = ua.LocalizedText(
+            Text="How long to run the pump for",
+        )
+
+        inarg_volume = ua.Argument()
+        inarg_volume.Name = "Volume_ml"
+        inarg_volume.DataType = ua.NodeId(ua.ObjectIds.Float)
+        inarg_volume.Description = ua.LocalizedText(
+            Text="Measured volume delivered by the last point, in mL",
+        )
+
+        inarg_min_duty = ua.Argument()
+        inarg_min_duty.Name = "Min_duty"
+        inarg_min_duty.DataType = ua.NodeId(ua.ObjectIds.Float)
+        inarg_min_duty.Description = ua.LocalizedText(
+            Text="Stall floor: the lowest duty the pump turns at",
+        )
+
+        inarg_dispense = ua.Argument()
+        inarg_dispense.Name = "Dispense_duty"
+        inarg_dispense.DataType = ua.NodeId(ua.ObjectIds.Float)
+        inarg_dispense.Description = ua.LocalizedText(
+            Text="Duty used for volume boluses",
+        )
+
+        outarg = ua.Argument()
+        outarg.Name = "Status"
+        outarg.DataType = ua.NodeId(ua.ObjectIds.String)
+
+        for name, callback, inargs in (
+            ("calibrate_point", calibrate_point, [inarg_duty, inarg_seconds]),
+            ("record_point", record_point, [inarg_volume]),
+            ("fit_calibration", fit_calibration, []),
+            ("clear_points", clear_points, []),
+            ("reload_calibration", reload_calibration, []),
+            ("set_duties", set_duties, [inarg_min_duty, inarg_dispense]),
+        ):
+            await self.node.add_method(
+                idx,
+                f"{self.id}:{name}",
+                callback,
+                inargs,
+                [outarg],
+            )
