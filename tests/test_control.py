@@ -175,3 +175,41 @@ def test_rejects_unknown_method(factory: ControlFactory) -> None:
     """An unrecognised method is rejected by the factory."""
     with pytest.raises(TypeError):
         factory.create_control(ControlConfig("not_a_method"))
+
+
+def test_limits_reach_the_controller(factory: ControlFactory) -> None:
+    """A dispenser's demand range becomes the controller's clamp range."""
+    control = factory.create_control(
+        ControlConfig(ControlMethod.pid, setpoint=7.0),
+        min_val=0.0,
+        max_val=40.0,
+    )
+
+    assert control.min_val == 0.0
+    assert control.max_val == 40.0
+    assert control.clamp(100.0) == 40.0
+
+
+def test_pid_anti_windup_defaults_to_the_demand_range(
+    factory: ControlFactory,
+) -> None:
+    """The integral band follows the unit, not the raw PWM full scale."""
+    control = factory.create_control(
+        ControlConfig(ControlMethod.pid, setpoint=7.0),
+        min_val=0.0,
+        max_val=40.0,
+    )
+
+    assert control.max_integral == 40.0
+
+
+def test_a_limit_change_replaces_the_controller(
+    factory: ControlFactory,
+) -> None:
+    """Limits are configuration, so they take part in equality."""
+    config = ControlConfig(ControlMethod.pid, setpoint=7.0)
+
+    narrow = factory.create_control(config, max_val=40.0)
+    wide = factory.create_control(config, max_val=4095.0)
+
+    assert narrow != wide
