@@ -51,6 +51,7 @@ class ReactorOpc:
         # Flag for sensing loop completed
         self.sample_ready = asyncio.Event()
         self.pairings_var: Node | None = None
+        self._publish_lock = asyncio.Lock()
 
     def __repr__(self) -> str:
         """Print the reactor id."""
@@ -137,7 +138,15 @@ class ReactorOpc:
         """
         if self.pairings_var is None:
             return
-        await self.pairings_var.write_value(self.pairings_json())
+        # The publish lock totally orders snapshot-and-write pairs, so
+        # the last write to land is always the one whose snapshot was
+        # taken last. sampling.lock is held only for the synchronous
+        # snapshot, never across the write: sampling_loop takes it
+        # every period to drive the paired actuators.
+        async with self._publish_lock:
+            async with self.reactor.sampling.lock:
+                payload = self.pairings_json()
+            await self.pairings_var.write_value(payload)
 
     async def init_pairing_methods(self, idx: int) -> None:
         """Expose the set_pairing and unpair methods on the reactor node."""

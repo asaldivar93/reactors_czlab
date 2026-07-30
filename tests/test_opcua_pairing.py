@@ -7,6 +7,7 @@ stub node that captures the callables instead of registering them.
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 import pytest
@@ -183,3 +184,68 @@ async def test_a_refused_pairing_does_not_republish(published) -> None:
 
     assert await _call(set_pairing, "R9:ph", "R0:pwm0", 0) is False
     assert reactor_opc.pairings_var.value == "sentinel"
+
+
+class _SlowVariable:
+    """An asyncua variable whose first write lands slower than the rest.
+
+    Real network I/O has no fixed latency ordering. This fakes that by
+    making the first call to ``write_value`` yield to the event loop
+    more times before storing than later calls do, so a slower *first*
+    publish and a faster *second* publish are actually in flight at
+    the same time, the way two overlapping OPC calls would be.
+    """
+
+    def __init__(self, value: object) -> None:
+        self.value = value
+        self._writes = 0
+
+    async def write_value(self, value: object) -> None:
+        """Store a written value, after yielding control a few times."""
+        self._writes += 1
+        delay = 5 if self._writes == 1 else 1
+        for _ in range(delay):
+            await asyncio.sleep(0)
+        self.value = value
+
+
+@pytest.fixture
+async def racing(make_sensor, make_actuator):
+    """A ReactorOpc with two independent sensor/actuator pairs to race."""
+    reactor_opc = ReactorOpc(
+        "R0",
+        volume=5,
+        sensors=[make_sensor("R0:ph"), make_sensor("R0:do")],
+        actuators=[make_actuator("R0:pwm0"), make_actuator("R0:pwm1")],
+        period=10,
+    )
+    node = _CapturingNode()
+    reactor_opc.node = node
+    reactor_opc.pairings_var = _SlowVariable("[]")
+    await reactor_opc.init_pairing_methods(2)
+    return reactor_opc, node.methods["set_pairing"]
+
+
+async def test_concurrent_publishes_do_not_lose_a_pairing(racing) -> None:
+    """A slower earlier write must not clobber a faster later one.
+
+    Regression: publish_pairings() built its JSON snapshot and wrote it
+    with no lock spanning the two, so the snapshot and the write were
+    not serialised with each other. Two overlapping set_pairing calls
+    could interleave so that an earlier call's snapshot (taken before
+    the later call's pairing existed) was still the write that landed
+    last, silently dropping the later pairing from the published table
+    until the next successful pairing change.
+    """
+    reactor_opc, set_pairing = racing
+
+    await asyncio.gather(
+        _call(set_pairing, "R0:ph", "R0:pwm0", 0),
+        _call(set_pairing, "R0:do", "R0:pwm1", 0),
+    )
+
+    published = json.loads(reactor_opc.pairings_var.value)
+    assert {(row["sensor"], row["actuator"]) for row in published} == {
+        ("R0:ph", "R0:pwm0"),
+        ("R0:do", "R0:pwm1"),
+    }
