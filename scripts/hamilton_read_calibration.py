@@ -44,9 +44,12 @@ async def main(address: int) -> None:
         handler,
     )
 
-    for point in (1.0, 2.0):
-        status = await sensor.read_calibration_status(point)
-        print(status)
+    try:
+        for point in (1.0, 2.0):
+            status = await sensor.read_calibration_status(point)
+            print(status)
+    finally:
+        handler.close()
 
 
 def cli() -> None:

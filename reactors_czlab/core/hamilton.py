@@ -23,7 +23,12 @@ CALIBRATION_OK = 0
 #: Status strings. These reach the operator through an OPC method's
 #: return value, so they are constants rather than inline literals.
 SUCCESSFUL = "Successful"
+#: The request itself did not complete (Modbus error, invalid point).
+#: Distinct from REJECTED: this means the sensor was never heard from.
 FAILED = "failed"
+#: The sensor answered, but refused the calibration (e.g. the reading
+#: had not stabilised, or did not match a known buffer).
+REJECTED = "rejected"
 UNSUPPORTED = "unsupported"
 
 #: Offsets of the 32 bit values inside the register blocks. A Hamilton
@@ -126,7 +131,7 @@ def build_calibration_status(
     code = decode(status_registers[_FIRST_VALUE], "int")
     return CalibrationStatus(
         point=point,
-        status=SUCCESSFUL if code == CALIBRATION_OK else FAILED,
+        status=SUCCESSFUL if code == CALIBRATION_OK else REJECTED,
         quality=float(decode(quality_registers[_FIRST_VALUE], "float")),
         value=float(decode(status_registers[_STATUS_VALUE], "float")),
         process_value=float(

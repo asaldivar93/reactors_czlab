@@ -12,6 +12,7 @@ import math
 
 from reactors_czlab.core.hamilton import (
     FAILED,
+    REJECTED,
     SUCCESSFUL,
     CalibrationStatus,
     build_calibration_status,
@@ -74,8 +75,13 @@ def test_build_reads_status_value_quality_and_process_value() -> None:
     )
 
 
-def test_a_non_zero_status_code_is_a_failure() -> None:
-    """The sensor reports 0 for a successful calibration."""
+def test_a_non_zero_status_code_is_rejected() -> None:
+    """The sensor reports 0 for a successful calibration.
+
+    A non-zero code means the sensor answered and refused the
+    calibration (unstable reading, unrecognised buffer) - distinct
+    from FAILED, which means the request never completed at all.
+    """
     status = build_calibration_status(
         "cp2",
         status_registers=[9, 9, 5, 5, 1, 1],
@@ -84,7 +90,7 @@ def test_a_non_zero_status_code_is_a_failure() -> None:
         decode=_decode,
     )
 
-    assert status.status == FAILED
+    assert status.status == REJECTED
 
 
 def test_unavailable_carries_no_readings() -> None:
