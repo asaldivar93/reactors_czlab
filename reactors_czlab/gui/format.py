@@ -73,7 +73,23 @@ def is_stale(
     A subscription that has quietly died leaves the last value in place
     forever, which looks exactly like a steady process. Age is the only
     thing that distinguishes them.
+
+    Raises
+    ------
+    ValueError
+        If ``timestamp`` and ``now`` differ in timezone awareness. The
+        client stores naive timestamps (``datetime.now()`` with no tzinfo),
+        so a mismatch indicates a programming error upstream.
+
     """
     if timestamp is None:
         return True
+    if (timestamp.tzinfo is None) != (now.tzinfo is None):
+        error_message = (
+            f"tzinfo mismatch: timestamp.tzinfo={timestamp.tzinfo}, "
+            f"now.tzinfo={now.tzinfo}. "
+            "This codebase stores naive timestamps; "
+            "both must have matching awareness."
+        )
+        raise ValueError(error_message)
     return (now - timestamp).total_seconds() > period * STALE_FACTOR
