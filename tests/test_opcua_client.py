@@ -95,23 +95,15 @@ def _client_with(module: Any, actuator_channels: list[str]) -> Any:
     return opc
 
 
-async def test_total_volume_is_subscribed_and_cal_fields_are_not(
+async def test_every_published_variable_is_subscribed(
     client_module: Any,
 ) -> None:
-    """The spec's ``total_volume`` trace has to reach the ``data`` table.
+    """The GUI reads live values off the subscription, so it needs all.
 
-    Regression: ``match_tree`` only builds the ``{nodeid: info}`` map;
-    this filter decides what is actually watched, and it named
-    ``curr_value`` alone. Every new pump variable published fine and was
-    archived by nothing, so ``run_plots.py`` filtering on
-    ``total_volume`` found an empty table. ``opcua/client.py`` is in
-    neither the branch diff nor any task's files, which is why eleven
-    per-task reviews could not have seen it.
-
-    The ``cal_*`` variables stay unsubscribed on purpose: they move only
-    on a refit, so at the 500 ms publishing interval they would fill the
-    table with constants. They remain published and readable by any OPC
-    client.
+    The archived set is unchanged - the filter moved from subscribe time
+    to enqueue time (see test_only_the_two_series_are_archived). Without
+    this the GUI could not show a control config written by another OPC
+    client, nor the calibration a refit had just installed.
     """
     opc = _client_with(
         client_module,
@@ -125,7 +117,95 @@ async def test_total_volume_is_subscribed_and_cal_fields_are_not(
         "R0:ph:pH",
         "R0:pwm0:curr_value",
         "R0:pwm0:total_volume",
+        "R0:pwm0:cal_a",
+        "R0:pwm0:cal_b",
+        "R0:pwm0:cal_r2",
     }
+
+
+def test_only_the_two_series_are_archived(client_module: Any) -> None:
+    """The archived set is enforced at enqueue, and is unchanged.
+
+    Regression: this used to be a subscription filter that named
+    curr_value alone, so every new pump variable was published and
+    archived by nothing, and run_plots.py filtering on total_volume
+    found an empty table. The cal_* variables stay unarchived on
+    purpose: they move only on a refit, so at the 500 ms publishing
+    interval they would fill the table with constants.
+    """
+    opc = _client_with(
+        client_module,
+        ["curr_value", "total_volume", "cal_a", "cal_b", "cal_r2"],
+    )
+
+    archived = {
+        nodeid
+        for nodeid, info in opc.actuator_vars.items()
+        if opc.archives(nodeid, info)
+    }
+
+    assert archived == {"R0:pwm0:curr_value", "R0:pwm0:total_volume"}
+
+
+class _NotifyingNode:
+    """A node shaped the way datachange_notification reads one.
+
+    ``_StubNode.nodeid`` is a bare string, which is enough for the
+    subscription assertions but not here: the callback calls
+    ``node.nodeid.to_string()``.
+    """
+
+    def __init__(self, nodeid: str) -> None:
+        self.nodeid = types.SimpleNamespace(to_string=lambda: nodeid)
+
+
+async def test_values_update_with_recording_off(client_module: Any) -> None:
+    """The GUI reads live values whether or not anything is archiving.
+
+    Regression: datachange_notification enqueued unconditionally. With
+    no archiver draining it, the 1000 slot queue filled and then logged
+    an error every sample forever - latent until the GUI subscribed
+    with recording off.
+    """
+    opc = _client_with(client_module, ["curr_value"])
+    opc.variables = {**opc.sensor_vars, **opc.actuator_vars}
+
+    for _ in range(client_module.QUEUE_MAXSIZE + 10):
+        await opc.datachange_notification(
+            _NotifyingNode("R0:ph:pH"),
+            7.5,
+            None,
+        )
+
+    assert opc.variables["R0:ph:pH"]["value"] == 7.5
+    assert opc._queue.qsize() == 0
+
+
+async def test_rows_are_tagged_with_the_reactor_experiment(
+    client_module: Any,
+) -> None:
+    """A reactor in a running experiment tags every row it produces."""
+    opc = _client_with(client_module, ["curr_value"])
+    opc.variables = {**opc.sensor_vars, **opc.actuator_vars}
+    opc.experiment_tags = {"R0": "growth-curve-1"}
+    opc._db_task = object()  # pretend the archiver is running
+
+    await opc.datachange_notification(_NotifyingNode("R0:ph:pH"), 7.5, None)
+
+    _, info = opc._queue.get_nowait()
+    assert info["experiment_name"] == "growth-curve-1"
+
+
+async def test_untagged_rows_carry_none(client_module: Any) -> None:
+    """Recording outside an experiment is allowed and leaves it NULL."""
+    opc = _client_with(client_module, ["curr_value"])
+    opc.variables = {**opc.sensor_vars, **opc.actuator_vars}
+    opc._db_task = object()
+
+    await opc.datachange_notification(_NotifyingNode("R0:ph:pH"), 7.5, None)
+
+    _, info = opc._queue.get_nowait()
+    assert info["experiment_name"] is None
 
 
 def test_the_archived_channel_set_is_exactly_the_two_series(
@@ -146,7 +226,14 @@ def test_the_archived_channel_set_is_exactly_the_two_series(
 async def test_every_sensor_channel_is_subscribed(
     client_module: Any,
 ) -> None:
-    """The filter is actuator-only; sensors are archived wholesale."""
+    """Every sensor channel is subscribed alongside every actuator one.
+
+    Superseded in spirit by test_every_published_variable_is_subscribed
+    now that the subscription is unfiltered, but kept to pin that the
+    sensor tree specifically (not just the actuator one) is walked and
+    subscribed - previously ``cal_a`` would have been the only
+    actuator channel excluded; now nothing is.
+    """
     opc = _client_with(client_module, ["cal_a"])
     opc.sensor_vars["R0:spectral:nm415"] = {
         "reactor": "R0",
@@ -157,4 +244,4 @@ async def test_every_sensor_channel_is_subscribed(
     await opc.init_subscriptions()
 
     watched = {node.nodeid for node in opc.client.subscription.subscribed}
-    assert watched == {"R0:ph:pH", "R0:spectral:nm415"}
+    assert watched == {"R0:ph:pH", "R0:spectral:nm415", "R0:pwm0:cal_a"}

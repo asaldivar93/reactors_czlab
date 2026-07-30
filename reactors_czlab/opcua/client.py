@@ -69,6 +69,10 @@ class OpcClient:
         self.sensor_vars: dict[str, dict] = {}
         self.actuator_vars: dict[str, dict] = {}
         self.methods: dict[str, dict] = {}
+        #: reactor id -> the running experiment that owns it. Consulted
+        #: when a row is enqueued, so several experiments over disjoint
+        #: reactor sets need nothing more than this dict.
+        self.experiment_tags: dict[str, str] = {}
 
     async def __aenter__(self) -> OpcClient:
         """Connect on entry."""
@@ -206,18 +210,46 @@ class OpcClient:
         params.MaxNotificationsPerPublish = 0
         sub = await self.client.create_subscription(params, self)
 
+        # Everything published is subscribed: the GUI reads its live
+        # values off this dict, including the control config and the
+        # calibration, which are not archived. What reaches the database
+        # is decided by archives(), at enqueue time. Rebuilt here (not
+        # just relied on from connect()) so it reflects sensor_vars/
+        # actuator_vars as they stand right before subscribing.
+        self.variables = {**self.sensor_vars, **self.actuator_vars}
         vars_to_sub = [
-            self.client.get_node(nodeid) for nodeid in self.sensor_vars
+            self.client.get_node(nodeid) for nodeid in self.variables
         ]
-        vars_to_sub.extend(
-            self.client.get_node(nodeid)
-            for nodeid, info in self.actuator_vars.items()
-            if info["channel"] in ARCHIVED_ACTUATOR_CHANNELS
-        )
         await sub.subscribe_data_change(vars_to_sub)
 
         names = [(await node.read_browse_name()).Name for node in vars_to_sub]
         _logger.info("Subscribed to variables %s", names)
+
+    def archives(self, nodeid: str, info: dict) -> bool:
+        """Whether a variable's changes belong in the ``data`` table.
+
+        Sensor channels are archived wholesale. Of the actuator
+        variables only ``ARCHIVED_ACTUATOR_CHANNELS`` are: the ``cal_*``
+        variables move only on a refit, so at the 500 ms publishing
+        interval, across every actuator on every reactor, they would
+        fill the table with constants.
+        """
+        if nodeid not in self.actuator_vars:
+            return True
+        return info["channel"] in ARCHIVED_ACTUATOR_CHANNELS
+
+    @property
+    def recording(self) -> bool:
+        """Whether the archiver task is running."""
+        return self._db_task is not None
+
+    async def start_recording(self) -> None:
+        """Begin archiving queued readings."""
+        await self.start_psql()
+
+    async def stop_recording(self) -> None:
+        """Stop archiving. Live values keep updating."""
+        await self.stop_psql()
 
     async def datachange_notification(
         self,
@@ -225,20 +257,38 @@ class OpcClient:
         val: float,
         data: object,
     ) -> None:
-        """Queue new values for the sql database on data change."""
+        """Update the live value and, while recording, queue it.
+
+        The in-memory value always updates so the GUI has a live view
+        of the plant regardless of whether anything is archiving.
+        Enqueuing is gated on ``recording`` and ``archives()``: nothing
+        drains the queue when the archiver is stopped, so enqueuing
+        anyway fills the 1000 slot buffer and then logs an error every
+        sample forever.
+        """
         nodeid = node.nodeid.to_string()
         info = self.variables.get(nodeid)
         if info is None:
             return
         if val == ERROR_VALUE:
             # The server could not read the device; do not archive it.
+            # The live value is still updated: the GUI must be able to
+            # show that a probe is failing.
             _logger.debug("Skipping error value from %s", nodeid)
+            info["value"] = val
+            info["timestamp"] = datetime.now()
             return
 
         info["value"] = val
         info["timestamp"] = datetime.now()
+
+        if not self.recording or not self.archives(nodeid, info):
+            return
+
+        row = dict(info)
+        row["experiment_name"] = self.experiment_tags.get(info["reactor"])
         try:
-            self._queue.put_nowait((nodeid, dict(info)))
+            self._queue.put_nowait((nodeid, row))
         except asyncio.QueueFull:
             _logger.error(
                 "Database queue is full (%s items), dropping %s",
@@ -246,7 +296,7 @@ class OpcClient:
                 nodeid,
             )
         else:
-            _logger.debug("Data change in %s: %s", nodeid, info)
+            _logger.debug("Data change in %s: %s", nodeid, row)
 
     async def start_psql(self) -> None:
         """Start the task that archives queued readings."""
