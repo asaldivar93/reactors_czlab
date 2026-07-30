@@ -7,6 +7,8 @@ stub node that captures the callables instead of registering them.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from asyncua import ua
 
@@ -118,3 +120,66 @@ async def test_reactor_opc_does_not_duplicate_state(paired) -> None:
     reactor_opc, _, _ = paired
     assert reactor_opc.sensors is reactor_opc.reactor.sensors
     assert reactor_opc.actuators is reactor_opc.reactor.actuators
+
+
+class _StubVariable:
+    """An asyncua variable that just holds a value."""
+
+    def __init__(self, value: object) -> None:
+        self.value = value
+
+    async def write_value(self, value: object) -> None:
+        """Store a written value."""
+        self.value = value
+
+
+@pytest.fixture
+async def published(make_sensor, make_actuator):
+    """A ReactorOpc whose pairings variable is captured."""
+    reactor_opc = ReactorOpc(
+        "R0",
+        volume=5,
+        sensors=[make_sensor("R0:ph")],
+        actuators=[make_actuator("R0:pwm0"), make_actuator("R0:pwm1")],
+        period=10,
+    )
+    node = _CapturingNode()
+    reactor_opc.node = node
+    reactor_opc.pairings_var = _StubVariable("[]")
+    await reactor_opc.init_pairing_methods(2)
+    return reactor_opc, node.methods["set_pairing"], node.methods["unpair"]
+
+
+async def test_pairing_is_published_as_json(published) -> None:
+    """The GUI cannot read reactor.sampling.pairings; it reads this.
+
+    Regression: pairings lived only as server-side Python state and the
+    methods returned a bare bool, so no client could show what was
+    paired or recover the picture after a restart.
+    """
+    reactor_opc, set_pairing, _ = published
+
+    await _call(set_pairing, "R0:ph", "R0:pwm0", 0)
+
+    assert json.loads(reactor_opc.pairings_var.value) == [
+        {"sensor": "R0:ph", "actuator": "R0:pwm0", "channel": 0},
+    ]
+
+
+async def test_unpairing_is_published_too(published) -> None:
+    """Removing a pairing updates the variable."""
+    reactor_opc, set_pairing, unpair = published
+
+    await _call(set_pairing, "R0:ph", "R0:pwm0", 0)
+    await _call(unpair, "R0:ph", "R0:pwm0", 0)
+
+    assert json.loads(reactor_opc.pairings_var.value) == []
+
+
+async def test_a_refused_pairing_does_not_republish(published) -> None:
+    """A rejected call leaves the published picture alone."""
+    reactor_opc, set_pairing, _ = published
+    reactor_opc.pairings_var.value = "sentinel"
+
+    assert await _call(set_pairing, "R9:ph", "R0:pwm0", 0) is False
+    assert reactor_opc.pairings_var.value == "sentinel"

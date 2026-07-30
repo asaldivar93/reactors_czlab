@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from typing import TYPE_CHECKING
 
@@ -49,6 +50,7 @@ class ReactorOpc:
         self.create_child_nodes()
         # Flag for sensing loop completed
         self.sample_ready = asyncio.Event()
+        self.pairings_var: Node | None = None
 
     def __repr__(self) -> str:
         """Print the reactor id."""
@@ -88,6 +90,16 @@ class ReactorOpc:
         for actuator in self.actuator_nodes:
             await actuator.init_node(server, self.anode, self.idx)
 
+        # Read-only picture of the pairing table. It lives on the reactor
+        # node, above R{n}:sensors / R{n}:actuators, so match_tree never
+        # sees it - a String here could never be inserted into the FLOAT
+        # value column of the data table.
+        self.pairings_var = await self.node.add_variable(
+            idx,
+            f"{self.id}:pairings",
+            self.pairings_json(),
+        )
+
         await self.init_pairing_methods(idx)
 
     def _validate_pair(self, sid: str, aid: str) -> bool:
@@ -99,6 +111,33 @@ class ReactorOpc:
             _logger.error("%s is not an actuator of %s", aid, self.id)
             return False
         return True
+
+    def pairings_json(self) -> str:
+        """The current pairing table as a JSON list.
+
+        Sorted so an unchanged table serialises identically and a
+        subscriber is not woken by key ordering.
+        """
+        rows = [
+            {"sensor": sid, "actuator": aid, "channel": channel}
+            for sid, paired in self.reactor.sampling.pairings.items()
+            for aid, channel in paired
+        ]
+        rows.sort(key=lambda row: (row["sensor"], row["actuator"],
+                                   row["channel"]))
+        return json.dumps(rows)
+
+    async def publish_pairings(self) -> None:
+        """Write the pairing table to the OPC variable.
+
+        ``reactor.sampling.pairings`` is server-side Python state and
+        the pairing methods answer with a bare bool, so without this a
+        client cannot show what is paired, nor recover the picture after
+        its own restart.
+        """
+        if self.pairings_var is None:
+            return
+        await self.pairings_var.write_value(self.pairings_json())
 
     async def init_pairing_methods(self, idx: int) -> None:
         """Expose the set_pairing and unpair methods on the reactor node."""
@@ -136,6 +175,7 @@ class ReactorOpc:
                 except ValueError:
                     _logger.warning("%s was not in the unpaired loop", aid)
 
+            await self.publish_pairings()
             _logger.info("Current pairings: %s", dict(sampling.pairings))
             return True
 
@@ -167,6 +207,7 @@ class ReactorOpc:
                 if aid not in unpaired.actuators:
                     unpaired.actuators.append(aid)
 
+            await self.publish_pairings()
             _logger.info("Current pairings: %s", dict(sampling.pairings))
             return True
 
