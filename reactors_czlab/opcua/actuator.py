@@ -442,7 +442,7 @@ class ActuatorOpc:
             return run.set_duties(min_duty, dispense_duty)
 
         @uamethod
-        async def get_calibration(parent: Node) -> str:
+        def get_calibration(parent: Node) -> str:
             """Report the installed calibration and the in-flight run."""
             return self.calibration_json()
 

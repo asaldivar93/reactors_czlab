@@ -6,6 +6,7 @@ asyncua is a base dependency but a running server is not needed.
 
 from __future__ import annotations
 
+import inspect
 import json
 
 from asyncua import ua
@@ -178,8 +179,19 @@ class _CapturingNode:
 
 
 async def _call_method(method, *args):
-    """Invoke a captured @uamethod callback the way the server would."""
-    result = await method(ua.NodeId(), *(ua.Variant(a) for a in args))
+    """Invoke a captured @uamethod callback the way the server would.
+
+    @uamethod's wrapper is a coroutine only when the wrapped callback
+    itself is a coroutine function (it branches on
+    ``inspect.iscoroutinefunction``); a purely synchronous callback like
+    ``get_calibration`` returns its formatted result directly. A helper
+    that assumed one shape could not drive the other, so the await here
+    is conditional - the same pattern ``_call()`` in
+    tests/test_opcua_calibration.py uses for the same reason.
+    """
+    result = method(ua.NodeId(), *(ua.Variant(a) for a in args))
+    if inspect.isawaitable(result):
+        result = await result
     return result[0].Value
 
 
