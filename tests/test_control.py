@@ -150,6 +150,117 @@ def test_pid_output_is_clamped() -> None:
     assert control.get_value(1e6) == 0
 
 
+def test_pid_backwards_inverts_the_error() -> None:
+    """backwards=True demands above the setpoint and clamps below it.
+
+    The mirror image of the normal loop (dose below, clamp above), so
+    an acid pump paired to a pH probe on ``backwards`` and a base pump
+    on the default sense share one setpoint.
+    """
+    control = _PidControl(
+        setpoint=7.0,
+        kp=10.0,
+        ki=0.0,
+        kd=0.0,
+        backwards=True,
+        max_val=100.0,
+    )
+
+    assert control.get_value(9.0) == pytest.approx(20.0, rel=1e-3)
+    assert control.get_value(5.0) == 0.0
+
+
+def test_adopt_config_keeps_the_pid_integral() -> None:
+    """Retuning a gain in place must not zero the running integral.
+
+    Regression: gains reach the controller by rebuilding it from a fresh
+    ControlConfig; a rebuild would discard _integral_sum, bumping a live
+    PID on every gain edit. adopt_config() copies the configuration onto
+    the running object instead.
+    """
+    control = _PidControl(
+        setpoint=10.0,
+        kp=0.0,
+        ki=1.0,
+        kd=0.0,
+        min_val=0.0,
+        max_val=100.0,
+    )
+    control.get_value(0.0)
+    time.sleep(0.02)
+    control.get_value(0.0)
+    grown = control._integral_sum
+    assert grown > 0.0
+
+    control.adopt_config(
+        _PidControl(
+            setpoint=10.0,
+            kp=50.0,
+            ki=1.0,
+            kd=0.0,
+            min_val=0.0,
+            max_val=100.0,
+        ),
+    )
+
+    assert control.kp == 50.0
+    assert control._integral_sum == grown
+
+
+def test_factory_passes_pid_gains_and_backwards(factory: ControlFactory) -> None:
+    """kp/ki/kd and the backwards flag cross the config boundary."""
+    control = factory.create_control(
+        ControlConfig(
+            ControlMethod.pid,
+            kp=5.0,
+            ki=2.0,
+            kd=1.0,
+            backwards=True,
+        ),
+    )
+
+    assert (control.kp, control.ki, control.kd) == (5.0, 2.0, 1.0)
+    assert control.backwards is True
+
+
+def test_factory_pid_band_defaults_to_auto(factory: ControlFactory) -> None:
+    """Without an explicit band the PID derives it from the range."""
+    control = factory.create_control(
+        ControlConfig(ControlMethod.pid),
+        min_val=0.0,
+        max_val=40.0,
+    )
+
+    assert control._integral_band_is_default is True
+    assert (control.min_integral, control.max_integral) == (0.0, 40.0)
+
+
+def test_factory_pid_installs_an_explicit_band(factory: ControlFactory) -> None:
+    """auto_integral_band=False installs the operator's band verbatim."""
+    control = factory.create_control(
+        ControlConfig(
+            ControlMethod.pid,
+            auto_integral_band=False,
+            min_integral=1.0,
+            max_integral=5.0,
+        ),
+        min_val=0.0,
+        max_val=40.0,
+    )
+
+    assert control._integral_band_is_default is False
+    assert (control.min_integral, control.max_integral) == (1.0, 5.0)
+
+
+def test_factory_passes_boundaries_backwards(factory: ControlFactory) -> None:
+    """on_boundaries backwards reaches the controller too."""
+    control = factory.create_control(
+        ControlConfig(ControlMethod.on_boundaries, backwards=True),
+    )
+
+    assert control.backwards is True
+
+
 def test_pid_uses_measured_dt() -> None:
     """The integral grows with elapsed time, not with a hardcoded dt.
 

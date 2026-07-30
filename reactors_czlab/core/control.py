@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import math
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from time import perf_counter
 from typing import ClassVar
 
@@ -93,6 +93,28 @@ class _Control(ABC):
         that derived extra state from the old range (currently only
         ``_PidControl``'s anti-windup band) picks up the new one too.
         """
+
+    def adopt_config(self, other: _Control) -> None:
+        """Copy ``other``'s configuration onto this live controller.
+
+        Every field that takes part in equality (``compare=True``) is a
+        configuration field; every ``compare=False`` field is runtime
+        state. Copying only the former lets an OPC write change the
+        setpoint, gains, bounds or ``backwards`` flag of a *running*
+        controller without resetting its integral, its timer phase or
+        its current output - the state that a full rebuild would zero.
+        ``Actuator.set_control_config()`` uses this whenever the control
+        method is unchanged; see ``refresh_controller_limits()`` for the
+        same in-place-mutation idea applied to the clamp range alone.
+
+        ``other`` must be the same class as ``self`` (same method), which
+        is what the caller guarantees. ``_ManualControl`` re-declares
+        ``value`` as ``compare=True``, so its output - which *is* its
+        configuration - is copied here, unlike every other class.
+        """
+        for spec in fields(self):
+            if spec.compare:
+                setattr(self, spec.name, getattr(other, spec.name))
 
     @abstractmethod
     def get_value(self, sens_value: float) -> float:
@@ -238,7 +260,19 @@ class _OnBoundariesControl(_Control):
 
 @dataclass(kw_only=True)
 class _PidControl(_Control):
-    """Drive the output towards ``setpoint`` with a PID algorithm."""
+    """Drive the output towards ``setpoint`` with a PID algorithm.
+
+    Parameters
+    ----------
+    backwards:
+        If False (default) the output is positive while the reading is
+        below ``setpoint`` and clamps to ``min_val`` (0 by default) once
+        it rises above it. If True the sense is reversed - positive above
+        the setpoint, clamped below it - by flipping the sign of the
+        error and of the derivative term. Two actuators paired to the
+        same sensor, one normal and one ``backwards``, drive opposing
+        pumps (acid/base, heater/cooler) around a single setpoint.
+    """
 
     method: ClassVar[ControlMethod] = ControlMethod.pid
 
@@ -246,6 +280,7 @@ class _PidControl(_Control):
     kp: float = 100.0
     ki: float = 0.01
     kd: float = 0.0
+    backwards: bool = False
     # Anti-windup band for the integral term. Defaults to the output range
     # but is a separate knob, because the two limits are unrelated.
     min_integral: float | None = None
@@ -324,6 +359,25 @@ class _PidControl(_Control):
             min(self._integral_sum, self.max_integral),
         )
 
+    def adopt_config(self, other: _Control) -> None:
+        """Adopt config in place, keeping the integral and last reading.
+
+        Two additions to the base copy. ``_integral_band_is_default`` is a
+        ``compare=False`` flag recording whether the anti-windup band was
+        set explicitly; it is configuration in spirit, so it must follow
+        the band or an operator's explicit band would be silently
+        re-derived on the next recalibration. And ``_integral_sum`` is
+        reclamped into the freshly adopted band at once - for the same
+        reason ``refresh_derived_limits`` reclamps it, a band that just
+        narrowed must not leave the sum pinned above the new maximum.
+        """
+        super().adopt_config(other)
+        self._integral_band_is_default = other._integral_band_is_default
+        self._integral_sum = max(
+            self.min_integral,
+            min(self._integral_sum, self.max_integral),
+        )
+
     def __repr__(self) -> str:
         """Print the setpoint and gains."""
         return (
@@ -346,7 +400,11 @@ class _PidControl(_Control):
             return self.value
         self._last_time = this_time
 
-        error = self.setpoint - sens_value
+        # backwards flips the whole loop's sign: the error, and with it
+        # every term derived from it. Above the setpoint the error is now
+        # positive (demanding output), below it negative (clamped away).
+        direction = -1.0 if self.backwards else 1.0
+        error = direction * (self.setpoint - sens_value)
 
         p_term = self.kp * error
 
@@ -357,11 +415,17 @@ class _PidControl(_Control):
         )
 
         # Derivative on measurement rather than on error, so a setpoint
-        # change does not produce a derivative kick.
+        # change does not produce a derivative kick. Its sign follows
+        # ``direction`` too, so it still opposes the controlled motion.
         if self._last_measurement is None:
             d_term = 0.0
         else:
-            d_term = -self.kd * (sens_value - self._last_measurement) / dt
+            d_term = (
+                -direction
+                * self.kd
+                * (sens_value - self._last_measurement)
+                / dt
+            )
         self._last_measurement = sens_value
 
         output = p_term + self._integral_sum + d_term
@@ -426,11 +490,34 @@ class ControlFactory:
                     lower_bound=config.lb,
                     upper_bound=config.ub,
                     value_on=config.value,
+                    backwards=config.backwards,
                     **limits,
                 )
 
             case ControlMethod.pid:
-                return _PidControl(setpoint=config.setpoint, **limits)
+                # A None band tells _PidControl to auto-derive it from the
+                # output range (the default). The explicit band from the
+                # config is installed only when the operator opts in.
+                min_integral = (
+                    None
+                    if config.auto_integral_band
+                    else config.min_integral
+                )
+                max_integral = (
+                    None
+                    if config.auto_integral_band
+                    else config.max_integral
+                )
+                return _PidControl(
+                    setpoint=config.setpoint,
+                    kp=config.kp,
+                    ki=config.ki,
+                    kd=config.kd,
+                    backwards=config.backwards,
+                    min_integral=min_integral,
+                    max_integral=max_integral,
+                    **limits,
+                )
 
             case _:
                 error_message = f"Unknown control method: {config.method!r}"
