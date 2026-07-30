@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import TYPE_CHECKING
 
@@ -77,6 +78,55 @@ class ActuatorOpc:
             await self.cal_a.write_value(float(cal.a))
             await self.cal_b.write_value(float(cal.b))
             await self.cal_r2.write_value(float(cal.r2))
+
+    def calibration_json(self) -> str:
+        """The installed calibration and the in-flight run, as JSON.
+
+        Only ``cal_a``/``cal_b``/``cal_r2`` are published as variables -
+        they are the three that make sense as archived time series. The
+        duties, ``fitted_at`` and the measured points are needed by a
+        client that has to decide whether a flow or volume unit is
+        allowed, or draw the calibration screen, and neither belongs in
+        the ``data`` table.
+
+        ``run_points`` is the points collected so far by the
+        ``CalibrationRun`` and not yet fitted. They live on the run, not
+        on the ``Calibration``, so without this a second operator - or
+        the same one after a page reload - would see an empty run.
+        """
+        cal = self.actuator.channel.calibration
+        run_points = [[duty, flow] for duty, flow in self.run.points]
+        if cal is None:
+            return json.dumps(
+                {
+                    "file": None,
+                    "a": None,
+                    "b": None,
+                    "r2": None,
+                    "min_duty": None,
+                    "max_duty": None,
+                    "dispense_duty": None,
+                    "fitted_at": "",
+                    "is_fitted": False,
+                    "points": [],
+                    "run_points": run_points,
+                },
+            )
+        return json.dumps(
+            {
+                "file": cal.file,
+                "a": cal.a,
+                "b": cal.b,
+                "r2": cal.r2,
+                "min_duty": cal.min_duty,
+                "max_duty": cal.max_duty,
+                "dispense_duty": cal.dispense_duty,
+                "fitted_at": cal.fitted_at,
+                "is_fitted": cal.is_fitted,
+                "points": [[duty, flow] for duty, flow in cal.points],
+                "run_points": run_points,
+            },
+        )
 
     async def init_node(
         self,
@@ -391,6 +441,11 @@ class ActuatorOpc:
             """Adjust the stall floor and the bolus duty without a refit."""
             return run.set_duties(min_duty, dispense_duty)
 
+        @uamethod
+        async def get_calibration(parent: Node) -> str:
+            """Report the installed calibration and the in-flight run."""
+            return self.calibration_json()
+
         inarg_duty = ua.Argument()
         inarg_duty.Name = "Duty"
         inarg_duty.DataType = ua.NodeId(ua.ObjectIds.Float)
@@ -437,6 +492,7 @@ class ActuatorOpc:
             ("clear_points", clear_points, []),
             ("reload_calibration", reload_calibration, []),
             ("set_duties", set_duties, [inarg_min_duty, inarg_dispense]),
+            ("get_calibration", get_calibration, []),
         ):
             await self.node.add_method(
                 idx,

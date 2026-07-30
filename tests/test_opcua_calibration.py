@@ -77,7 +77,7 @@ async def calibrating(make_calibrated_actuator, clock):
     return node_opc, node_opc.node.methods
 
 
-async def test_the_six_methods_are_registered(calibrating) -> None:
+async def test_the_seven_methods_are_registered(calibrating) -> None:
     """The operator's whole workflow is reachable from an OPC client."""
     _, methods = calibrating
 
@@ -88,6 +88,7 @@ async def test_the_six_methods_are_registered(calibrating) -> None:
         "clear_points",
         "reload_calibration",
         "set_duties",
+        "get_calibration",
     }
 
 

@@ -6,6 +6,10 @@ asyncua is a base dependency but a running server is not needed.
 
 from __future__ import annotations
 
+import json
+
+from asyncua import ua
+
 from reactors_czlab.core.control import _OnBoundariesControl, _PidControl
 from reactors_czlab.core.data import OutputUnit
 from reactors_czlab.opcua.actuator import ActuatorOpc, output_unit_map
@@ -160,3 +164,83 @@ async def test_update_value_publishes_the_pump_totals(
     assert node.total_volume.value == 3.25
     assert node.cal_a.value == 0.01
     assert node.cal_r2.value == 1.0
+
+
+class _CapturingNode:
+    """Stand-in for an asyncua node that records added methods."""
+
+    def __init__(self) -> None:
+        self.methods: dict[str, object] = {}
+
+    async def add_method(self, idx, name, callback, *args, **kwargs) -> None:
+        """Capture the callback under its bare method name."""
+        self.methods[name.split(":")[-1]] = callback
+
+
+async def _call_method(method, *args):
+    """Invoke a captured @uamethod callback the way the server would."""
+    result = await method(ua.NodeId(), *(ua.Variant(a) for a in args))
+    return result[0].Value
+
+
+async def test_get_calibration_publishes_the_whole_line(
+    make_calibrated_actuator,
+) -> None:
+    """cal_a/b/r2 are published; the duties and fitted_at were not.
+
+    The config form needs fitted_at to refuse a flow or volume unit
+    before writing it, because check_unit() rejects that server-side and
+    logs it where an operator will not look.
+    """
+    actuator = make_calibrated_actuator()
+    node = ActuatorOpc(actuator)
+    node.node = _CapturingNode()
+    await node.init_calibration_methods(2)
+
+    payload = json.loads(
+        await _call_method(node.node.methods["get_calibration"]),
+    )
+
+    assert payload["min_duty"] == 400.0
+    assert payload["max_duty"] == 4000.0
+    assert payload["dispense_duty"] == 2000.0
+    assert payload["is_fitted"] is True
+    assert payload["points"] == [[500.0, 5.0], [2500.0, 25.0]]
+
+
+async def test_get_calibration_reports_an_unfitted_line(
+    make_calibrated_actuator,
+) -> None:
+    """An unfitted placeholder must be visibly unfitted."""
+    actuator = make_calibrated_actuator(fitted=False)
+    node = ActuatorOpc(actuator)
+    node.node = _CapturingNode()
+    await node.init_calibration_methods(2)
+
+    payload = json.loads(
+        await _call_method(node.node.methods["get_calibration"]),
+    )
+
+    assert payload["is_fitted"] is False
+    assert payload["fitted_at"] == ""
+
+
+async def test_get_calibration_includes_the_in_flight_run_points(
+    make_calibrated_actuator,
+) -> None:
+    """Points collected before a fit are otherwise invisible.
+
+    They live in CalibrationRun.points, not Calibration.points, so a
+    second operator or a page reload would show an empty run.
+    """
+    actuator = make_calibrated_actuator()
+    node = ActuatorOpc(actuator)
+    node.node = _CapturingNode()
+    node.run.points = [(1000.0, 10.0)]
+    await node.init_calibration_methods(2)
+
+    payload = json.loads(
+        await _call_method(node.node.methods["get_calibration"]),
+    )
+
+    assert payload["run_points"] == [[1000.0, 10.0]]
