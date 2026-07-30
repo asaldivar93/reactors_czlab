@@ -38,7 +38,7 @@ class SensorOpc:
         _logger.info("In node %s added %s", bnp.Name, bns.Name)
 
         # Add channels to store data from the sensor
-        for channel in sensor.channels:
+        for index, channel in enumerate(sensor.channels):
             var = await self.node.add_variable(
                 idx,
                 f"{self.id}:{channel.units}",
@@ -48,6 +48,15 @@ class SensorOpc:
             await var.write_attribute(
                 ua.AttributeIds.Description,
                 ua.DataValue(ua.LocalizedText(Text=channel.description)),
+            )
+            # set_pairing takes the channel's *index*, and a browse gives
+            # only its name. A property rather than a variable: its browse
+            # name has one part, so OpcClient.match_tree skips it and it
+            # never reaches the FLOAT value column of the data table.
+            await var.add_property(
+                idx,
+                "ChannelIndex",
+                index,
             )
             self.channels.append(var)
 
@@ -86,6 +95,32 @@ class SensorOpc:
             write_calibration,
             [inarg_calp, inarg_calv],
             [outarg1, outarg2, outarg3],
+        )
+
+        @uamethod
+        async def read_calibration_status(
+            parent: Node,
+            cal_point: float,
+        ) -> tuple[str, float, float, float]:
+            """Read one calibration point without changing it."""
+            status = await self.sensor.read_calibration_status(cal_point)
+            return (
+                status.status,
+                status.quality,
+                status.value,
+                status.process_value,
+            )
+
+        outarg4 = ua.Argument()
+        outarg4.Name = "Process_value"
+        outarg4.DataType = ua.NodeId(ua.ObjectIds.Float)
+
+        await self.node.add_method(
+            idx,
+            f"{self.id}:read_calibration_status",
+            read_calibration_status,
+            [inarg_calp],
+            [outarg1, outarg2, outarg3, outarg4],
         )
 
     async def update_value(self) -> None:
