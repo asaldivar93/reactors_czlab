@@ -3,8 +3,12 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-# asyncio.TaskGroup and enum.StrEnum are both 3.11+.
-requires-python = ">=3.13"
+# asyncio.TaskGroup, enum.StrEnum and datetime.UTC are all 3.11+, and
+# nothing here needs anything newer. The floor is 3.11 because Raspberry
+# Pi OS Bookworm ships 3.11: a higher floor makes the Pi - which is where
+# the server runs - uninstallable. Verified with
+# `python3.11 -m compileall reactors_czlab tests scripts`.
+requires-python = ">=3.11"
 name = "reactors_czlab"
 version = "2025.0.0"
 description = "Bioreactor control module"
