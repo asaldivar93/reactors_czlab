@@ -8,6 +8,7 @@ nothing installed but pytest.
 
 from __future__ import annotations
 
+import types
 from typing import Callable
 
 import pytest
@@ -19,6 +20,8 @@ from reactors_czlab.core.data import (
     PhysicalInfo,
     PlcOutput,
 )
+from reactors_czlab.gui.address import AddressBook
+from reactors_czlab.gui.state import STATE as GUI_STATE
 
 
 class FakeSensor:
@@ -150,3 +153,52 @@ def calibration() -> Calibration:
 def make_calibrated_actuator() -> Callable[..., RandomActuator]:
     """Factory for actuators with a calibrated pump channel."""
     return _build_calibrated_actuator
+
+
+#: A browsed address space, in the shape OpcClient produces.
+GUI_SENSOR_VARS = {
+    "ns=2;i=10": {"reactor": "R0", "name": "ph", "channel": "pH"},
+    "ns=2;i=11": {"reactor": "R0", "name": "ph", "channel": "oC"},
+    "ns=2;i=12": {"reactor": "R1", "name": "do", "channel": "ppm"},
+}
+
+GUI_ACTUATOR_VARS = {
+    "ns=2;i=20": {"reactor": "R0", "name": "pwm0", "channel": "curr_value"},
+    "ns=2;i=21": {"reactor": "R0", "name": "pwm0", "channel": "total_volume"},
+    "ns=2;i=22": {"reactor": "R0", "name": "pwm0", "channel": "cal_a"},
+    "ns=2;i=23": {"reactor": "R0", "name": "pwm0", "channel": "cal_b"},
+    "ns=2;i=24": {"reactor": "R0", "name": "pwm0", "channel": "cal_r2"},
+    "ns=2;i=25": {"reactor": "R0", "name": "pwm0", "channel": "setpoint"},
+    "ns=2;i=26": {"reactor": "R0", "name": "pwm1", "channel": "curr_value"},
+}
+
+GUI_METHODS = {
+    "ns=2;i=30": {"reactor": "R0", "name": ["set_pairing"]},
+    "ns=2;i=31": {"reactor": "R0", "name": ["unpair"]},
+    "ns=2;i=32": {"reactor": "R0", "name": ["pwm0", "get_calibration"]},
+    "ns=2;i=33": {"reactor": "R0", "name": ["pwm1", "get_calibration"]},
+}
+
+
+@pytest.fixture
+def gui_state(monkeypatch: pytest.MonkeyPatch):
+    """The GUI's AppState as if it had connected and browsed.
+
+    Returned so a test can stub further - reading(), write_variable()
+    and call() are what the page suites replace.
+    """
+    monkeypatch.setattr(
+        GUI_STATE,
+        "book",
+        AddressBook.build(
+            GUI_SENSOR_VARS,
+            GUI_ACTUATOR_VARS,
+            GUI_METHODS,
+        ),
+    )
+    monkeypatch.setattr(
+        GUI_STATE,
+        "client",
+        types.SimpleNamespace(recording=False),
+    )
+    return GUI_STATE
