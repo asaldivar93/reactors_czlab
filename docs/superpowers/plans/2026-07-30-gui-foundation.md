@@ -674,8 +674,12 @@ git commit -m "feat: read Hamilton calibration status without writing one"
 - Consumes: Task 2's `Sensor.read_calibration_status`.
 - Produces: OPC method `{sensor_id}:read_calibration_status(Cal_point: Float)
   -> (Status: String, Quality: Float, Value: Float, Process_value: Float)`.
-  Each channel variable carries a `ChannelIndex` property (`UInt32`) holding
-  its position in `sensor.channels`.
+  Each channel variable carries a `ChannelIndex` property holding its
+  position in `sensor.channels`, added as a plain `int` so asyncua types it
+  `Int64`. Do not pass an explicit `ua.Variant(..., UInt32)`: nothing in
+  this codebase inspects a declared `VariantType`, `get_value()` decodes to
+  a Python `int` either way, and an explicit Variant is not comparable to
+  an `int` in the test below.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -870,11 +874,7 @@ In `reactors_czlab/opcua/sensor.py`, change the channel loop in `init_node`
             # only its name. A property rather than a variable: its browse
             # name has one part, so OpcClient.match_tree skips it and it
             # never reaches the FLOAT value column of the data table.
-            await var.add_property(
-                idx,
-                "ChannelIndex",
-                ua.Variant(index, ua.VariantType.UInt32),
-            )
+            await var.add_property(idx, "ChannelIndex", index)
             self.channels.append(var)
 ```
 
