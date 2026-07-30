@@ -13,6 +13,7 @@ import csv
 import getpass
 import logging
 import os
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -23,6 +24,8 @@ except ImportError:  # pragma: no cover - depends on the install
     psycopg = None
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from psycopg import Connection
 
 #: Whether the database features are available in this install.
@@ -301,11 +304,19 @@ SELECT_ACTIVE = (
 #: Whether any running experiment already owns one of these reactors.
 #: ``&&`` is the array-overlap operator; the reactor set is a TEXT[], so
 #: this is one indexable comparison rather than a LIKE over a joined
-#: string, which would match R1 inside R10.
+#: string, which would match R1 inside R10. ``FOR UPDATE`` locks the
+#: matching rows for the rest of the transaction: under PostgreSQL's
+#: default READ COMMITTED isolation, a plain SELECT would let a second,
+#: concurrent ``start_experiment`` re-read a snapshot that predates the
+#: first transaction's commit, so both could pass the overlap check on
+#: the same reactor. With the lock, the second transaction blocks here
+#: until the first commits (or rolls back), then sees its result. Do
+#: not "simplify" this back to a plain SELECT.
 SELECT_ACTIVE_OVERLAP = (
     "SELECT name FROM experiments "
     "WHERE start_date IS NOT NULL AND end_date IS NULL "
-    "AND reactors && %s"
+    "AND reactors && %s "
+    "FOR UPDATE"
 )
 
 SELECT_EXPERIMENT_DATA = SELECT_DATA + (
@@ -357,6 +368,50 @@ def _fetch(statement: str, params: tuple = ()) -> list:
         connection.close()
 
 
+@contextmanager
+def _transaction() -> Iterator[Any]:
+    """Run several statements on one connection, in one transaction.
+
+    ``_fetch``/``_execute`` each open their own connection, so a
+    check-then-act sequence built out of them is not atomic: a
+    concurrent caller can run its own check between this caller's check
+    and its write. Use this instead whenever a decision (a SELECT) and
+    the write that follows from it must be seen as a single unit by any
+    other transaction.
+
+    Yields
+    ------
+    Cursor
+        A cursor bound to one connection, for the caller to run every
+        statement of the transaction on.
+
+    Raises
+    ------
+    SqlError
+        If psycopg is missing, or any statement failed - in which case
+        the transaction is rolled back first. A caller that raises its
+        own ``SqlError`` from inside the ``with`` block (e.g. to refuse
+        an invalid request) is not caught here; the connection is still
+        closed, which implicitly rolls back an uncommitted transaction.
+
+    """
+    require_psycopg()
+    connection = connect_to_db()
+    try:
+        with connection.cursor() as cursor:
+            yield cursor
+        connection.commit()
+    except psycopg.Error as err:
+        try:
+            connection.rollback()
+        except psycopg.Error:
+            _logger.debug("Rollback failed", exc_info=True)
+        error_message = "Error during transaction"
+        raise SqlError(error_message) from err
+    finally:
+        connection.close()
+
+
 def create_experiment(name: str, reactors: list[str]) -> None:
     """Record a new experiment, not yet started.
 
@@ -375,6 +430,14 @@ def create_experiment(name: str, reactors: list[str]) -> None:
 def start_experiment(name: str) -> None:
     """Mark an experiment as running from now.
 
+    The existence check, the overlap check and the write happen on a
+    single connection inside one transaction (see ``_transaction``), and
+    the overlap check locks the rows it reads with ``FOR UPDATE``. Doing
+    the check and the write on separate connections (as ``_fetch``
+    followed by ``_execute`` would) let two concurrent calls each pass
+    the overlap check before either committed, so both could start on
+    the same reactor.
+
     Raises
     ------
     SqlError
@@ -385,27 +448,31 @@ def start_experiment(name: str) -> None:
 
     """
     require_psycopg()
-    rows = _fetch(SELECT_EXPERIMENTS)
-    matched = [row for row in rows if row[0] == name]
-    if not matched:
-        error_message = f"No experiment named {name}"
-        raise SqlError(error_message)
+    with _transaction() as cursor:
+        cursor.execute(SELECT_EXPERIMENTS)
+        rows = cursor.fetchall()
+        matched = [row for row in rows if row[0] == name]
+        if not matched:
+            error_message = f"No experiment named {name}"
+            raise SqlError(error_message)
 
-    _name, reactors, start_date, end_date = matched[0]
-    if start_date is not None and end_date is None:
-        error_message = f"{name} is already running"
-        raise SqlError(error_message)
+        _name, reactors, start_date, end_date = matched[0]
+        if start_date is not None and end_date is None:
+            error_message = f"{name} is already running"
+            raise SqlError(error_message)
 
-    reactors = list(reactors)
-    clashes = _fetch(SELECT_ACTIVE_OVERLAP, (reactors,))
-    if clashes:
-        error_message = (
-            f"Cannot start {name}: {clashes[0][0]} is already running on "
-            f"one of {reactors}"
-        )
-        raise SqlError(error_message)
+        reactors = list(reactors)
+        cursor.execute(SELECT_ACTIVE_OVERLAP, (reactors,))
+        clashes = cursor.fetchall()
+        if clashes:
+            error_message = (
+                f"Cannot start {name}: {clashes[0][0]} is already "
+                f"running on one of {reactors}"
+            )
+            raise SqlError(error_message)
 
-    _execute(UPDATE_START, (datetime.now(), name))
+        cursor.execute(UPDATE_START, (datetime.now(), name))
+
     _logger.info("Started experiment %s on %s", name, reactors)
 
 

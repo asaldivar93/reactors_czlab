@@ -8,6 +8,8 @@ installed, so they assert the guard's contract, not a particular answer.
 
 from __future__ import annotations
 
+from typing import Self
+
 import pytest
 
 from reactors_czlab.sql import operations
@@ -69,3 +71,93 @@ def test_every_experiment_function_is_guarded() -> None:
     ):
         with pytest.raises(operations.SqlError, match="psycopg"):
             call()
+
+
+class _FakeCursor:
+    """A cursor that records statements and answers canned queries."""
+
+    def __init__(self) -> None:
+        self.executed: list[tuple[str, tuple]] = []
+
+    def execute(self, statement: str, params: tuple = ()) -> None:
+        self.executed.append((statement, params))
+
+    def fetchall(self) -> list:
+        statement, _params = self.executed[-1]
+        if statement == operations.SELECT_EXPERIMENTS:
+            return [("exp", ["R0"], None, None)]
+        if statement == operations.SELECT_ACTIVE_OVERLAP:
+            return []
+        return []
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *exc_info: object) -> bool:
+        return False
+
+
+class _FakeConnection:
+    """A connection whose cursor is always the same ``_FakeCursor``."""
+
+    def __init__(self) -> None:
+        self.cur = _FakeCursor()
+        self.committed = False
+        self.closed = False
+
+    def cursor(self) -> _FakeCursor:
+        return self.cur
+
+    def commit(self) -> None:
+        self.committed = True
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_start_experiment_uses_one_connection_and_locks_the_overlap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: check and write used to be separate transactions.
+
+    ``start_experiment`` used to run ``SELECT_EXPERIMENTS``,
+    ``SELECT_ACTIVE_OVERLAP`` and ``UPDATE_START`` each on its own
+    connection/transaction (via ``_fetch``/``_execute``). Two concurrent
+    calls with overlapping reactor sets could both pass the overlap
+    check before either committed its update, so both would succeed and
+    one reactor would end up in two active experiments at once. The fix
+    is to run all three statements on a single connection inside one
+    transaction, with the overlap SELECT taking a row lock.
+    """
+    connections: list[_FakeConnection] = []
+
+    def _fake_connect() -> _FakeConnection:
+        connection = _FakeConnection()
+        connections.append(connection)
+        return connection
+
+    monkeypatch.setattr(operations, "PSYCOPG_AVAILABLE", True)
+    monkeypatch.setattr(operations, "connect_to_db", _fake_connect)
+
+    operations.start_experiment("exp")
+
+    assert len(connections) == 1
+    executed = [stmt for stmt, _params in connections[0].cur.executed]
+    assert executed == [
+        operations.SELECT_EXPERIMENTS,
+        operations.SELECT_ACTIVE_OVERLAP,
+        operations.UPDATE_START,
+    ]
+    assert connections[0].committed
+    assert connections[0].closed
+
+
+def test_overlap_select_locks_the_matching_rows() -> None:
+    """FOR UPDATE blocks a concurrent start until this one commits.
+
+    Under PostgreSQL's default READ COMMITTED isolation, a plain SELECT
+    re-reads a snapshot that predates a concurrent commit; only a
+    locking read forces the second transaction to wait and then see the
+    first transaction's result.
+    """
+    assert "FOR UPDATE" in operations.SELECT_ACTIVE_OVERLAP
