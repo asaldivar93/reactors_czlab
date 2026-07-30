@@ -271,3 +271,195 @@ def rows_to_polars(rows: list) -> Any:
     import polars as pl
 
     return pl.DataFrame(rows, schema=schema, orient="row")
+
+
+INSERT_EXPERIMENT = (
+    "INSERT INTO experiments (name, reactors) VALUES (%s, %s)"
+)
+
+UPDATE_START = (
+    "UPDATE experiments SET start_date = %s "
+    "WHERE name = %s AND start_date IS NULL"
+)
+
+UPDATE_STOP = (
+    "UPDATE experiments SET end_date = %s "
+    "WHERE name = %s AND end_date IS NULL"
+)
+
+SELECT_EXPERIMENTS = (
+    "SELECT name, reactors, start_date, end_date FROM experiments "
+    "ORDER BY id"
+)
+
+#: Running experiments: started and not yet stopped.
+SELECT_ACTIVE = (
+    "SELECT name, reactors FROM experiments "
+    "WHERE start_date IS NOT NULL AND end_date IS NULL"
+)
+
+#: Whether any running experiment already owns one of these reactors.
+#: ``&&`` is the array-overlap operator; the reactor set is a TEXT[], so
+#: this is one indexable comparison rather than a LIKE over a joined
+#: string, which would match R1 inside R10.
+SELECT_ACTIVE_OVERLAP = (
+    "SELECT name FROM experiments "
+    "WHERE start_date IS NOT NULL AND end_date IS NULL "
+    "AND reactors && %s"
+)
+
+SELECT_EXPERIMENT_DATA = SELECT_DATA + (
+    " WHERE experiment_name = %s ORDER BY date"
+)
+
+
+def _execute(statement: str, params: tuple) -> None:
+    """Run one statement in its own connection and commit it.
+
+    Raises
+    ------
+    SqlError
+        If psycopg is missing or the statement failed.
+
+    """
+    require_psycopg()
+    connection = connect_to_db()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(statement, params)
+        connection.commit()
+    except psycopg.Error as err:
+        error_message = f"Error running {statement} with {params}"
+        raise SqlError(error_message) from err
+    finally:
+        connection.close()
+
+
+def _fetch(statement: str, params: tuple = ()) -> list:
+    """Run one query in its own connection and return every row.
+
+    Raises
+    ------
+    SqlError
+        If psycopg is missing or the query failed.
+
+    """
+    require_psycopg()
+    connection = connect_to_db()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(statement, params)
+            return cursor.fetchall()
+    except psycopg.Error as err:
+        error_message = f"Error running {statement} with {params}"
+        raise SqlError(error_message) from err
+    finally:
+        connection.close()
+
+
+def create_experiment(name: str, reactors: list[str]) -> None:
+    """Record a new experiment, not yet started.
+
+    Raises
+    ------
+    SqlError
+        If psycopg is missing, the name is already taken, or the insert
+        failed.
+
+    """
+    require_psycopg()
+    _execute(INSERT_EXPERIMENT, (name, list(reactors)))
+    _logger.info("Created experiment %s on %s", name, reactors)
+
+
+def start_experiment(name: str) -> None:
+    """Mark an experiment as running from now.
+
+    Raises
+    ------
+    SqlError
+        If psycopg is missing, the experiment does not exist, it has
+        already been started, or one of its reactors already belongs to
+        a running experiment. Overlapping reactor sets are refused
+        because a row can carry only one experiment name.
+
+    """
+    require_psycopg()
+    rows = _fetch(SELECT_EXPERIMENTS)
+    matched = [row for row in rows if row[0] == name]
+    if not matched:
+        error_message = f"No experiment named {name}"
+        raise SqlError(error_message)
+
+    _name, reactors, start_date, end_date = matched[0]
+    if start_date is not None and end_date is None:
+        error_message = f"{name} is already running"
+        raise SqlError(error_message)
+
+    reactors = list(reactors)
+    clashes = _fetch(SELECT_ACTIVE_OVERLAP, (reactors,))
+    if clashes:
+        error_message = (
+            f"Cannot start {name}: {clashes[0][0]} is already running on "
+            f"one of {reactors}"
+        )
+        raise SqlError(error_message)
+
+    _execute(UPDATE_START, (datetime.now(), name))
+    _logger.info("Started experiment %s on %s", name, reactors)
+
+
+def stop_experiment(name: str) -> None:
+    """Mark a running experiment as finished.
+
+    Raises
+    ------
+    SqlError
+        If psycopg is missing or the update failed.
+
+    """
+    require_psycopg()
+    _execute(UPDATE_STOP, (datetime.now(), name))
+    _logger.info("Stopped experiment %s", name)
+
+
+def list_experiments() -> list:
+    """Every experiment as ``(name, reactors, start_date, end_date)``.
+
+    Raises
+    ------
+    SqlError
+        If psycopg is missing or the query failed.
+
+    """
+    return _fetch(SELECT_EXPERIMENTS)
+
+
+def active_experiments() -> dict[str, str]:
+    """Map each reactor to the running experiment that owns it.
+
+    This is what the archiver tags rows with.
+
+    Raises
+    ------
+    SqlError
+        If psycopg is missing or the query failed.
+
+    """
+    tags: dict[str, str] = {}
+    for name, reactors in _fetch(SELECT_ACTIVE):
+        for reactor in reactors:
+            tags[reactor] = name
+    return tags
+
+
+def query_experiment_data(name: str) -> list:
+    """Every archived row tagged with this experiment.
+
+    Raises
+    ------
+    SqlError
+        If psycopg is missing or the query failed.
+
+    """
+    return _fetch(SELECT_EXPERIMENT_DATA, (name,))

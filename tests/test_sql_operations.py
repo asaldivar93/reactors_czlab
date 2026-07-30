@@ -42,3 +42,30 @@ def test_columns_and_select_agree() -> None:
     """A column added to one and not the other misaligns every row."""
     for column in operations.COLUMNS:
         assert column in operations.SELECT_DATA
+
+
+def test_experiment_statements_use_the_array_column() -> None:
+    """reactors is TEXT[], so overlap is an array operator, not LIKE."""
+    assert "&&" in operations.SELECT_ACTIVE_OVERLAP
+
+
+def test_a_running_experiment_has_no_end_date() -> None:
+    """end_date NULL is what marks an experiment as active."""
+    assert "end_date IS NULL" in operations.SELECT_ACTIVE
+
+
+def test_every_experiment_function_is_guarded() -> None:
+    """None of them may reach psycopg when it is absent."""
+    if operations.PSYCOPG_AVAILABLE:
+        pytest.skip("psycopg is installed; the guard cannot be observed")
+
+    for call in (
+        lambda: operations.create_experiment("e", ["R0"]),
+        lambda: operations.start_experiment("e"),
+        lambda: operations.stop_experiment("e"),
+        operations.list_experiments,
+        operations.active_experiments,
+        lambda: operations.query_experiment_data("e"),
+    ):
+        with pytest.raises(operations.SqlError, match="psycopg"):
+            call()
