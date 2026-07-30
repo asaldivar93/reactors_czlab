@@ -1,4 +1,11 @@
-"""Store and retrieve reactor readings from PostgreSQL."""
+"""Store and retrieve reactor readings from PostgreSQL.
+
+Both third-party dependencies are optional. ``psycopg`` has no wheel for
+32 bit Raspberry Pi OS, and the GUI has to import and run with the
+database features disabled rather than failing at import - so the import
+is guarded and every public function checks ``require_psycopg()`` first.
+``polars`` is needed by one function and is imported inside it.
+"""
 
 from __future__ import annotations
 
@@ -8,14 +15,18 @@ import logging
 import os
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-import polars as pl
-import psycopg
+try:
+    import psycopg
+except ImportError:  # pragma: no cover - depends on the install
+    psycopg = None
 
 if TYPE_CHECKING:
     from psycopg import Connection
 
+#: Whether the database features are available in this install.
+PSYCOPG_AVAILABLE = psycopg is not None
 
 _logger = logging.getLogger("client.sql")
 
@@ -26,29 +37,80 @@ DB_HOST = os.environ.get("BIOREACTOR_DB_HOST")
 DB_PORT = os.environ.get("BIOREACTOR_DB_PORT")
 DB_PASSWORD = os.environ.get("BIOREACTOR_DB_PASSWORD")
 
-COLUMNS = ("node_id", "date", "reactor", "name", "channel", "value")
-
-SCHEMA = {
-    "node_id": pl.String,
-    "date": pl.Datetime("ms"),
-    "reactor": pl.String,
-    "name": pl.String,
-    "channel": pl.String,
-    "value": pl.Float64,
-}
+COLUMNS = (
+    "node_id",
+    "date",
+    "reactor",
+    "name",
+    "channel",
+    "value",
+    "experiment_name",
+)
 
 INSERT_DATA = (
-    "INSERT INTO data (node_id, date, reactor, name, channel, value) "
-    "VALUES (%s, %s, %s, %s, %s, %s)"
+    "INSERT INTO data "
+    "(node_id, date, reactor, name, channel, value, experiment_name) "
+    "VALUES (%s, %s, %s, %s, %s, %s, %s)"
 )
 
 SELECT_DATA = (
-    "SELECT node_id, date, reactor, name, channel, value FROM data"
+    "SELECT node_id, date, reactor, name, channel, value, experiment_name "
+    "FROM data"
 )
 
 
 class SqlError(Exception):
     """Custom sql error."""
+
+
+def require_psycopg() -> None:
+    """Refuse to go further when psycopg is not installed.
+
+    Raises
+    ------
+    SqlError
+        When the install has no psycopg. The message names the extra to
+        install, because it is shown to the operator in the GUI.
+
+    """
+    if not PSYCOPG_AVAILABLE:
+        error_message = (
+            "psycopg is not installed, so the database features are "
+            "unavailable; install the 'client' extra"
+        )
+        raise SqlError(error_message)
+
+
+def polars_schema() -> dict:
+    """Column types of the ``data`` table, for polars.
+
+    A function rather than a module constant so ``polars`` - needed by
+    one consumer and absent from a minimal Pi install - is imported only
+    when it is actually used.
+
+    Raises
+    ------
+    SqlError
+        When polars is not installed.
+
+    """
+    try:
+        import polars as pl
+    except ImportError as err:
+        error_message = (
+            "polars is not installed; install the 'client' extra"
+        )
+        raise SqlError(error_message) from err
+
+    return {
+        "node_id": pl.String,
+        "date": pl.Datetime("ms"),
+        "reactor": pl.String,
+        "name": pl.String,
+        "channel": pl.String,
+        "value": pl.Float64,
+        "experiment_name": pl.String,
+    }
 
 
 def connect_to_db() -> Connection:
@@ -57,9 +119,10 @@ def connect_to_db() -> Connection:
     Raises
     ------
     SqlError
-        If the database is unreachable.
+        If psycopg is not installed, or if the database is unreachable.
 
     """
+    require_psycopg()
     params = {"dbname": DB_NAME, "user": DB_USER}
     if DB_HOST:
         params["host"] = DB_HOST
@@ -97,6 +160,7 @@ def store_data(
         info["name"],
         info["channel"],
         info["value"],
+        info.get("experiment_name"),
     )
     try:
         with connection.cursor() as cursor:
@@ -154,9 +218,10 @@ def query_data(time_range: tuple[float, str]) -> list:
     Raises
     ------
     SqlError
-        If the query failed.
+        If psycopg is not installed, or if the query failed.
 
     """
+    require_psycopg()
     cutoff = get_date_filter_range(*time_range)
 
     query = SELECT_DATA
@@ -188,10 +253,21 @@ def row_to_csv(out_name: str, rows: list) -> None:
         writer.writerows(rows)
 
 
-def rows_to_polars(rows: list) -> pl.DataFrame:
+def rows_to_polars(rows: list) -> Any:
     """Export sql queries to a polars dataframe.
 
     The schema is fixed by the data table, so an empty result set still
     produces a dataframe with the right columns.
+
+    Raises
+    ------
+    SqlError
+        When polars is not installed.
+
     """
-    return pl.DataFrame(rows, schema=SCHEMA, orient="row")
+    # polars_schema() first: it is the one that turns a missing polars
+    # into an SqlError the GUI can show, rather than an ImportError.
+    schema = polars_schema()
+    import polars as pl
+
+    return pl.DataFrame(rows, schema=schema, orient="row")
