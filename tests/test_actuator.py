@@ -2,10 +2,17 @@
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from reactors_czlab.core.actuator import RandomActuator
-from reactors_czlab.core.control import _ManualControl, _TimerControl
+from reactors_czlab.core.control import (
+    _ManualControl,
+    _OnBoundariesControl,
+    _PidControl,
+    _TimerControl,
+)
 from reactors_czlab.core.data import (
     ERROR_VALUE,
     Calibration,
@@ -74,6 +81,93 @@ def test_identical_config_keeps_the_controller(
     actuator.set_control_config(config)
 
     assert actuator.controller is first
+
+
+def test_same_method_config_change_keeps_the_controller(
+    actuator: RandomActuator,
+) -> None:
+    """A same-method retune mutates the live controller in place.
+
+    Regression: gains and the backwards flag reach the controller by
+    rebuilding it from a fresh ControlConfig on every OPC write. A
+    rebuild zeroes a running PID's integral, so an operator retuning a
+    gain would bump the loop. set_control_config now adopts the new
+    configuration onto the running object when the method is unchanged.
+    """
+    actuator.set_control_config(
+        ControlConfig(ControlMethod.pid, setpoint=35.0, kp=0.0, ki=1.0),
+    )
+    pid = actuator.controller
+    assert isinstance(pid, _PidControl)
+
+    actuator.write_output(0.0)
+    time.sleep(0.02)
+    actuator.write_output(0.0)
+    grown = pid._integral_sum
+    assert grown > 0.0
+
+    actuator.set_control_config(
+        ControlConfig(ControlMethod.pid, setpoint=35.0, kp=50.0, ki=1.0),
+    )
+
+    assert actuator.controller is pid
+    assert pid.kp == 50.0
+    assert pid._integral_sum == grown
+
+
+def test_boundaries_backwards_toggle_keeps_the_controller(
+    actuator: RandomActuator,
+) -> None:
+    """Toggling backwards live must not rebuild or reset the output.
+
+    A rebuild would re-run __post_init__, which seeds the output from
+    value_on when backwards is True - so a controller sitting OFF would
+    jump ON purely from the toggle. adopt_config keeps the object and
+    its current output; the next get_value re-evaluates on its own.
+    """
+    actuator.set_control_config(
+        ControlConfig(
+            ControlMethod.on_boundaries,
+            lb=1.0,
+            ub=2.0,
+            value=150.0,
+        ),
+    )
+    ctrl = actuator.controller
+    assert isinstance(ctrl, _OnBoundariesControl)
+    ctrl.get_value(3.0)  # above ub -> off
+    assert ctrl.value == 0.0
+
+    actuator.set_control_config(
+        ControlConfig(
+            ControlMethod.on_boundaries,
+            lb=1.0,
+            ub=2.0,
+            value=150.0,
+            backwards=True,
+        ),
+    )
+
+    assert actuator.controller is ctrl
+    assert ctrl.backwards is True
+    assert ctrl.value == 0.0  # a rebuild would have jumped to 150
+
+
+def test_method_change_swaps_the_controller(
+    actuator: RandomActuator,
+) -> None:
+    """A different method still gets a fresh controller object."""
+    actuator.set_control_config(
+        ControlConfig(ControlMethod.pid, setpoint=7.0),
+    )
+    pid = actuator.controller
+
+    actuator.set_control_config(
+        ControlConfig(ControlMethod.manual, value=10.0),
+    )
+
+    assert actuator.controller is not pid
+    assert isinstance(actuator.controller, _ManualControl)
 
 
 def test_bad_config_keeps_the_old_controller(

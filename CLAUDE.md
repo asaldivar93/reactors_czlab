@@ -32,9 +32,11 @@ Dependency direction: `core` never imports `opcua`. `data.py` imports nothing.
 ## Hard constraints — breaking these breaks a deployment
 
 - **Python >= 3.11.** `asyncio.TaskGroup` and `enum.StrEnum` are used.
-- **`pymodbus` is pinned `<3.9`.** `BinaryPayloadBuilder`/`Decoder` live in
-  `pymodbus.payload`, which later releases remove. Unpinning requires porting
-  `ModbusHandler` to `convert_from_registers`/`convert_to_registers`.
+- **`pymodbus` is pinned `>=3.9`.** `BinaryPayloadBuilder`/`Decoder` lived in
+  `pymodbus.payload`, which 3.9 removed; `ModbusHandler` now uses
+  `convert_to_registers`/`convert_from_registers` instead, whose `word_order`
+  kwarg also landed in 3.9. (There is no pymodbus 4.0 — the latest release is
+  3.x.) Do not reintroduce the `pymodbus.payload` API.
 - **The `server` and `client` extras are independent.** The Pi has no psycopg;
   the PC has no pymodbus. So:
   - `reactors_czlab/__init__.py` and `core/__init__.py` must stay
@@ -77,16 +79,38 @@ from that sensor channel once per `period`. `unpair` reverses it.
 
 ### Controllers: config compares, runtime state does not
 
-`core/control.py` classes are `@dataclass(kw_only=True)`. `Actuator.set_control_config`
-replaces the controller only when `!=`, so a running timer/PID is not reset by an
-unrelated OPC write. **When adding a field, decide which side it is on:**
+`core/control.py` classes are `@dataclass(kw_only=True)`. **When adding a
+field, decide which side it is on:**
 
-- configuration (setpoint, gains, bounds, times) → default `compare=True`
+- configuration (setpoint, gains, bounds, times, `backwards`) → default
+  `compare=True`
 - runtime state (`_is_on`, `_integral_sum`, `_last_time`, and `value` on every
   class except `_ManualControl`) → `field(init=False, compare=False)`
 
+`Actuator.set_control_config` branches on *what changed*: a new output unit or
+a new control method swaps the controller wholesale; a same-method config
+change instead calls `controller.adopt_config(new)` — which copies only the
+`compare=True` fields onto the **running** object — followed by
+`refresh_derived_limits()`. So retuning a PID gain or the setpoint, or toggling
+`backwards`, no longer resets the integral, the timer phase or the current
+output; only a method/unit change does. `adopt_config` is why the
+config/runtime split above must be right: a runtime field that is accidentally
+`compare=True` would be clobbered on every in-place update. `_PidControl`
+overrides `adopt_config` to also carry `_integral_band_is_default` (config in
+spirit, but `compare=False`) and to reclamp the integral into the adopted band.
+An unrelated OPC write that changes nothing is still a no-op.
+
+Gains (`kp/ki/kd`), the anti-windup band (`min_integral/max_integral` plus the
+`auto_integral_band` flag) and `backwards` reach the controller as
+`ControlConfig` fields, exposed as writable OPC variables (`opcua/actuator.py`
+`init_control_node` / `datachange_notification`). A single `{id}:backwards`
+variable serves both PID and on_boundaries (an actuator runs one controller at
+a time). `_PidControl.backwards` flips the error sign so two actuators on one
+sensor drive opposing pumps (acid/base, heater/cooler).
+
 Validation is `_as_float()` in `__post_init__`, not per-attribute properties.
-`ControlFactory.create_control` matches on `config.method`.
+`ControlFactory.create_control` matches on `config.method`; its `pid` branch
+translates `auto_integral_band` to a `None` band (auto-derive from the range).
 
 ### Output units and the dispenser
 
@@ -153,12 +177,17 @@ the `data` table.
 
 ### Modbus byte order — UNVERIFIED
 
-`core/modbus.py` has `BYTE_ORDER` / `WORD_ORDER` module constants used by both
-`_build_payload` and `decode`. `decode()` was changed to
-`BinaryPayloadDecoder.fromRegisters()` (the old code passed raw ints as a byte
-buffer) but **has never been checked against real hardware**. If Hamilton
-readings come back byte-swapped or nonsensical, flip those two constants and
-nothing else. Flag this before trusting a run.
+`core/modbus.py` has one `WORD_ORDER = "little"` module constant used by both
+`_build_payload` and `decode` (via `convert_to_registers`/
+`convert_from_registers`). The migration to the `convert_*` API was checked to
+be **byte-for-byte identical** to the old `BinaryPayloadBuilder(byteorder=BIG,
+wordorder=LITTLE)` output for float/uint/int, so it does not change the wire
+format — but the wire format itself has **never been checked against real
+hardware**. If Hamilton readings come back word-swapped or nonsensical, flip
+this one constant (`"little"` ↔ `"big"`) and nothing else. Note the `convert_*`
+API fixes the byte order *within* each register to big-endian and exposes no
+byte-order knob, so the old `BYTE_ORDER` escape hatch is gone; only word order
+is tunable now. Flag this before trusting a run.
 
 ### OPC naming contract
 

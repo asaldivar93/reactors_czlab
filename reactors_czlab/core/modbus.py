@@ -11,19 +11,23 @@ from typing import ClassVar
 
 from pymodbus import FramerType
 from pymodbus.client import ModbusSerialClient
-from pymodbus.constants import Endian
 from pymodbus.exceptions import ModbusException
-from pymodbus.payload import BinaryPayloadBuilder, BinaryPayloadDecoder
 
 _logger = logging.getLogger("server.modbus_handler")
 
+#: pymodbus 3.9+ register conversion (INT32 / UINT32 / FLOAT32 live here).
+DATATYPE = ModbusSerialClient.DATATYPE
+
 valid_baudrates = {4800: 2, 9600: 3, 19200: 4, 38400: 5, 57600: 6, 115200: 7}
 
-# Word/byte order used by the Hamilton Arc sensors. Encoding and decoding
-# MUST use the same pair, so they live here and nowhere else: if a reading
-# comes back byte swapped, flip these two constants and nothing else.
-BYTE_ORDER = Endian.BIG
-WORD_ORDER = Endian.LITTLE
+# Word order used by the Hamilton Arc sensors. Encoding and decoding MUST
+# use the same value, so it lives here and nowhere else: if a reading comes
+# back word swapped, flip this one constant ("little" <-> "big") and nothing
+# else. The byte order *within* each register is fixed big-endian by the
+# convert_*_registers API (it exposes no byte-order knob), which matches the
+# old Endian.BIG byte order this handler used before the pymodbus 3.9
+# migration - only the word order was ever Endian.LITTLE.
+WORD_ORDER = "little"
 
 #: Hamilton stores every measurement as a 32 bit value across two registers.
 REGISTERS_PER_VALUE = 2
@@ -229,25 +233,32 @@ class ModbusHandler:
             return result.registers
 
     def _build_payload(self, values: list) -> list:
-        """Encode values into 16 bit registers."""
-        builder = BinaryPayloadBuilder(
-            byteorder=BYTE_ORDER,
-            wordorder=WORD_ORDER,
-        )
+        """Encode values into 16 bit registers.
+
+        Each value becomes a 32 bit quantity (two registers): a negative
+        int is signed, a non-negative int unsigned, a float IEEE-754.
+        ``bool`` is a subclass of ``int``, so the ``int()`` arm catches
+        it - unchanged from the old builder, and no caller passes one.
+        """
+        registers: list[int] = []
         for val in values:
             match val:
                 case int():
-                    if val < 0:
-                        builder.add_32bit_int(val)
-                    else:
-                        builder.add_32bit_uint(val)
+                    data_type = (
+                        DATATYPE.INT32 if val < 0 else DATATYPE.UINT32
+                    )
                 case float():
-                    builder.add_32bit_float(val)
+                    data_type = DATATYPE.FLOAT32
                 case _:
                     error_message = "Only float and ints are implemented"
                     raise ModbusError(error_message)
+            registers += ModbusSerialClient.convert_to_registers(
+                val,
+                data_type,
+                word_order=WORD_ORDER,
+            )
 
-        return builder.to_registers()
+        return registers
 
     def decode(
         self,
@@ -277,19 +288,21 @@ class ModbusHandler:
             )
             raise ModbusError(error_message)
 
-        # fromRegisters() packs the register list into bytes for us. The
-        # previous code passed the raw ints as `payload`, which the decoder
-        # treats as a byte buffer.
-        decoder = BinaryPayloadDecoder.fromRegisters(
-            registers,
-            byteorder=BYTE_ORDER,
-            wordorder=WORD_ORDER,
-        )
+        # convert_from_registers() reads the two registers as one 32 bit
+        # value; "int" stays unsigned, matching the old decode_32bit_uint.
         match cast_type:
             case "float":
-                return decoder.decode_32bit_float()
+                return ModbusSerialClient.convert_from_registers(
+                    registers,
+                    DATATYPE.FLOAT32,
+                    word_order=WORD_ORDER,
+                )
             case "int":
-                return decoder.decode_32bit_uint()
+                return ModbusSerialClient.convert_from_registers(
+                    registers,
+                    DATATYPE.UINT32,
+                    word_order=WORD_ORDER,
+                )
             case _:
                 error_message = (
                     f"Unsupported cast_type {cast_type!r} in "

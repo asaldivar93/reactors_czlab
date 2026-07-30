@@ -6,6 +6,7 @@ asyncua is a base dependency but a running server is not needed.
 
 from __future__ import annotations
 
+from reactors_czlab.core.control import _OnBoundariesControl, _PidControl
 from reactors_czlab.core.data import OutputUnit
 from reactors_czlab.opcua.actuator import ActuatorOpc, output_unit_map
 
@@ -91,6 +92,54 @@ async def test_redundant_write_preserves_identity_in_flow_mode(
     assert actuator.controller is controller_before
     assert actuator.dispenser is dispenser_before
     assert actuator.dispenser.unit is OutputUnit.flow
+
+
+async def test_datachange_reads_pid_gains_backwards_and_band(
+    make_calibrated_actuator,
+) -> None:
+    """A PID write carries gains, the backwards flag and the band."""
+    actuator = make_calibrated_actuator()
+    node = ActuatorOpc(actuator)
+    node.method = _StubVariable(3)  # pid
+    node.value = _StubVariable(0.0)
+    node.output_unit = _StubVariable(0)  # duty
+    node.setpoint = _StubVariable(7.0)
+    node.kp = _StubVariable(5.0)
+    node.ki = _StubVariable(2.0)
+    node.kd = _StubVariable(1.0)
+    node.backwards = _StubVariable(True)
+    node.min_integral = _StubVariable(1.0)
+    node.max_integral = _StubVariable(5.0)
+    node.auto_integral_band = _StubVariable(False)
+
+    await node.datachange_notification(None, 0.0, None)
+
+    control = actuator.controller
+    assert isinstance(control, _PidControl)
+    assert (control.kp, control.ki, control.kd) == (5.0, 2.0, 1.0)
+    assert control.backwards is True
+    assert control._integral_band_is_default is False
+    assert (control.min_integral, control.max_integral) == (1.0, 5.0)
+
+
+async def test_datachange_reads_boundaries_backwards(
+    make_calibrated_actuator,
+) -> None:
+    """An on_boundaries write carries the backwards flag."""
+    actuator = make_calibrated_actuator()
+    node = ActuatorOpc(actuator)
+    node.method = _StubVariable(2)  # on_boundaries
+    node.value = _StubVariable(150.0)
+    node.output_unit = _StubVariable(0)  # duty
+    node.lb = _StubVariable(1.0)
+    node.ub = _StubVariable(2.0)
+    node.backwards = _StubVariable(True)
+
+    await node.datachange_notification(None, 0.0, None)
+
+    control = actuator.controller
+    assert isinstance(control, _OnBoundariesControl)
+    assert control.backwards is True
 
 
 async def test_update_value_publishes_the_pump_totals(

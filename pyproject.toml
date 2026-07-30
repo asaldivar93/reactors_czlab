@@ -18,10 +18,11 @@ dependencies = ["asyncua>=1.1.5"]
 
 [project.optional-dependencies]
 server = [
-    # BinaryPayloadBuilder/Decoder live in pymodbus.payload, which is
-    # deprecated and removed in later releases. Unpin only together with
-    # migrating ModbusHandler to convert_from_registers/convert_to_registers.
-    "pymodbus>=4.0",
+    # >=3.9: pymodbus.payload (BinaryPayloadBuilder/Decoder) was removed in
+    # 3.9, and ModbusHandler uses convert_to_registers/convert_from_registers
+    # instead, whose word_order kwarg landed in 3.9. (There is no pymodbus
+    # 4.0; the latest release is 3.x.)
+    "pymodbus>=3.9",
     "pyserial>=3.5",
     "adafruit-circuitpython-busdevice",
     "adafruit-circuitpython-tca9548a",

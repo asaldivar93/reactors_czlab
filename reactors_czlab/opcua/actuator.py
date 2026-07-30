@@ -8,7 +8,12 @@ from typing import TYPE_CHECKING
 from asyncua import ua, uamethod
 
 from reactors_czlab.core.calibration import CalibrationRun
-from reactors_czlab.core.data import ControlConfig, ControlMethod, OutputUnit
+from reactors_czlab.core.data import (
+    MAX_OUTPUT,
+    ControlConfig,
+    ControlMethod,
+    OutputUnit,
+)
 
 if TYPE_CHECKING:
     from asyncua import Server
@@ -149,9 +154,19 @@ class ActuatorOpc:
             case ControlMethod.on_boundaries:
                 config.lb = await self.lb.get_value()
                 config.ub = await self.ub.get_value()
+                config.backwards = await self.backwards.get_value()
 
             case ControlMethod.pid:
                 config.setpoint = await self.setpoint.get_value()
+                config.kp = await self.kp.get_value()
+                config.ki = await self.ki.get_value()
+                config.kd = await self.kd.get_value()
+                config.backwards = await self.backwards.get_value()
+                config.min_integral = await self.min_integral.get_value()
+                config.max_integral = await self.max_integral.get_value()
+                config.auto_integral_band = (
+                    await self.auto_integral_band.get_value()
+                )
 
         self.actuator.set_control_config(config)
         _logger.debug("Control config: %s", config)
@@ -263,13 +278,63 @@ class ActuatorOpc:
         )
         await self.ub.set_writable()
 
-        # PidControl
+        # PidControl. Gains and the anti-windup band are live-tunable: a
+        # write reaches the running controller through adopt_config()
+        # without rebuilding it, so a PID keeps its integral. Seeded with
+        # the _PidControl / ControlConfig defaults so a read is meaningful
+        # before the operator writes anything.
         self.setpoint = await self.control_method.add_variable(
             idx,
             f"{self.id}:setpoint",
             0.0,
         )
         await self.setpoint.set_writable()
+        self.kp = await self.control_method.add_variable(
+            idx,
+            f"{self.id}:kp",
+            100.0,
+        )
+        await self.kp.set_writable()
+        self.ki = await self.control_method.add_variable(
+            idx,
+            f"{self.id}:ki",
+            0.01,
+        )
+        await self.ki.set_writable()
+        self.kd = await self.control_method.add_variable(
+            idx,
+            f"{self.id}:kd",
+            0.0,
+        )
+        await self.kd.set_writable()
+        self.min_integral = await self.control_method.add_variable(
+            idx,
+            f"{self.id}:min_integral",
+            0.0,
+        )
+        await self.min_integral.set_writable()
+        self.max_integral = await self.control_method.add_variable(
+            idx,
+            f"{self.id}:max_integral",
+            MAX_OUTPUT,
+        )
+        await self.max_integral.set_writable()
+        self.auto_integral_band = await self.control_method.add_variable(
+            idx,
+            f"{self.id}:auto_integral_band",
+            True,
+        )
+        await self.auto_integral_band.set_writable()
+
+        # Shared by PID and on_boundaries: reverses the controller's sense
+        # (an actuator runs one controller at a time, so one flag serves
+        # both). Lets two actuators on one sensor drive opposing pumps.
+        self.backwards = await self.control_method.add_variable(
+            idx,
+            f"{self.id}:backwards",
+            False,
+        )
+        await self.backwards.set_writable()
 
         # Sensor used as control variable
         self.curr_sensor = await self.control_method.add_variable(

@@ -357,6 +357,18 @@ class ControlConfig:
         float (default: 0.0)
     output_unit:
         OutputUnit (default: OutputUnit.duty)
+    kp, ki, kd:
+        PID gains (defaults: 100.0, 0.01, 0.0)
+    backwards:
+        bool (default: False). Reverses the sense of a PID or an
+        on_boundaries controller (see the respective ``get_value``).
+    min_integral, max_integral:
+        Explicit PID anti-windup band, used only when
+        ``auto_integral_band`` is False (defaults: 0.0, MAX_OUTPUT).
+    auto_integral_band:
+        bool (default: True). When True the PID derives its anti-windup
+        band from the output range and ignores ``min_integral`` /
+        ``max_integral``; set False to install the explicit band.
 
     """
 
@@ -368,3 +380,10 @@ class ControlConfig:
     setpoint: float = 0.0
     value: float = 0.0
     output_unit: OutputUnit = OutputUnit.duty
+    kp: float = 100.0
+    ki: float = 0.01
+    kd: float = 0.0
+    backwards: bool = False
+    min_integral: float = 0.0
+    max_integral: float = MAX_OUTPUT
+    auto_integral_band: bool = True

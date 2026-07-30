@@ -229,20 +229,39 @@ class Actuator(ABC):
             _logger.exception("Wrong attributes in %s: %s", self.id, config)
             return
 
-        # Replace the controller only if the configuration actually changed,
-        # so an unrelated OPC write does not reset a running timer or PID.
-        if (
-            self.controller != new_controller
-            or dispenser is not self.dispenser
-        ):
+        # How the change is applied depends on what actually changed:
+        #
+        #  - output unit changed: a new dispenser is already built above,
+        #    so swap both wholesale. The demand range moved to a new unit
+        #    and the gains must be retuned for it anyway, so resetting the
+        #    controller's runtime state is correct.
+        #  - control method changed: swap the controller - the state of
+        #    one method's controller means nothing to another's.
+        #  - same method, config changed: adopt the new configuration onto
+        #    the *running* controller, preserving its integral / timer
+        #    phase / current output. An operator retuning a gain or the
+        #    setpoint of a live PID must not bump it. refresh_derived_
+        #    limits() follows so a controller that derives state from the
+        #    (possibly changed) range tracks it, mirroring
+        #    refresh_controller_limits().
+        #  - nothing changed: no-op, so an unrelated OPC write is inert.
+        if dispenser is not self.dispenser:
             self.dispenser = dispenser
             self.controller = new_controller
-            _logger.info(
-                "Control config update - %s: %s in %s",
-                self.id,
-                self.controller,
-                self.dispenser.unit,
-            )
+        elif type(self.controller) is not type(new_controller):
+            self.controller = new_controller
+        elif self.controller != new_controller:
+            self.controller.adopt_config(new_controller)
+            self.controller.refresh_derived_limits()
+        else:
+            return
+
+        _logger.info(
+            "Control config update - %s: %s in %s",
+            self.id,
+            self.controller,
+            self.dispenser.unit,
+        )
 
     def refresh_controller_limits(self) -> None:
         """Re-derive the controller's clamp range from the dispenser.
