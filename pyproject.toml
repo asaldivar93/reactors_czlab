@@ -40,10 +40,16 @@ client = [
     "polars>=1.29.0",
     "matplotlib",
 ]
+gui = [
+    "nicegui>=2.0",
+]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "ruff>=0.6",
+    # The page tests drive the UI through nicegui.testing's `user`
+    # fixture. Pure Python, so it installs on the Pi as readily as the PC.
+    "nicegui>=2.0",
 ]
 
 [project.scripts]
@@ -51,10 +57,20 @@ reactors-server = "reactors_czlab.run_server:cli"
 reactors-client = "reactors_czlab.run_client:cli"
 reactors-plots = "reactors_czlab.run_plots:cli"
 reactors-export = "reactors_czlab.export_data:cli"
+reactors-gui = "reactors_czlab.run_gui:cli"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# user_plugin, NOT nicegui.testing.plugin: the latter imports the
+# `screen` fixture, which needs Selenium and a Chrome binary. Nothing
+# here drives a real browser.
+addopts = "-p nicegui.testing.user_plugin"
+# The module the user fixture imports to discover the routes. It must
+# call ui.run() at import (the fixture patches it), which is why it is a
+# separate file from run_gui.py - run_gui.cli() parses argv, and under
+# pytest argv belongs to pytest.
+main_file = "tests/gui_main.py"
 
 [tool.ruff]
 line-length = 79
