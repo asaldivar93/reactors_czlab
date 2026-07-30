@@ -31,9 +31,15 @@ pytest-asyncio, ruff.
 - **`core/data.py` imports nothing. `core/calibration.py`, `core/dispenser.py`
   and the new `core/hamilton.py` are standard library only.**
 - **`tests/` must pass with only `--extra dev` installed** - no pymodbus, no
-  psycopg, no polars, no nicegui. Never import `reactors_czlab.core.sensor`
-  from `tests/`. Modules needing an optional dependency are imported through
-  a fixture that stubs it, as `tests/test_opcua_client.py` already does.
+  psycopg, no polars. Never import `reactors_czlab.core.sensor` from
+  `tests/`. Modules needing an optional dependency are imported through a
+  fixture that stubs it, as `tests/test_opcua_client.py` already does.
+  **`nicegui` IS in the `dev` extra** (it is a pure-Python wheel and installs
+  everywhere), so GUI tests are ordinary tests.
+- **GUI pages are tested with NiceGUI's `user` fixture**, loaded via
+  `addopts = "-p nicegui.testing.user_plugin"`. Use `user_plugin`, never
+  `nicegui.testing.plugin` - the latter imports the `screen` fixture, which
+  needs Selenium and a Chrome binary. No browser is used anywhere.
 - **Logging is lazy `%`-style**: `_logger.debug("In %s - %s", self.id, msg)`.
   Never f-strings in logging calls.
 - **Assign `error_message = ...` then `raise X(error_message)`** (ruff TRY003).
@@ -71,7 +77,9 @@ pytest-asyncio, ruff.
 | `reactors_czlab/run_gui.py` | `cli()` -> `reactors-gui`. |
 | `reactors_czlab/sql/migrations/2026-07-30-experiments.sql` | Migration for existing databases. |
 | `scripts/hamilton_read_calibration.py` | Bench script: the one way to verify the Modbus path on hardware. |
-| `tests/test_hamilton.py`, `tests/test_opcua_sensor.py`, `tests/test_sql_operations.py`, `tests/test_gui_address.py`, `tests/test_gui_format.py`, `tests/test_gui_control.py` | New suites. |
+| `tests/gui_main.py` | The NiceGUI "main file" the `user` fixture imports: registers the routes and calls `ui.run()` behind the multiprocessing guard. |
+| `tests/test_hamilton.py`, `tests/test_opcua_sensor.py`, `tests/test_sql_operations.py`, `tests/test_gui_address.py`, `tests/test_gui_format.py`, `tests/test_gui_control.py` | New unit suites. |
+| `tests/test_gui_dashboard.py`, `tests/test_gui_control_form.py`, `tests/test_gui_pairing.py` | New page suites, driven by the `user` fixture. |
 
 **Modified:**
 
@@ -2962,7 +2970,7 @@ server; every decision it could make has already been factored into
 `address.py`, `format.py` and `control.py`, which are tested. Step 5 is a
 manual smoke check against the simulated server, and it is not optional.
 
-- [ ] **Step 1: Add the extra and the script**
+- [ ] **Step 1: Add the extras, the script and the test plumbing**
 
 In `pyproject.toml`, add to `[project.optional-dependencies]`:
 
@@ -2972,10 +2980,42 @@ gui = [
 ]
 ```
 
-and to `[project.scripts]`:
+Add `nicegui` to the existing `dev` extra as well, so the page tests are
+ordinary tests. It is a pure-Python wheel, so this costs the dev install
+nothing platform-specific:
+
+```toml
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.6",
+    # The page tests drive the UI through nicegui.testing's `user`
+    # fixture. Pure Python, so it installs on the Pi as readily as the PC.
+    "nicegui>=2.0",
+]
+```
+
+Add to `[project.scripts]`:
 
 ```toml
 reactors-gui = "reactors_czlab.run_gui:cli"
+```
+
+And extend `[tool.pytest.ini_options]`:
+
+```toml
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+# user_plugin, NOT nicegui.testing.plugin: the latter imports the
+# `screen` fixture, which needs Selenium and a Chrome binary. Nothing
+# here drives a real browser.
+addopts = "-p nicegui.testing.user_plugin"
+# The module the user fixture imports to discover the routes. It must
+# call ui.run() at import (the fixture patches it), which is why it is a
+# separate file from run_gui.py - run_gui.cli() parses argv, and under
+# pytest argv belongs to pytest.
+main_file = "tests/gui_main.py"
 ```
 
 - [ ] **Step 2: Write the app state**
@@ -3256,12 +3296,65 @@ and create `reactors_czlab/gui/pages/__init__.py`:
 from reactors_czlab.gui.pages import dashboard  # noqa: F401
 ```
 
-- [ ] **Step 4: Verify nothing regressed**
+- [ ] **Step 4: Add the test main file and a smoke test**
 
-Run: `uv run ruff check reactors_czlab/ && uv run pytest`
-Expected: ruff clean, all tests pass (the GUI is not imported by any test)
+Create `tests/gui_main.py`:
 
-- [ ] **Step 5: Manual smoke check - required**
+```python
+"""Entry module for NiceGUI's `user` fixture.
+
+The fixture imports this as ``__mp_main__`` to discover the routes, and
+requires it to call ``ui.run()`` - which the fixture patches, so nothing
+is served. It is separate from ``run_gui.py`` because ``cli()`` parses
+``sys.argv``, and under pytest that argv belongs to pytest.
+"""
+
+from nicegui import ui
+
+from reactors_czlab.gui import pages  # noqa: F401 - registers the routes
+
+if __name__ in {"__main__", "__mp_main__"}:
+    ui.run()
+```
+
+Create `tests/test_gui_dashboard.py` with the plumbing check only - Task 13
+adds the real page assertions:
+
+```python
+"""Tests for the dashboard pages, driven by NiceGUI's `user` fixture.
+
+No browser: the fixture renders the page's element tree in process. See
+pyproject's addopts and main_file for the wiring.
+"""
+
+from __future__ import annotations
+
+from nicegui.testing import User
+
+
+async def test_the_index_page_renders(user: User) -> None:
+    """The app serves, and the routes are registered.
+
+    A failure here means the test plumbing is wrong - main_file, the
+    user_plugin addopts entry, or the pages package import - not that a
+    page is wrong.
+    """
+    await user.open("/")
+    await user.should_see("Bioreactors")
+```
+
+- [ ] **Step 5: Verify**
+
+Run: `uv run ruff check reactors_czlab/ tests/ && uv run pytest`
+Expected: ruff clean, all previous tests plus the new one passing. If the
+`user` fixture errors with `Main file not found` or a Selenium
+`ImportError`, the pyproject wiring in Step 1 is wrong - fix it before
+continuing.
+
+- [ ] **Step 6: Manual smoke check - required**
+
+The `user` fixture proves the routes render; it does not prove the process
+connects to a real server. Only this does.
 
 In one terminal:
 
@@ -3279,10 +3372,11 @@ Open `http://localhost:8080`. Expected: the page loads, and `gui.log` contains
 `Connected to opc.tcp://localhost:4840/`. If it says "Could not connect",
 stop and fix before continuing - every later task depends on this.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add pyproject.toml reactors_czlab/gui/ reactors_czlab/run_gui.py
+git add pyproject.toml reactors_czlab/gui/ reactors_czlab/run_gui.py \
+    tests/gui_main.py tests/test_gui_dashboard.py
 git commit -m "feat: serve the GUI and hold one OPC connection for it"
 ```
 
@@ -3508,14 +3602,169 @@ def reactor_page(reactor: str) -> None:
     ui.timer(REFRESH_SECONDS, refresh)
 ```
 
-- [ ] **Step 3: Lint and run the suite**
+- [ ] **Step 3: Add the shared GUI fixtures**
 
-Run: `uv run ruff check reactors_czlab/gui/ && uv run pytest`
+Append to `tests/conftest.py`. These are shared by the three page suites, so
+they live here rather than being repeated in each. `gui/state.py` and
+`gui/address.py` import no nicegui, so this is safe at conftest import time:
+
+```python
+import types
+
+from reactors_czlab.gui.address import AddressBook
+from reactors_czlab.gui.state import STATE as GUI_STATE
+
+#: A browsed address space, in the shape OpcClient produces.
+GUI_SENSOR_VARS = {
+    "ns=2;i=10": {"reactor": "R0", "name": "ph", "channel": "pH"},
+    "ns=2;i=11": {"reactor": "R0", "name": "ph", "channel": "oC"},
+    "ns=2;i=12": {"reactor": "R1", "name": "do", "channel": "ppm"},
+}
+
+GUI_ACTUATOR_VARS = {
+    "ns=2;i=20": {"reactor": "R0", "name": "pwm0", "channel": "curr_value"},
+    "ns=2;i=21": {"reactor": "R0", "name": "pwm0", "channel": "total_volume"},
+    "ns=2;i=22": {"reactor": "R0", "name": "pwm0", "channel": "cal_a"},
+    "ns=2;i=23": {"reactor": "R0", "name": "pwm0", "channel": "cal_b"},
+    "ns=2;i=24": {"reactor": "R0", "name": "pwm0", "channel": "cal_r2"},
+    "ns=2;i=25": {"reactor": "R0", "name": "pwm0", "channel": "setpoint"},
+    "ns=2;i=26": {"reactor": "R0", "name": "pwm1", "channel": "curr_value"},
+}
+
+GUI_METHODS = {
+    "ns=2;i=30": {"reactor": "R0", "name": ["set_pairing"]},
+    "ns=2;i=31": {"reactor": "R0", "name": ["unpair"]},
+    "ns=2;i=32": {"reactor": "R0", "name": ["pwm0", "get_calibration"]},
+    "ns=2;i=33": {"reactor": "R0", "name": ["pwm1", "get_calibration"]},
+}
+
+
+@pytest.fixture
+def gui_state(monkeypatch: pytest.MonkeyPatch):
+    """The GUI's AppState as if it had connected and browsed.
+
+    Returned so a test can stub further - reading(), write_variable()
+    and call() are what the page suites replace.
+    """
+    monkeypatch.setattr(
+        GUI_STATE,
+        "book",
+        AddressBook.build(
+            GUI_SENSOR_VARS,
+            GUI_ACTUATOR_VARS,
+            GUI_METHODS,
+        ),
+    )
+    monkeypatch.setattr(
+        GUI_STATE,
+        "client",
+        types.SimpleNamespace(recording=False),
+    )
+    return GUI_STATE
+```
+
+- [ ] **Step 4: Write the page tests**
+
+Replace `tests/test_gui_dashboard.py` (Task 12 created it with the plumbing
+check; keep that test and add these):
+
+```python
+"""Tests for the reactor dashboard pages.
+
+No browser: NiceGUI's `user` fixture renders the element tree in
+process. STATE is stubbed rather than connected - what is under test is
+what the page does with readings, not the OPC client.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+
+import pytest
+from nicegui.testing import User
+
+from reactors_czlab.core.data import ERROR_VALUE
+
+READINGS = {
+    ("R0", "ph", "pH"): 7.25,
+    ("R0", "ph", "oC"): ERROR_VALUE,
+    ("R0", "pwm0", "curr_value"): 1500.0,
+    ("R0", "pwm0", "total_volume"): 12.5,
+    ("R0", "pwm0", "cal_a"): 0.01,
+    ("R0", "pwm0", "cal_b"): 0.0,
+    ("R0", "pwm0", "cal_r2"): 1.0,
+}
+
+
+@pytest.fixture
+def connected(gui_state, monkeypatch: pytest.MonkeyPatch) -> None:
+    """gui_state, plus a fixed set of readings."""
+
+    def reading(reactor: str, name: str, channel: str) -> tuple:
+        return (READINGS.get((reactor, name, channel)), datetime.now())
+
+    monkeypatch.setattr(gui_state, "reading", reading)
+
+
+async def test_the_index_lists_every_reactor(
+    user: User,
+    connected: None,
+) -> None:
+    """The index is how an operator reaches a reactor."""
+    await user.open("/")
+    await user.should_see("R0")
+    await user.should_see("R1")
+
+
+async def test_a_reading_is_shown_with_its_units(
+    user: User,
+    connected: None,
+) -> None:
+    """Sensor channel names are their units, per the browse contract."""
+    await user.open("/reactor/R0")
+    await user.should_see("7.250 pH")
+
+
+async def test_the_error_sentinel_never_reaches_the_screen(
+    user: User,
+    connected: None,
+) -> None:
+    """Regression: -0.111 read as a temperature is a live probe failure
+    that looks like a plausible measurement. The dashboard must say the
+    read failed instead.
+    """
+    await user.open("/reactor/R0")
+    await user.should_see("read failed")
+    await user.should_not_see("-0.111")
+
+
+async def test_the_actuator_card_shows_output_and_delivered_volume(
+    user: User,
+    connected: None,
+) -> None:
+    """Both archived series are on the card."""
+    await user.open("/reactor/R0")
+    await user.should_see("1500.000")
+    await user.should_see("12.500 mL")
+
+
+async def test_a_disconnected_app_says_so(user: User) -> None:
+    """No connection must not render an empty dashboard.
+
+    The `connected` fixture is deliberately not requested here.
+    """
+    await user.open("/")
+    await user.should_see("Connecting")
+```
+
+- [ ] **Step 5: Lint and run the suite**
+
+Run: `uv run ruff check reactors_czlab/gui/ tests/ && uv run pytest`
 Expected: ruff clean, all tests pass
 
-- [ ] **Step 4: Manual check - required**
+- [ ] **Step 6: Manual check - required**
 
-With the simulated server and the GUI running (as in Task 12 Step 5), open
+With the simulated server and the GUI running (as in Task 12 Step 6), open
 `http://localhost:8080`. Expected: three reactor cards; opening R0 shows
 `ph`, `do` and `biomass` with values changing about once a second, and four
 `pwm` cards plus `mfc`. Confirm the values move.
@@ -3523,10 +3772,10 @@ With the simulated server and the GUI running (as in Task 12 Step 5), open
 Then stop the server. Expected: within ~30 s every reading greys out and is
 struck through rather than sitting at its last value.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add reactors_czlab/gui/
+git add reactors_czlab/gui/ tests/conftest.py tests/test_gui_dashboard.py
 git commit -m "feat: live reactor dashboard"
 ```
 
@@ -3725,12 +3974,170 @@ and inside `actuator_panel`'s per-actuator card, after the calibration row:
                 ).props("outline size=sm")
 ```
 
-- [ ] **Step 3: Lint and run the suite**
+- [ ] **Step 3: Write the page tests**
 
-Run: `uv run ruff check reactors_czlab/gui/ && uv run pytest`
+Create `tests/test_gui_control_form.py`:
+
+```python
+"""Tests for the actuator configuration dialog.
+
+The write ordering is pinned twice on purpose: test_gui_control.py pins
+the plan build_write_plan produces, and this pins that the dialog
+actually applies it in that order through the UI. The first can pass
+while the second fails - a dialog that sorts, batches or parallelises
+the writes would break the safety property without touching the plan.
+"""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+from nicegui.testing import User
+
+FITTED = json.dumps(
+    {
+        "file": "R0_pwm0",
+        "a": 0.01,
+        "b": 0.0,
+        "r2": 1.0,
+        "min_duty": 400.0,
+        "max_duty": 4000.0,
+        "dispense_duty": 2000.0,
+        "fitted_at": "2026-07-27T10:00:00+00:00",
+        "is_fitted": True,
+        "points": [[500.0, 5.0]],
+        "run_points": [],
+    },
+)
+
+UNFITTED = json.dumps(
+    {
+        "file": "R0_pwm0",
+        "a": 1.0,
+        "b": 0.0,
+        "r2": 0.0,
+        "min_duty": 0.0,
+        "max_duty": 4095.0,
+        "dispense_duty": 4095.0,
+        "fitted_at": "",
+        "is_fitted": False,
+        "points": [],
+        "run_points": [],
+    },
+)
+
+
+@pytest.fixture
+def writes(gui_state, monkeypatch: pytest.MonkeyPatch) -> list:
+    """Record every variable write, in order, instead of sending it."""
+    recorded: list[tuple[str, object]] = []
+
+    async def write_variable(reactor, name, channel, value):
+        recorded.append((channel, value))
+        return True
+
+    def reading(reactor, name, channel):
+        return (0.0, None)
+
+    monkeypatch.setattr(gui_state, "write_variable", write_variable)
+    monkeypatch.setattr(gui_state, "reading", reading)
+    return recorded
+
+
+@pytest.fixture
+def fitted(gui_state, monkeypatch: pytest.MonkeyPatch) -> None:
+    """get_calibration answers with a fitted line."""
+
+    async def call(reactor, owner, method, *args):
+        return FITTED
+
+    monkeypatch.setattr(gui_state, "call", call)
+
+
+@pytest.fixture
+def unfitted(gui_state, monkeypatch: pytest.MonkeyPatch) -> None:
+    """get_calibration answers with an unfitted placeholder."""
+
+    async def call(reactor, owner, method, *args):
+        return UNFITTED
+
+    monkeypatch.setattr(gui_state, "call", call)
+
+
+async def test_applying_writes_method_last(
+    user: User,
+    writes: list,
+    fitted: None,
+) -> None:
+    """Regression: the server rebuilds the whole ControlConfig on every
+    notification, so writing method first applies the new controller
+    against stale parameters - a manual -> pid switch could drive hard
+    for one notification.
+    """
+    await user.open("/reactor/R0")
+    user.find("Configure").click()
+    await user.should_see("pwm0 control")
+
+    user.find("Apply").click()
+    await user.should_see("configured")
+
+    channels = [channel for channel, _ in writes]
+    assert channels[-1] == "method"
+    assert channels[-2] == "output_unit"
+
+
+async def test_an_unfitted_pump_refuses_a_flow_unit(
+    user: User,
+    writes: list,
+    unfitted: None,
+) -> None:
+    """check_unit() rejects this server-side and only logs the reason.
+
+    The form must refuse before writing, or the operator sees a write
+    succeed and nothing happen.
+    """
+    await user.open("/reactor/R0")
+    user.find("Configure").click()
+    await user.should_see("pwm0 control")
+
+    user.find("Output unit").click()
+    user.find("flow").click()
+    await user.should_see("fitted calibration")
+
+
+async def test_a_refused_unit_writes_nothing(
+    user: User,
+    writes: list,
+    unfitted: None,
+) -> None:
+    """A refusal must not leave the actuator part configured."""
+    await user.open("/reactor/R0")
+    user.find("Configure").click()
+    await user.should_see("pwm0 control")
+
+    user.find("Output unit").click()
+    user.find("flow").click()
+    user.find("Apply").click()
+    await user.should_see("fitted calibration")
+
+    assert writes == []
+```
+
+**If the dialog proves hard to drive through the `user` fixture** (dialogs
+render into the page tree, so `should_see` on the dialog's title is the
+check that it opened): the requirement being tested is that
+`STATE.write_variable` is called with `method` last and `output_unit`
+second-to-last. Assert that however the dialog is opened - do not delete
+the test, and do not weaken it to only re-check `build_write_plan`, which
+`tests/test_gui_control.py` already covers.
+
+- [ ] **Step 4: Lint and run the suite**
+
+Run: `uv run ruff check reactors_czlab/gui/ tests/ && uv run pytest`
 Expected: ruff clean, all tests pass
 
-- [ ] **Step 4: Manual check - required**
+- [ ] **Step 5: Manual check - required**
 
 With the simulated server running, open R0, click Configure on `pwm0`:
 
@@ -3744,10 +4151,10 @@ With the simulated server running, open R0, click Configure on `pwm0`:
    log must show no rejected-config warning**, because the write never
    happened.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add reactors_czlab/gui/
+git add reactors_czlab/gui/ tests/test_gui_control_form.py
 git commit -m "feat: configure an actuator's controller from the dashboard"
 ```
 
@@ -3993,12 +4400,127 @@ and inside `reactor_page`, after the actuators section:
         pairing_panel(reactor)
 ```
 
-- [ ] **Step 3: Lint and run the suite**
+- [ ] **Step 3: Write the page tests**
 
-Run: `uv run ruff check reactors_czlab/gui/ && uv run pytest`
+Create `tests/test_gui_pairing.py`:
+
+```python
+"""Tests for the pairing panel.
+
+read_pairings and STATE.call are stubbed: what is under test is that the
+panel renders the published table, passes the ChannelIndex value rather
+than a channel position, and refuses what the server would refuse.
+"""
+
+from __future__ import annotations
+
+import pytest
+from nicegui.testing import User
+
+from reactors_czlab.gui.components import pairing
+
+
+@pytest.fixture
+def calls(gui_state, monkeypatch: pytest.MonkeyPatch) -> list:
+    """Record OPC method calls; report one existing pairing."""
+    recorded: list[tuple] = []
+
+    async def call(reactor, owner, method, *args):
+        recorded.append((method, args))
+        return True
+
+    async def read_pairings(reactor):
+        return [
+            {"sensor": "R0:ph", "actuator": "R0:pwm0", "channel": 0},
+        ]
+
+    async def read_channel_indices(reactor, sensor):
+        return {"pH": 0, "oC": 1}
+
+    def reading(reactor, name, channel):
+        return (0.0, None)
+
+    monkeypatch.setattr(gui_state, "call", call)
+    monkeypatch.setattr(gui_state, "reading", reading)
+    monkeypatch.setattr(pairing, "read_pairings", read_pairings)
+    monkeypatch.setattr(
+        pairing,
+        "read_channel_indices",
+        read_channel_indices,
+    )
+    return recorded
+
+
+async def test_the_published_table_is_rendered(
+    user: User,
+    calls: list,
+) -> None:
+    """Regression: pairings were server-side Python state only, so no
+    client could show what was paired or recover after a restart.
+    """
+    await user.open("/reactor/R0")
+    await user.should_see("R0:ph ch0 -> R0:pwm0")
+
+
+async def test_unpair_calls_the_method_with_the_published_row(
+    user: User,
+    calls: list,
+) -> None:
+    """The row carries exactly the arguments unpair needs."""
+    await user.open("/reactor/R0")
+    user.find("Unpair").click()
+    await user.should_see("Nothing paired")
+
+    assert ("unpair", ("R0:ph", "R0:pwm0", 0)) in calls
+
+
+async def test_an_already_paired_actuator_is_not_offered(
+    user: User,
+    calls: list,
+) -> None:
+    """Pre-validating what the server checks means a False is a bug.
+
+    pwm0 is paired in the fixture, so only pwm1 may be selected.
+    """
+    await user.open("/reactor/R0")
+    await user.should_not_see("R0:pwm0", kind="option")
+
+
+async def test_pairing_sends_the_channel_index_not_its_position(
+    user: User,
+    calls: list,
+) -> None:
+    """Regression: set_pairing takes an index and OPC gives names, so
+    the panel reads the ChannelIndex property rather than trusting
+    browse order, which asyncua does not guarantee.
+    """
+    await user.open("/reactor/R0")
+
+    user.find("Sensor").click()
+    user.find("ph").click()
+    user.find("Channel").click()
+    user.find("oC").click()
+    user.find("Actuator").click()
+    user.find("pwm1").click()
+    user.find("Pair").click()
+    await user.should_see("follows")
+
+    assert ("set_pairing", ("R0:ph", "R0:pwm1", 1)) in calls
+```
+
+**If a `ui.select` proves hard to drive** through the `user` fixture, the
+requirements being tested are: the published table renders; `unpair` is
+called with the row's own values; a paired actuator is not offered; and
+`set_pairing` receives the `ChannelIndex` value (1 for `oC`), not a
+position. Assert those however the widgets can be driven - the last one is
+the point of the whole `ChannelIndex` property and must not be dropped.
+
+- [ ] **Step 4: Lint and run the suite**
+
+Run: `uv run ruff check reactors_czlab/gui/ tests/ && uv run pytest`
 Expected: ruff clean, all tests pass
 
-- [ ] **Step 4: Manual check - required**
+- [ ] **Step 5: Manual check - required**
 
 With the simulated server running, open R0:
 
@@ -4011,10 +4533,10 @@ With the simulated server running, open R0:
 4. Pair `ph` channel `oC` to `pwm1`, and confirm the server log shows
    channel index 1, not 0. This is the `ChannelIndex` property working.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add reactors_czlab/gui/
+git add reactors_czlab/gui/ tests/test_gui_pairing.py
 git commit -m "feat: pair and unpair actuators from the dashboard"
 ```
 
@@ -4076,13 +4598,18 @@ deliberately out of scope and get their own specs.
 **Deliberately untested, and why.** Task 2 (`core/sensor.py`) cannot be
 imported by `tests/`; its testable half was extracted to `core/hamilton.py` in
 Task 1 and the rest is verified by `scripts/hamilton_read_calibration.py` on
-hardware. Task 12's `AppState` and Tasks 13-15's pages are assembly over
-tested pure functions, verified by the required manual checks.
+hardware. **This is the one remaining untested path** - the GUI pages are
+covered by NiceGUI's `user` fixture (Tasks 12-15), which needs no browser.
+Task 16 is documentation. Every SQL function in Task 7 is tested for its
+guard and its statement text, not against a live database.
+
+The manual checks in Tasks 12-15 are still required: the `user` fixture
+proves a page renders and reacts, but every one of those tests stubs
+`STATE`, so none of them proves the process talks to a real OPC server.
+
 `_PAIRINGS_NODES` in Task 15 is process-global and would need clearing if
 `AppState.connect()` ever reconnected to a *different* endpoint; it cannot
-today, so it does not, but a later phase adding endpoint switching must. Every SQL
-function in Task 7 is tested for its guard and its statement text, not against
-a live database.
+today, so it does not, but a later phase adding endpoint switching must.
 
 **Known gap carried forward.** The Hamilton numbers this GUI renders cannot be
 trusted until the Modbus word order is checked on hardware (CLAUDE.md,
