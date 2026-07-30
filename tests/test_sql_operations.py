@@ -88,6 +88,8 @@ class _FakeCursor:
             return [("exp", ["R0"], None, None)]
         if statement == operations.SELECT_ACTIVE_OVERLAP:
             return []
+        if statement == operations.LOCK_EXPERIMENT_STARTS:
+            return [(None,)]
         return []
 
     def __enter__(self) -> Self:
@@ -115,19 +117,30 @@ class _FakeConnection:
         self.closed = True
 
 
-def test_start_experiment_uses_one_connection_and_locks_the_overlap(
+def test_start_experiment_uses_one_connection_and_locks_first(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Regression: check and write used to be separate transactions.
+    """Regression: check and write used to be separate transactions,
+    and even one transaction with a row-locking overlap check was not
+    enough.
 
-    ``start_experiment`` used to run ``SELECT_EXPERIMENTS``,
+    Round 1: ``start_experiment`` ran ``SELECT_EXPERIMENTS``,
     ``SELECT_ACTIVE_OVERLAP`` and ``UPDATE_START`` each on its own
-    connection/transaction (via ``_fetch``/``_execute``). Two concurrent
-    calls with overlapping reactor sets could both pass the overlap
-    check before either committed its update, so both would succeed and
-    one reactor would end up in two active experiments at once. The fix
-    is to run all three statements on a single connection inside one
-    transaction, with the overlap SELECT taking a row lock.
+    connection/transaction (via ``_fetch``/``_execute``), so two
+    concurrent calls with overlapping reactor sets could both pass the
+    overlap check before either committed. Moving all three statements
+    onto one connection/transaction, with ``SELECT_ACTIVE_OVERLAP``
+    using ``FOR UPDATE``, still did not close the race: for two
+    brand-new experiments sharing a reactor, started concurrently,
+    neither has been written yet when either transaction runs the
+    overlap check, so it matches zero rows and there is nothing for a
+    row lock to hold - both transactions proceed and commit.
+
+    Round 2 fix: the first statement inside the transaction takes
+    ``pg_advisory_xact_lock(EXPERIMENT_LOCK_KEY)``, which exists
+    whether or not any experiment is active, so it serialises every
+    ``start_experiment`` call against every other one regardless of
+    what the overlap check would see.
     """
     connections: list[_FakeConnection] = []
 
@@ -142,22 +155,31 @@ def test_start_experiment_uses_one_connection_and_locks_the_overlap(
     operations.start_experiment("exp")
 
     assert len(connections) == 1
-    executed = [stmt for stmt, _params in connections[0].cur.executed]
-    assert executed == [
+    executed = connections[0].cur.executed
+    statements = [stmt for stmt, _params in executed]
+    assert statements == [
+        operations.LOCK_EXPERIMENT_STARTS,
         operations.SELECT_EXPERIMENTS,
         operations.SELECT_ACTIVE_OVERLAP,
         operations.UPDATE_START,
     ]
+    # Order matters: a lock taken after the overlap check is the same
+    # bug, since the check could already have run against a stale view.
+    lock_index = statements.index(operations.LOCK_EXPERIMENT_STARTS)
+    overlap_index = statements.index(operations.SELECT_ACTIVE_OVERLAP)
+    assert lock_index < overlap_index
+    assert lock_index == 0
+
+    lock_params = executed[0][1]
+    assert lock_params == (operations.EXPERIMENT_LOCK_KEY,)
+
     assert connections[0].committed
     assert connections[0].closed
 
 
-def test_overlap_select_locks_the_matching_rows() -> None:
-    """FOR UPDATE blocks a concurrent start until this one commits.
-
-    Under PostgreSQL's default READ COMMITTED isolation, a plain SELECT
-    re-reads a snapshot that predates a concurrent commit; only a
-    locking read forces the second transaction to wait and then see the
-    first transaction's result.
+def test_lock_statement_is_a_transaction_scoped_advisory_lock() -> None:
+    """``pg_advisory_xact_lock`` releases on COMMIT or ROLLBACK with no
+    unlock statement to forget, unlike the session-scoped
+    ``pg_advisory_lock``.
     """
-    assert "FOR UPDATE" in operations.SELECT_ACTIVE_OVERLAP
+    assert "pg_advisory_xact_lock" in operations.LOCK_EXPERIMENT_STARTS

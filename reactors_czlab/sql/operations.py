@@ -304,20 +304,38 @@ SELECT_ACTIVE = (
 #: Whether any running experiment already owns one of these reactors.
 #: ``&&`` is the array-overlap operator; the reactor set is a TEXT[], so
 #: this is one indexable comparison rather than a LIKE over a joined
-#: string, which would match R1 inside R10. ``FOR UPDATE`` locks the
-#: matching rows for the rest of the transaction: under PostgreSQL's
-#: default READ COMMITTED isolation, a plain SELECT would let a second,
-#: concurrent ``start_experiment`` re-read a snapshot that predates the
-#: first transaction's commit, so both could pass the overlap check on
-#: the same reactor. With the lock, the second transaction blocks here
-#: until the first commits (or rolls back), then sees its result. Do
-#: not "simplify" this back to a plain SELECT.
+#: string, which would match R1 inside R10.
+#:
+#: This is a plain SELECT, not ``... FOR UPDATE``, on purpose: a row
+#: lock only covers rows that already exist and already match the
+#: WHERE clause. The case that actually matters is two brand-new
+#: experiments, neither yet started, sharing a reactor, started
+#: concurrently - at the moment each transaction runs this query,
+#: *neither* row has been updated yet, so both selects match zero rows,
+#: there is nothing for ``FOR UPDATE`` to lock, and both go on to
+#: update different rows with no conflict. PostgreSQL row locks do not
+#: block phantom rows under READ COMMITTED. The invariant is instead
+#: enforced by serialising the whole check-and-write with
+#: ``EXPERIMENT_LOCK_KEY`` below, which exists whether or not any
+#: experiment is currently active.
 SELECT_ACTIVE_OVERLAP = (
     "SELECT name FROM experiments "
     "WHERE start_date IS NOT NULL AND end_date IS NULL "
-    "AND reactors && %s "
-    "FOR UPDATE"
+    "AND reactors && %s"
 )
+
+#: Arbitrary fixed integer identifying the "starting an experiment"
+#: critical section for ``pg_advisory_xact_lock``. Advisory lock keys
+#: are just agreed-upon numbers with no relation to any table or row;
+#: this one only has to be unique among advisory-lock users of this
+#: database. It serialises concurrent ``start_experiment`` calls
+#: against each other and nothing else.
+EXPERIMENT_LOCK_KEY = 726_193_845
+
+#: Held for the rest of the transaction and released automatically on
+#: COMMIT or ROLLBACK - unlike ``pg_advisory_lock``, there is no unlock
+#: statement to remember or to leak if the transaction raises.
+LOCK_EXPERIMENT_STARTS = "SELECT pg_advisory_xact_lock(%s)"
 
 SELECT_EXPERIMENT_DATA = SELECT_DATA + (
     " WHERE experiment_name = %s ORDER BY date"
@@ -431,12 +449,17 @@ def start_experiment(name: str) -> None:
     """Mark an experiment as running from now.
 
     The existence check, the overlap check and the write happen on a
-    single connection inside one transaction (see ``_transaction``), and
-    the overlap check locks the rows it reads with ``FOR UPDATE``. Doing
-    the check and the write on separate connections (as ``_fetch``
-    followed by ``_execute`` would) let two concurrent calls each pass
-    the overlap check before either committed, so both could start on
-    the same reactor.
+    single connection inside one transaction (see ``_transaction``).
+    That alone is not enough to close the race: two brand-new
+    experiments sharing a reactor, started concurrently, both see an
+    empty overlap result (neither has been written yet) no matter how
+    the reads and writes are grouped into transactions. So the first
+    statement inside the transaction takes ``pg_advisory_xact_lock``
+    on ``EXPERIMENT_LOCK_KEY``, which serialises every
+    ``start_experiment`` call against every other one: the second
+    caller blocks at the lock until the first transaction commits or
+    rolls back, and only then runs its own overlap check - by which
+    point the first transaction's write, if any, is visible to it.
 
     Raises
     ------
@@ -449,6 +472,9 @@ def start_experiment(name: str) -> None:
     """
     require_psycopg()
     with _transaction() as cursor:
+        cursor.execute(LOCK_EXPERIMENT_STARTS, (EXPERIMENT_LOCK_KEY,))
+        cursor.fetchall()
+
         cursor.execute(SELECT_EXPERIMENTS)
         rows = cursor.fetchall()
         matched = [row for row in rows if row[0] == name]
