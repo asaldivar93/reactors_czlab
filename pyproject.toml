@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 # asyncio.TaskGroup and enum.StrEnum are both 3.11+.
-requires-python = ">=3.11"
+requires-python = ">=3.13"
 name = "reactors_czlab"
 version = "2025.0.0"
 description = "Bioreactor control module"
@@ -21,7 +21,7 @@ server = [
     # BinaryPayloadBuilder/Decoder live in pymodbus.payload, which is
     # deprecated and removed in later releases. Unpin only together with
     # migrating ModbusHandler to convert_from_registers/convert_to_registers.
-    "pymodbus>=3.8.6,<3.9",
+    "pymodbus>=4.0",
     "pyserial>=3.5",
     "adafruit-circuitpython-busdevice",
     "adafruit-circuitpython-tca9548a",

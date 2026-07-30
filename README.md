@@ -132,11 +132,9 @@ The suite under `tests/` runs without hardware and without pymodbus.
 ## To do
 
 - Mass Flow Controller Modbus
-- Sensor calibration routine
 - Restore server from power out
 - Restore client from power out
 
 Non essential:
 
-- GUI for managing experiments
-- GUI for sensor calibration
+- GUI
