@@ -44,9 +44,12 @@ paint them into a corner. Each later phase gets its own spec and plan.
   callback writes into the dict it already maintains and NiceGUI pages read
   it on a timer. No callback fan-out, no locks, no second copy of state.
 - Hamilton CP status / value / quality is an **on-demand OPC method**, not
-  published variables. Polling three extra Modbus reads per sensor per
-  sample period would compete with the control loop for the RS485 bus, for
-  data that changes only at a calibration.
+  published variables. `CP1Status` / `CP2Status` are readable only at
+  administrator or specialist operator level (`HamiltonSensor`'s own
+  register table: "level: A,S"), so every read escalates the sensor's
+  operator level and drops it back. Publishing them would mean doing that
+  six times a minute on the same RS485 bus the control loop uses, for data
+  that changes only at a calibration.
 - **No authentication in any phase.** The OPC server is already
   unauthenticated on the lab network, so the GUI adds no new class of
   exposure. See Risks.
@@ -122,21 +125,27 @@ These land first and are independently testable without any GUI.
 - New `HamiltonSensor.read_calibration_status(cal_point) ->
   CalibrationStatus`. Reads `cp{n}_status` (status code from registers 1-2,
   written value from registers 5-6), `quality`, and the live `pmc1` process
-  value. Read-only: it stays at user operator level and performs no
-  escalation.
+  value. It escalates to specialist and drops back to user in a `finally`:
+  `CP1Status`/`CP2Status` are documented at "level: A,S" in
+  `HamiltonSensor`'s register table, so they cannot be read at user level.
+  It writes nothing.
 - `Sensor.read_calibration_status()` on the base class returns an
   "unsupported" result, mirroring how `write_calibration` already
   advertises that a sensor cannot be calibrated over the bus.
 - `HamiltonSensor.write_calibration()` **keeps its exact signature and
   return shape**, so `opcua/sensor.py`'s existing `{id}:calibration` method
-  and any current client are unaffected. Its body becomes: escalate to
-  specialist -> write the point -> call `read_calibration_status()` ->
-  drop back to user in `finally`.
+  and any current client are unaffected. Its body becomes: escalate ->
+  write the point -> drop back to user in `finally` -> call
+  `read_calibration_status()`, which does its own escalate/drop.
 
-`core/data.py` gains a `CalibrationStatus` dataclass (status string,
-quality, written value, process value). It goes there because
-`opcua/sensor.py` needs the same shape, and `data.py` imports nothing, so
-the dependency-set split is undisturbed.
+New module `core/hamilton.py`, standard library only, holding
+`CalibrationStatus` (point, status string, quality, written value, process
+value) and `build_calibration_status()`, which slices the three register
+blocks given a `decode` callable. It is separate from `core/sensor.py`
+because that module imports `core.modbus` and so cannot be imported
+without pymodbus, which `tests/` deliberately does not install - the
+register slicing is the part worth testing, so it has to live where a test
+can reach it. `opcua/sensor.py` imports the dataclass from here too.
 
 `opcua/sensor.py`:
 
