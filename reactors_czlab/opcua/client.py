@@ -358,10 +358,26 @@ class OpcClient:
         """Write a Python value to a node.
 
         Returns True on success so the caller can react to a failure.
+
+        Notes
+        -----
+        Writing a bare Python value lets asyncua guess its wire type from
+        the Python type alone - a plain ``int`` is encoded ``Int64``,
+        which a server-declared ``UInt32`` node (``method``,
+        ``output_unit``, ``reference_sensor`` in
+        ``opcua/actuator.py``) refuses with ``BadTypeMismatch``. Reading
+        the node's declared type first and wrapping the value in a
+        matching ``ua.Variant`` avoids guessing - and works uniformly
+        for every variant type, not just the ones known to be affected
+        today. The extra round trip this costs is one read before every
+        write; acceptable here because config writes are operator-driven
+        and rare, unlike the 20 Hz sampling path.
+
         """
         try:
             node = self.client.get_node(nodeid)
-            await node.write_value(value)
+            variant_type = await node.read_data_type_as_variant_type()
+            await node.write_value(ua.Variant(value, variant_type))
         except (ua.UaError, OSError):
             _logger.exception("Write failed for %s <- %r", nodeid, value)
             return False

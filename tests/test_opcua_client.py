@@ -18,6 +18,7 @@ import types
 from typing import Any
 
 import pytest
+from asyncua import ua
 
 
 @pytest.fixture
@@ -221,6 +222,69 @@ def test_the_archived_channel_set_is_exactly_the_two_series(
         "curr_value",
         "total_volume",
     }
+
+
+class _TypedNode:
+    """A node that reports its declared type and records what it wrote.
+
+    Regression: ``OpcClient.write()`` used to call ``node.write_value``
+    with a bare Python value. asyncua encodes a bare ``int`` as
+    ``Int64``, which a server-declared ``UInt32`` node (``method``,
+    ``output_unit``, ``reference_sensor`` in ``opcua/actuator.py``)
+    refuses with ``BadTypeMismatch``. The write must carry the node's
+    own declared type, not whatever asyncua guesses from the Python
+    value.
+    """
+
+    def __init__(self, variant_type: ua.VariantType) -> None:
+        self.variant_type = variant_type
+        self.written: list[object] = []
+
+    async def read_data_type_as_variant_type(self) -> ua.VariantType:
+        """Report the type the fake server node was declared with."""
+        return self.variant_type
+
+    async def write_value(self, value: object) -> None:
+        """Record exactly what was handed to asyncua."""
+        self.written.append(value)
+
+
+class _ClientWithNode:
+    """The slice of asyncua's Client that ``OpcClient.write`` uses."""
+
+    def __init__(self, node: _TypedNode) -> None:
+        self._node = node
+
+    def get_node(self, nodeid: str) -> _TypedNode:
+        """Hand back the one node regardless of id, as the real client
+        would for a nodeid it can resolve.
+        """
+        return self._node
+
+
+async def test_write_carries_the_nodes_declared_type(
+    client_module: Any,
+) -> None:
+    """A bare int written to a UInt32 node used to be refused.
+
+    Regression: writing 3 (a plain Python int) to R0:pwm0:method - a
+    UInt32 node - raised BadTypeMismatch, because asyncua guesses
+    Int64 for a bare int and the server rejects the mismatch. The fix
+    reads the node's own declared type and wraps the value in a
+    ua.Variant carrying it, rather than handing asyncua a bare value.
+    """
+    node = _TypedNode(ua.VariantType.UInt32)
+    opc = client_module.OpcClient("opc.tcp://localhost:4840/")
+    opc.client = _ClientWithNode(node)
+
+    ok = await opc.write("R0:pwm0:method", 3)
+
+    assert ok is True
+    assert len(node.written) == 1
+    written = node.written[0]
+    assert isinstance(written, ua.Variant)
+    assert written.VariantType == ua.VariantType.UInt32
+    assert written.Value == 3
 
 
 async def test_every_sensor_channel_is_subscribed(
