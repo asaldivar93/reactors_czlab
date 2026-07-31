@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from nicegui import ui
 
+from reactors_czlab.gui.components.pairing import pairing_panel
 from reactors_czlab.gui.components.values import (
     actuator_panel,
     sensor_panel,
@@ -74,7 +75,7 @@ def index() -> None:
 
 
 @ui.page("/reactor/{reactor}")
-def reactor_page(reactor: str) -> None:
+async def reactor_page(reactor: str) -> None:
     """Live values for one reactor."""
     header(reactor)
     with ui.column().classes("w-full p-4 gap-4"):
@@ -87,6 +88,15 @@ def reactor_page(reactor: str) -> None:
 
         ui.label("Actuators").classes("text-lg font-semibold")
         actuator_panel(reactor)
+
+        ui.label("Pairings").classes("text-lg font-semibold")
+        # pairing_panel is async - its initial row list depends on a
+        # network read (read_pairings) that cannot run synchronously
+        # inside a plain @ui.refreshable render. Awaiting it here means
+        # the first render already carries the published table, rather
+        # than depending on a deferred ui.timer that can outlive both
+        # this request and, in tests, the client that created it.
+        await pairing_panel(reactor)
 
     def refresh() -> None:
         """Re-read the in-memory values."""

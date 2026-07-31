@@ -21,6 +21,7 @@ from reactors_czlab.core.data import (
     PlcOutput,
 )
 from reactors_czlab.gui.address import AddressBook
+from reactors_czlab.gui.components.pairing import pairing_panel
 from reactors_czlab.gui.components.values import actuator_panel, sensor_panel
 from reactors_czlab.gui.state import STATE as GUI_STATE
 
@@ -58,13 +59,25 @@ def _isolated_refresh_targets():
     Applies to every test session-wide (not just the actuator dialog
     suite) since ``test_gui_dashboard.py`` renders the same
     refreshable panels and is exposed to exactly the same shared-state
-    flakiness.
+    flakiness. ``pairing_panel`` (gui/components/pairing.py) is a third
+    module-level ``@ui.refreshable`` with the same shared ``targets``
+    list - it was originally written with its own deferred ``ui.timer``
+    for the initial async load, and a stale entry there did not just
+    risk a crash on cleanup, it fired that timer's callback against a
+    *later* test's monkeypatched ``STATE``, which is what surfaced this
+    fixture's gap in the first place. ``pairing_panel`` is now an async
+    refreshable instead (``@ui.refreshable`` awaits it directly, so the
+    first render already carries the published table and there is no
+    separate timer to leak) but it still shares the same ``targets``
+    list, so it is cleared here too.
     """
     actuator_panel.targets.clear()
     sensor_panel.targets.clear()
+    pairing_panel.targets.clear()
     yield
     actuator_panel.targets.clear()
     sensor_panel.targets.clear()
+    pairing_panel.targets.clear()
 
 
 class FakeSensor:
