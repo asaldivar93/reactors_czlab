@@ -13,6 +13,7 @@ from datetime import datetime
 
 from nicegui import ui
 
+from reactors_czlab.gui.components.control_form import open_control_dialog
 from reactors_czlab.gui.format import is_stale, render_value
 from reactors_czlab.gui.state import STATE
 
@@ -95,3 +96,11 @@ def actuator_panel(reactor: str) -> None:
                     ui.label(
                         f"{label} {render_value(value, digits=4)}",
                     ).classes("text-xs text-gray-500 font-mono")
+            with ui.row().classes("gap-2"):
+                ui.button(
+                    "Configure",
+                    on_click=lambda r=reactor, n=name: open_control_dialog(
+                        r,
+                        n,
+                    ),
+                ).props("outline size=sm")
