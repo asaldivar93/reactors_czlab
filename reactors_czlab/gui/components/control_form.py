@@ -36,6 +36,7 @@ from reactors_czlab.gui.control import (
     unit_rejection_reason,
 )
 from reactors_czlab.gui.state import STATE
+from reactors_czlab.opcua.actuator import control_method, output_unit_map
 
 _logger = logging.getLogger("gui")
 
@@ -77,6 +78,32 @@ async def _read_calibration(reactor: str, name: str) -> dict | None:
         return None
 
 
+def _current_method(reactor: str, name: str) -> ControlMethod:
+    """The method actually running on the actuator.
+
+    Falls back to ``manual`` when nothing has been published yet
+    (``STATE.reading`` returns ``None``) or the index is not one the
+    server recognises.
+    """
+    raw = STATE.reading(reactor, name, "method")[0]
+    if raw is None:
+        return ControlMethod.manual
+    return control_method.get(int(raw), ControlMethod.manual)
+
+
+def _current_unit(reactor: str, name: str) -> OutputUnit:
+    """The output unit actually running on the actuator.
+
+    Falls back to ``duty`` when nothing has been published yet
+    (``STATE.reading`` returns ``None``) or the index is not one the
+    server recognises.
+    """
+    raw = STATE.reading(reactor, name, "output_unit")[0]
+    if raw is None:
+        return OutputUnit.duty
+    return output_unit_map.get(int(raw), OutputUnit.duty)
+
+
 async def open_control_dialog(reactor: str, name: str) -> None:
     """Open the configuration dialog for one actuator."""
     calibration = await _read_calibration(reactor, name)
@@ -92,16 +119,27 @@ async def open_control_dialog(reactor: str, name: str) -> None:
     # first keeps the dialog alive across actuator_panel's refreshes.
     with context.client.layout:
         with ui.dialog() as dialog, ui.card().classes("w-[32rem]"):
+            # Regression: ui.dialog is only hidden by close(), never
+            # removed - left alone, every Configure click piles up
+            # another one under context.client.layout for the life of
+            # the page session. Deleting on the value-change event
+            # (rather than only from the Apply/Cancel handlers) also
+            # catches a backdrop click or Escape, which close the
+            # dialog without running either.
+            dialog.on_value_change(
+                lambda e: dialog.delete() if not e.value else None,
+            )
+
             ui.label(f"{name} control").classes("text-lg font-semibold")
 
             method_select = ui.select(
                 {m: m.value for m in ControlMethod},
-                value=ControlMethod.manual,
+                value=_current_method(reactor, name),
                 label="Method",
             ).classes("w-full")
             unit_select = ui.select(
                 {u: u.value for u in OutputUnit},
-                value=OutputUnit.duty,
+                value=_current_unit(reactor, name),
                 label="Output unit",
             ).classes("w-full")
 
@@ -148,6 +186,26 @@ async def open_control_dialog(reactor: str, name: str) -> None:
                 )
                 if reason is not None:
                     ui.notify(reason, type="negative")
+                    return
+
+                # Regression: a ui.number the operator clears yields
+                # None, which the server's _as_float raises on inside
+                # datachange_notification - the whole config is then
+                # silently dropped while this dialog still says
+                # "configured". Refuse before writing anything rather
+                # than coerce to 0.0, which on a dosing pump is its
+                # own hazard.
+                empty = [
+                    field
+                    for field, widget in inputs.items()
+                    if field not in BOOLEAN_FIELDS and widget.value is None
+                ]
+                if empty:
+                    label = FIELD_LABELS[empty[0]]
+                    ui.notify(
+                        f"{label} is empty; fill it in before applying",
+                        type="negative",
+                    )
                     return
 
                 plan = build_write_plan(

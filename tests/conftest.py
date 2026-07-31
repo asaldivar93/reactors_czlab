@@ -21,7 +21,50 @@ from reactors_czlab.core.data import (
     PlcOutput,
 )
 from reactors_czlab.gui.address import AddressBook
+from reactors_czlab.gui.components.values import actuator_panel, sensor_panel
 from reactors_czlab.gui.state import STATE as GUI_STATE
+
+
+@pytest.fixture(autouse=True)
+def _isolated_refresh_targets():
+    """Give each page test its own view of the refresh targets.
+
+    ``actuator_panel``/``sensor_panel`` (``gui/components/values.py``)
+    are ``@ui.refreshable`` functions defined at module level, so the
+    same wrapper object - and its internal ``targets`` list - is
+    reused for every test in the whole pytest session, not just one
+    file. NiceGUI only drops a stale entry once that target's
+    ``Client.delete()`` has actually run; for a real disconnect that
+    happens ``reconnect_timeout`` seconds later
+    (``nicegui/client.py:handle_disconnect`` -> ``delete_content``),
+    which is harmless in production - nothing else is racing it, so it
+    always completes and the next refresh prunes the entry cleanly.
+
+    The test harness is different: its own teardown
+    (``background_tasks.teardown``, a hard 2 second cap - see
+    ``nicegui/background_tasks.py``) is shorter than the default 3
+    second ``reconnect_timeout``, so it cancels every test client's
+    pending ``delete_content`` before ``Client.delete()`` ever runs -
+    for every test, not just slow ones. The cancelled client can still
+    end up garbage collected without ``is_deleted`` ever having been
+    set, so a *later* test's own timer tick can find that stale entry
+    in the shared list and crash trying to clear it - not because
+    anything in that later test did something wrong. Clearing the list
+    before (and after, for whatever runs next) each test means a test
+    can only ever see the target it made itself, matching what
+    production looks like once a disconnect has had its real grace
+    period.
+
+    Applies to every test session-wide (not just the actuator dialog
+    suite) since ``test_gui_dashboard.py`` renders the same
+    refreshable panels and is exposed to exactly the same shared-state
+    flakiness.
+    """
+    actuator_panel.targets.clear()
+    sensor_panel.targets.clear()
+    yield
+    actuator_panel.targets.clear()
+    sensor_panel.targets.clear()
 
 
 class FakeSensor:

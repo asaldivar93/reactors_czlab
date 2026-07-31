@@ -14,45 +14,6 @@ import json
 import pytest
 from nicegui.testing import User
 
-from reactors_czlab.gui.components.values import actuator_panel, sensor_panel
-
-
-@pytest.fixture(autouse=True)
-def _isolated_refresh_targets():
-    """Give each test in this file its own view of the refresh targets.
-
-    ``actuator_panel``/``sensor_panel`` (``gui/components/values.py``)
-    are ``@ui.refreshable`` functions defined at module level, so the
-    same wrapper object - and its internal ``targets`` list - is
-    reused for every test in the whole pytest session, not just this
-    file. NiceGUI only drops a stale entry once that target's
-    ``Client.delete()`` has actually run; for a real disconnect that
-    happens ``reconnect_timeout`` seconds later
-    (``nicegui/client.py:handle_disconnect`` -> ``delete_content``),
-    which is harmless in production - nothing else is racing it, so it
-    always completes and the next refresh prunes the entry cleanly.
-
-    The test harness is different: its own teardown
-    (``background_tasks.teardown``, a hard 2 second cap - see
-    ``nicegui/background_tasks.py``) is shorter than the default 3
-    second ``reconnect_timeout``, so it cancels every test client's
-    pending ``delete_content`` before ``Client.delete()`` ever runs -
-    for every test, not just slow ones. The cancelled client can still
-    end up garbage collected without ``is_deleted`` ever having been
-    set, so a *later* test's own timer tick can find that stale entry
-    in the shared list and crash trying to clear it - not because
-    anything in that later test did something wrong. Clearing the list
-    before (and after, for whatever runs next) each test means a test
-    can only ever see the target it made itself, matching what
-    production looks like once a disconnect has had its real grace
-    period.
-    """
-    actuator_panel.targets.clear()
-    sensor_panel.targets.clear()
-    yield
-    actuator_panel.targets.clear()
-    sensor_panel.targets.clear()
-
 FITTED = json.dumps(
     {
         "file": "R0_pwm0",
@@ -143,6 +104,113 @@ async def test_applying_writes_method_last(
     channels = [channel for channel, _ in writes]
     assert channels[-1] == "method"
     assert channels[-2] == "output_unit"
+
+
+async def test_applying_pid_writes_parameters_before_unit_and_method(
+    user: User,
+    writes: list,
+    fitted: None,
+) -> None:
+    """The manual plan pinned above is only 3 writes (value, output_unit,
+    method) - too short to catch an ordering bug among a method's own
+    parameters. pid contributes eight (setpoint, kp, ki, kd, backwards,
+    min_integral, max_integral, auto_integral_band); all of them must
+    still land before output_unit, which must still land before method.
+    """
+    await user.open("/reactor/R0")
+    user.find("Configure").click()
+    await user.should_see("pwm0 control")
+
+    user.find("Method").click()
+    user.find("pid").click()
+    await user.should_see("kp")
+
+    user.find("Apply").click()
+    await user.should_see("configured")
+
+    channels = [channel for channel, _ in writes]
+    pid_fields = (
+        "setpoint",
+        "kp",
+        "ki",
+        "kd",
+        "backwards",
+        "min_integral",
+        "max_integral",
+        "auto_integral_band",
+    )
+    assert set(pid_fields) <= set(channels)
+    assert channels[-1] == "method"
+    assert channels[-2] == "output_unit"
+    unit_index = channels.index("output_unit")
+    for field in pid_fields:
+        assert channels.index(field) < unit_index
+
+
+async def test_dialog_prefills_the_running_config(
+    user: User,
+    writes: list,
+    fitted: None,
+    gui_state,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: the selects must reflect what is actually running.
+
+    Opening the dialog hardcoded at manual/duty while the numeric
+    fields were prefilled meant an operator who opened it only to
+    nudge a gain on a pump running pid/flow would, on Apply, also
+    write method=manual and output_unit=duty - the same demand number
+    then means raw counts instead of mL/min on a live dosing pump.
+    """
+    running = {
+        "method": 3.0,  # pid
+        "output_unit": 1.0,  # flow
+        "setpoint": 7.0,
+        "kp": 2.0,
+        "ki": 0.1,
+        "kd": 0.0,
+        "min_integral": -10.0,
+        "max_integral": 10.0,
+        "backwards": 0.0,
+        "auto_integral_band": 0.0,
+    }
+
+    def reading(reactor, name, channel):
+        return (running.get(channel), None)
+
+    monkeypatch.setattr(gui_state, "reading", reading)
+
+    await user.open("/reactor/R0")
+    user.find("Configure").click()
+    await user.should_see("pwm0 control")
+
+    user.find("Apply").click()
+    await user.should_see("configured")
+
+    written = dict(writes)
+    assert written["method"] == 3
+    assert written["output_unit"] == 1
+
+
+async def test_a_cleared_field_writes_nothing(
+    user: User,
+    writes: list,
+    fitted: None,
+) -> None:
+    """Regression: a cleared ui.number yields None, which the server's
+    _as_float raises on inside datachange_notification - the whole
+    configuration is silently dropped while the dialog still says
+    'configured'. The dialog must refuse before writing anything.
+    """
+    await user.open("/reactor/R0")
+    user.find("Configure").click()
+    await user.should_see("pwm0 control")
+
+    user.find("Demand").clear()
+    user.find("Apply").click()
+    await user.should_see("is empty")
+
+    assert writes == []
 
 
 async def test_an_unfitted_pump_refuses_a_flow_unit(
