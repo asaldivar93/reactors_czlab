@@ -4,10 +4,16 @@ read_pairings and STATE.call are stubbed: what is under test is that the
 panel renders the published table, passes the ChannelIndex value rather
 than a channel position, and refuses what the server would refuse.
 
-The panel's initial row list is populated by a deferred ``ui.timer``
-(the async ``read_pairings`` fetch cannot run synchronously inside a
-``@ui.refreshable`` render), so every test waits for it with
-``should_see`` before interacting - ``user.find`` itself does not retry.
+The panel's initial row list is populated by the async ``read_pairings``
+fetch that ``pairing_panel`` (an async ``@ui.refreshable``) awaits
+directly, so every test waits for it with ``should_see`` before
+interacting - ``user.find`` itself does not retry.
+
+The fake ``call``/``read_pairings`` pair below is stateful - ``call``
+mutates a shared table and ``read_pairings`` returns it - so a test that
+sees a row appear or disappear is pinning that the panel actually
+re-reads the server's table after a mutation, not just updating its own
+local copy.
 """
 
 from __future__ import annotations
@@ -23,19 +29,58 @@ from nicegui.testing.user_interaction import UserInteraction
 from reactors_czlab.gui.components import pairing
 
 
+class _Recorded(list):
+    """The ``(method, args)`` log, plus a handle on the shared table.
+
+    Subclassing ``list`` rather than returning a tuple keeps every
+    existing ``assert (...) in calls`` in this file working unchanged;
+    the ``table`` attribute is extra, for tests that need to simulate
+    another OPC client mutating the published table directly.
+    """
+
+    table: list[dict]
+
+
 @pytest.fixture
 def calls(gui_state, monkeypatch: pytest.MonkeyPatch) -> list:
-    """Record OPC method calls; report one existing pairing."""
-    recorded: list[tuple] = []
+    """Record OPC method calls; report one existing pairing.
+
+    ``call`` and ``read_pairings`` share one table, mimicking the real
+    server: a successful ``set_pairing``/``unpair`` mutates it before
+    ``call`` returns, and ``read_pairings`` always reflects the current
+    state of that table, never a stale snapshot. A test that asserts a
+    row appeared or vanished after a mutation is therefore only genuine
+    if the panel re-reads the table rather than trusting its own
+    in-place bookkeeping.
+    """
+    recorded = _Recorded()
+    table = [
+        {"sensor": "R0:ph", "actuator": "R0:pwm0", "channel": 0},
+    ]
+    recorded.table = table
 
     async def call(reactor, owner, method, *args):
         recorded.append((method, args))
+        if method == "set_pairing":
+            sid, aid, channel = args
+            table.append(
+                {"sensor": sid, "actuator": aid, "channel": channel},
+            )
+        elif method == "unpair":
+            sid, aid, channel = args
+            table[:] = [
+                row
+                for row in table
+                if not (
+                    row["sensor"] == sid
+                    and row["actuator"] == aid
+                    and row["channel"] == channel
+                )
+            ]
         return True
 
     async def read_pairings(reactor):
-        return [
-            {"sensor": "R0:ph", "actuator": "R0:pwm0", "channel": 0},
-        ]
+        return list(table)
 
     async def read_channel_indices(reactor, sensor):
         return {"pH": 0, "oC": 1}
@@ -178,3 +223,36 @@ async def test_pairing_sends_the_channel_index_not_its_position(
     await user.should_see("follows")
 
     assert ("set_pairing", ("R0:ph", "R0:pwm1", 1)) in calls
+
+
+async def test_a_successful_pair_reconciles_with_the_published_table(
+    user: User,
+    calls: list,
+) -> None:
+    """Regression: an update-in-place panel only shows the row it added
+    itself, missing a pairing another OPC client made in between - it
+    never re-reads the published table after its own mutation succeeds.
+    A panel that reconciles on success sees both rows.
+    """
+    await user.open("/reactor/R0")
+    await user.should_see("R0:ph ch0 -> R0:pwm0")
+
+    sensor_select = _select(user, "Sensor")
+    channel_select = _select(user, "Channel")
+    actuator_select = _select(user, "Actuator")
+
+    sensor_select.value = "ph"
+    await _wait_for(lambda: "oC" in (channel_select.options or []))
+    channel_select.value = "oC"
+    actuator_select.value = "pwm1"
+
+    # Another OPC client pairs behind this panel's back, between its
+    # initial read and its own mutation below.
+    calls.table.append(
+        {"sensor": "R0:ph", "actuator": "R0:pwm2", "channel": 0},
+    )
+
+    _click_button(user, "Pair")
+    await user.should_see("follows")
+
+    await user.should_see("R0:ph ch0 -> R0:pwm2")

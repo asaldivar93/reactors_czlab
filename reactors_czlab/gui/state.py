@@ -97,6 +97,17 @@ class AppState:
             await self.client.disconnect()
         self.client = None
         self.book = None
+        # gui.components.pairing caches the pairings variable's nodeid
+        # across reconnects (node ids are only stable for the life of a
+        # server process). Without this, a server restart leaves the
+        # GUI holding a stale nodeid: the next read degrades to a
+        # warning and an empty panel - indistinguishable from a
+        # genuinely empty pairing table, the worst failure mode for
+        # that screen. The import is local to avoid a state -> pairing
+        # -> state cycle at module load.
+        from reactors_czlab.gui.components import pairing
+
+        pairing._PAIRINGS_NODES.clear()
 
     def reading(
         self,

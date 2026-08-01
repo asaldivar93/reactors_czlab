@@ -7,15 +7,17 @@ already paired. A False from the server is therefore genuinely
 unexpected and is reported as such rather than being the normal failure
 path.
 
-A successful pair or unpair updates the panel's own row list in place
-rather than re-reading ``read_pairings`` a second time: the published
-``R{n}:pairings`` variable only catches up to a call this panel itself
-just made after the server's own write completes, so a second read
-immediately afterwards is not guaranteed to see it yet. ``read_pairings``
-is still what populates the panel on first load - and is the only thing
-that can recover the picture after a page reload or pick up a change
-made by another OPC client - it just is not re-consulted for a mutation
-this panel caused itself and already knows the outcome of.
+A successful pair or unpair re-reads ``read_pairings`` afterwards:
+``set_pairing``/``unpair`` (``opcua/reactor.py``) both ``await
+self.publish_pairings()`` - which itself awaits the variable write -
+before returning, and ``STATE.call`` only returns once the OPC method
+reply has arrived, so by the time ``ok`` is ``True`` the published table
+provably already reflects this call. A re-read is also the only way
+this panel can pick up a pairing made by another OPC client in the
+window between its own call and its own render - there is no periodic
+reconcile (``pairing_panel.refresh()`` is never wired to the dashboard's
+timer, deliberately - see below), so a mutation is the only point one
+happens.
 """
 
 from __future__ import annotations
@@ -144,12 +146,9 @@ async def pairing_panel(reactor: str) -> None:
     channel_select = ui.select([], label="Channel").classes("w-40")
     actuator_select = ui.select([], label="Actuator").classes("w-40")
 
-    #: ``pairings`` mirrors the last-known published table: fetched once
-    #: by ``reload`` and then updated in place by a successful pair or
-    #: unpair, so the row that call just changed does not wait on a
-    #: second round trip to appear or disappear. The published variable
-    #: remains the source of truth across a page reload or a restart -
-    #: see ``read_pairings`` - this is only the in-session picture.
+    #: ``pairings`` mirrors the last-known published table, refreshed by
+    #: ``reload``. The published variable is the source of truth; this
+    #: is only the in-session copy used to render.
     state: dict[str, object] = {"pairings": [], "indices": {}, "paired": set()}
 
     def render_rows() -> None:
@@ -227,10 +226,12 @@ async def pairing_panel(reactor: str) -> None:
         if ok:
             ui.notify(f"{actuator} follows {sensor}:{channel}",
                       type="positive")
-            # The server has already applied the pairing; render the
-            # new row locally instead of a second round trip through
-            # read_pairings, which is only current once the published
-            # table catches up.
+            # Optimistic update so the new row shows immediately,
+            # followed by a re-read of the published table - the
+            # server has already applied and published the pairing by
+            # the time `ok` is True (see module docstring) - so this
+            # panel also reconciles with any change another OPC client
+            # made in the meantime. The reload's result wins.
             state["pairings"] = [
                 *state["pairings"],
                 {
@@ -240,6 +241,7 @@ async def pairing_panel(reactor: str) -> None:
                 },
             ]
             render_rows()
+            await reload()
         else:
             ui.notify(
                 "The server refused the pairing; check record.log",
@@ -257,10 +259,14 @@ async def pairing_panel(reactor: str) -> None:
             row["channel"],
         )
         if ok:
+            # Optimistic update, then reconcile with the published
+            # table - see do_pair for why both the ordering and the
+            # reload are safe and necessary.
             state["pairings"] = [
                 r for r in state["pairings"] if r != row
             ]
             render_rows()
+            await reload()
         else:
             ui.notify(
                 "The server refused the unpair; check record.log",
