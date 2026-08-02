@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import TYPE_CHECKING
 
@@ -345,6 +346,55 @@ class ActuatorOpc:
         )
         await self.curr_sensor.set_writable()
 
+    def calibration_json(self) -> str:
+        """Serialise the pump's calibration and its run state.
+
+        Everything an operator needs to judge a calibration that is not
+        already a published variable: the duty limits, when it was
+        fitted, the measured points behind the line, and whether a run
+        is in flight right now.
+
+        Returns
+        -------
+        str
+            A JSON object. ``calibration`` is ``null`` for an actuator
+            with no calibration slot at all - the MFCs - which is how a
+            caller knows to hide the pump calibration screen rather than
+            show it empty.
+
+        """
+        channel = self.actuator.channel
+        cal = channel.calibration
+        state = {
+            "actuator": self.id,
+            # Run state is server-side and shared: ActuatorOpc builds one
+            # CalibrationRun per actuator for the life of the process, so
+            # a reloaded page or a second client sees the same run.
+            "running": self.run.is_running,
+            "pending": list(self.run.pending) if self.run.pending else None,
+            "run_points": [list(point) for point in self.run.points],
+            "calibration": None,
+        }
+        if cal is not None:
+            state["calibration"] = {
+                "file": cal.file,
+                "a": cal.a,
+                "b": cal.b,
+                "r2": cal.r2,
+                "min_duty": cal.min_duty,
+                "max_duty": cal.max_duty,
+                "dispense_duty": cal.dispense_duty,
+                "fitted_at": cal.fitted_at,
+                "is_fitted": cal.is_fitted,
+                "points": [list(point) for point in cal.points],
+                # The single authority on whether this may be installed,
+                # and already worded for an operator. Carried through so
+                # the screen shows the reason rather than deriving its
+                # own.
+                "installable_reason": cal.installable_reason(),
+            }
+        return json.dumps(state)
+
     async def init_calibration_methods(self, idx: int) -> None:
         """Expose the pump calibration workflow on the actuator node.
 
@@ -426,9 +476,26 @@ class ActuatorOpc:
             Text="Duty used for volume boluses",
         )
 
+        @uamethod
+        def get_calibration(parent: Node) -> str:
+            """Report the whole calibration state as JSON."""
+            return self.calibration_json()
+
         outarg = ua.Argument()
         outarg.Name = "Status"
         outarg.DataType = ua.NodeId(ua.ObjectIds.String)
+
+        # One method rather than eight more variables. These change only
+        # when a pump is refitted, and `points` is a list and `file` a
+        # string - neither fits the FLOAT `value` column that every
+        # published variable ends up in.
+        await self.node.add_method(
+            idx,
+            f"{self.id}:get_calibration",
+            get_calibration,
+            [],
+            [outarg],
+        )
 
         for name, callback, inargs in (
             ("calibrate_point", calibrate_point, [inarg_duty, inarg_seconds]),

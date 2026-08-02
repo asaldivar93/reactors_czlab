@@ -19,9 +19,9 @@ pytest.importorskip(
     reason="core.sensor imports pymodbus; install the server extra",
 )
 
-from reactors_czlab.core.data import PhysicalInfo, PlcOutput  # noqa: E402
-from reactors_czlab.core.modbus import ModbusError  # noqa: E402
-from reactors_czlab.core.sensor import HamiltonSensor  # noqa: E402
+from reactors_czlab.core.data import PhysicalInfo, PlcOutput
+from reactors_czlab.core.modbus import ModbusError
+from reactors_czlab.core.sensor import HamiltonSensor
 
 #: CP status blocks: status words, unit words, value words. The fake
 #: decode below is hundredths, so 700 reads back as 7.00.

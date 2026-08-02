@@ -7,6 +7,8 @@ stub node that captures the callables instead of registering them.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from asyncua import ua
 
@@ -118,3 +120,82 @@ async def test_reactor_opc_does_not_duplicate_state(paired) -> None:
     reactor_opc, _, _ = paired
     assert reactor_opc.sensors is reactor_opc.reactor.sensors
     assert reactor_opc.actuators is reactor_opc.reactor.actuators
+
+
+class _CapturingVariable:
+    """Stand-in for a variable node that records what was written."""
+
+    def __init__(self) -> None:
+        self.values: list[str] = []
+
+    async def write_value(self, value: str) -> None:
+        """Capture a published value."""
+        self.values.append(value)
+
+
+@pytest.fixture
+async def published(make_sensor, make_actuator):
+    """A ReactorOpc whose pairing table is published to a stub variable."""
+    reactor_opc = ReactorOpc(
+        "R0",
+        volume=5,
+        sensors=[make_sensor("R0:ph")],
+        actuators=[make_actuator("R0:pwm0"), make_actuator("R0:pwm1")],
+        period=10,
+    )
+    node = _CapturingNode()
+    reactor_opc.node = node
+    reactor_opc.pairings_node = _CapturingVariable()
+    await reactor_opc.init_pairing_methods(2)
+    return (
+        reactor_opc,
+        node.methods["set_pairing"],
+        node.methods["unpair"],
+        reactor_opc.pairings_node,
+    )
+
+
+async def test_pairings_are_published_on_pair(published) -> None:
+    """The pairing table is readable, not just Python-side state.
+
+    Without this a client can call set_pairing but has no way to find
+    out what is currently paired - the table lives only in
+    Reactor.sampling.pairings.
+    """
+    _, set_pairing, _, node = published
+
+    await _call(set_pairing, "R0:ph", "R0:pwm0", 1)
+
+    assert json.loads(node.values[-1]) == [
+        {"sensor": "R0:ph", "actuator": "R0:pwm0", "channel": 1},
+    ]
+
+
+async def test_pairings_are_published_on_unpair(published) -> None:
+    """Unpairing republishes, so the table never goes stale."""
+    _, set_pairing, unpair, node = published
+
+    await _call(set_pairing, "R0:ph", "R0:pwm0", 0)
+    await _call(unpair, "R0:ph", "R0:pwm0", 0)
+
+    assert json.loads(node.values[-1]) == []
+
+
+async def test_a_refused_pairing_publishes_nothing(published) -> None:
+    """A rejected call must not republish an unchanged table."""
+    _, set_pairing, _, node = published
+
+    await _call(set_pairing, "R9:ph", "R0:pwm0", 0)
+
+    assert node.values == []
+
+
+async def test_published_pairings_are_sorted(published) -> None:
+    """A client can compare two reads without minding dict order."""
+    _, set_pairing, _, node = published
+
+    await _call(set_pairing, "R0:ph", "R0:pwm1", 0)
+    await _call(set_pairing, "R0:ph", "R0:pwm0", 1)
+
+    actuators = [row["actuator"] for row in json.loads(node.values[-1])]
+    assert actuators == sorted(actuators)

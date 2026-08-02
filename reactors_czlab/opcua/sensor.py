@@ -14,6 +14,12 @@ if TYPE_CHECKING:
 
 _logger = logging.getLogger("server.opcsensor")
 
+#: Reported by read_calibration_status when the sensor has no
+#: calibration points to read. Matches what the base Sensor's
+#: write_calibration reports, so a client tells the two apart from a
+#: real status by the same word either way.
+UNSUPPORTED_STATUS = "unsupported"
+
 
 class SensorOpc:
     """Sensor node."""
@@ -38,7 +44,7 @@ class SensorOpc:
         _logger.info("In node %s added %s", bnp.Name, bns.Name)
 
         # Add channels to store data from the sensor
-        for channel in sensor.channels:
+        for index, channel in enumerate(sensor.channels):
             var = await self.node.add_variable(
                 idx,
                 f"{self.id}:{channel.units}",
@@ -49,6 +55,12 @@ class SensorOpc:
                 ua.AttributeIds.Description,
                 ua.DataValue(ua.LocalizedText(Text=channel.description)),
             )
+            # set_pairing takes the channel's *index*, but browsing only
+            # yields its name, so a client had no way to work out what
+            # to pass. Published as a Property rather than a Variable so
+            # OpcClient.match_tree skips it and it never reaches the
+            # data table.
+            await var.add_property(idx, "ChannelIndex", index)
             self.channels.append(var)
 
         @uamethod
@@ -86,6 +98,51 @@ class SensorOpc:
             write_calibration,
             [inarg_calp, inarg_calv],
             [outarg1, outarg2, outarg3],
+        )
+
+        @uamethod
+        async def read_calibration_status(
+            parent: Node,
+            cal_point: float,
+        ) -> tuple[str, float, float, float]:
+            """Report what a calibration point currently holds."""
+            status = await self.sensor.read_calibration_status(cal_point)
+            if status is None:
+                # Either the sensor has no calibration points at all
+                # (biomass, simulated) or the read failed; both are
+                # already logged where they happened.
+                return (UNSUPPORTED_STATUS, 0.0, 0.0, 0.0)
+            return (
+                status.text,
+                status.quality,
+                status.value,
+                status.process_value,
+            )
+
+        inarg_point = ua.Argument()
+        inarg_point.Name = "Cal_point"
+        inarg_point.DataType = ua.NodeId(ua.ObjectIds.Float)
+
+        status_args = []
+        for name in ("Status", "Quality", "Value", "Process_value"):
+            arg = ua.Argument()
+            arg.Name = name
+            arg.DataType = ua.NodeId(
+                ua.ObjectIds.String if name == "Status" else ua.ObjectIds.Float,
+            )
+            status_args.append(arg)
+
+        # On demand, not published. CP status registers are readable at
+        # administrator or specialist level only, so every read raises
+        # and drops the sensor's operator level on the same RS485 bus
+        # the control loop uses - not something to do on a publish
+        # cycle for data that changes only at a calibration.
+        await self.node.add_method(
+            idx,
+            f"{self.id}:read_calibration_status",
+            read_calibration_status,
+            [inarg_point],
+            status_args,
         )
 
     async def update_value(self) -> None:
