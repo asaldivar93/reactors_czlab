@@ -40,7 +40,10 @@ from reactors_czlab.opcua.actuator import control_method, output_unit_map
 
 _logger = logging.getLogger("gui")
 
-#: Numeric fields and their labels, keyed by the channel segment.
+#: Numeric fields and their labels, keyed by the channel segment. "value"
+#: (Demand) is not here - its label is unit-qualified, see
+#: _demand_label - but the key is kept as the empty-field notification
+#: still looks up FIELD_LABELS["value"] to name it.
 FIELD_LABELS = {
     "value": "Demand",
     "time_on": "Time on (s)",
@@ -57,6 +60,26 @@ FIELD_LABELS = {
 
 #: Fields rendered as switches rather than number inputs.
 BOOLEAN_FIELDS = ("backwards", "auto_integral_band")
+
+#: The unit a demand is expressed in, per CLAUDE.md: duty is raw PLC
+#: counts, flow is mL/min, volume is mL.
+DEMAND_UNIT_SUFFIX = {
+    OutputUnit.duty: "counts",
+    OutputUnit.flow: "mL/min",
+    OutputUnit.volume: "mL",
+}
+
+
+def _demand_label(unit: OutputUnit) -> str:
+    """The Demand field's label, qualified with its live unit.
+
+    Regression: an unlabelled Demand field prefilled from the running
+    value let a unit change (e.g. manual/duty at 2000 -> volume) leave
+    the same number sitting there meaning something else entirely -
+    2000 mL instead of 2000 counts. ``core.dispenser._start_bolus``
+    dispenses an over-limit demand in full, logging only a warning.
+    """
+    return f"Demand ({DEMAND_UNIT_SUFFIX[unit]})"
 
 
 async def _read_calibration(reactor: str, name: str) -> dict | None:
@@ -146,12 +169,23 @@ async def open_control_dialog(reactor: str, name: str) -> None:
             warning = ui.label("").classes("text-orange-600 text-sm")
             inputs: dict[str, object] = {}
 
+            # Demand is rendered once here, outside the method-keyed
+            # fields() refreshable below, so a method change cannot
+            # resurrect a value on_unit_change just cleared: fields()
+            # only ever rebuilds the method-specific fields now, never
+            # "value".
+            inputs["value"] = ui.number(
+                _demand_label(unit_select.value),
+                value=float(current.get("value") or 0.0),
+            ).classes("w-full")
+
             @ui.refreshable
             def fields() -> None:
                 """Show only what the selected method consumes."""
-                inputs.clear()
-                shown = ("value", *METHOD_FIELDS[method_select.value])
-                for field in shown:
+                for field in list(inputs):
+                    if field != "value":
+                        del inputs[field]
+                for field in METHOD_FIELDS[method_select.value]:
                     if field in BOOLEAN_FIELDS:
                         inputs[field] = ui.switch(
                             field.replace("_", " "),
@@ -163,18 +197,31 @@ async def open_control_dialog(reactor: str, name: str) -> None:
                             value=float(current.get(field) or 0.0),
                         ).classes("w-full")
 
-            def on_unit_change() -> None:
-                """Warn before an unusable unit is written, not after."""
+            def on_unit_change(*, clear_demand: bool = True) -> None:
+                """Warn before an unusable unit is written, not after.
+
+                Also relabels Demand to the newly selected unit and, on
+                an operator-driven change (not the initial render),
+                clears it - see _demand_label's docstring for why a
+                stale number surviving a unit change is a live-dosing
+                hazard. Clearing composes with the empty-field refusal
+                in apply() below: it cannot silently write anything,
+                only force a conscious re-entry.
+                """
                 reason = unit_rejection_reason(
                     unit_select.value,
                     calibration,
                 )
                 warning.set_text(reason or "")
+                demand = inputs["value"]
+                demand.label = _demand_label(unit_select.value)
+                if clear_demand:
+                    demand.set_value(None)
 
             method_select.on_value_change(lambda _: fields.refresh())
             unit_select.on_value_change(lambda _: on_unit_change())
             fields()
-            on_unit_change()
+            on_unit_change(clear_demand=False)
 
             async def apply() -> None:
                 """Write the plan in order, stopping at the first

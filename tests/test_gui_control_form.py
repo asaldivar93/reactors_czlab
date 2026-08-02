@@ -213,6 +213,39 @@ async def test_a_cleared_field_writes_nothing(
     assert writes == []
 
 
+async def test_changing_the_unit_relabels_and_clears_demand(
+    user: User,
+    writes: list,
+    fitted: None,
+) -> None:
+    """Regression: the Demand field carried no unit in its label and
+    was neither cleared nor relabelled when the output unit changed -
+    so a manual pump sitting at duty 2000, switched to volume with
+    Demand left at 2000, would dispense 2000 mL in full:
+    core.dispenser._start_bolus applies an over-limit demand entirely
+    and only logs a warning. Changing the unit must force a conscious
+    re-entry in the new unit, not a silent reinterpretation of a stale
+    number.
+    """
+    await user.open("/reactor/R0")
+    user.find("Configure").click()
+    await user.should_see("pwm0 control")
+    await user.should_see("Demand (counts)")
+
+    user.find("Output unit").click()
+    user.find("volume").click()
+    await user.should_see("Demand (mL)")
+    await user.should_not_see("Demand (counts)")
+
+    # The empty-field refusal (Task 14) is the proof the clear
+    # actually happened: Apply must refuse rather than dispense
+    # whatever the old duty number would now mean as millilitres.
+    user.find("Apply").click()
+    await user.should_see("is empty")
+
+    assert writes == []
+
+
 async def test_an_unfitted_pump_refuses_a_flow_unit(
     user: User,
     writes: list,
