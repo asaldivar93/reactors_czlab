@@ -8,6 +8,7 @@ pages poll it on a timer rather than being pushed to.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING
 
@@ -43,6 +44,13 @@ class AppState:
         self.client: OpcClient | None = None
         self.book: AddressBook | None = None
         self.connection_error: str | None = None
+        #: Serializes connect() so an operator double-clicking Retry,
+        #: or two browser tabs retrying at once, cannot both build an
+        #: OpcClient and race to overwrite self.client - the loser
+        #: would orphan its session and subscription with no
+        #: disconnect(), holding a server session for the process's
+        #: life.
+        self._connect_lock = asyncio.Lock()
 
     def __repr__(self) -> str:
         """Print the endpoint and whether it is connected."""
@@ -99,25 +107,39 @@ class AppState:
         A server that is not up yet is the normal state on boot, so the
         failure is recorded for the UI to show and retried by the page's
         reconnect button rather than taking the process down.
-        """
-        client = OpcClient(self.endpoint)
-        try:
-            await client.connect()
-            await client.init_subscriptions()
-        except Exception as err:  # noqa: BLE001 - reported, not raised
-            self.connection_error = f"{type(err).__name__}: {err}"
-            _logger.warning(
-                "Could not connect to %s: %s",
-                self.endpoint,
-                self.connection_error,
-            )
-            await client.disconnect()
-            return
 
-        self.client = client
-        self.book = AddressBook.from_client(client)
-        self.connection_error = None
-        _logger.info("Connected to %s", self.endpoint)
+        Guarded by ``_connect_lock`` end to end, with an early return
+        once a client already exists: without it, two overlapping
+        calls - a double-clicked Retry, two browser tabs retrying at
+        once - each build their own OpcClient, and whichever assigns
+        ``self.client`` last silently orphans the other's session and
+        subscription (no ``disconnect()`` ever runs on it). The early
+        return also covers a client that is alive but mid-reconnect
+        (``self.connected`` is False there): Retry must not tear down
+        and rebuild a session asyncua is already recovering on its own.
+        """
+        async with self._connect_lock:
+            if self.client is not None:
+                return
+
+            client = OpcClient(self.endpoint)
+            try:
+                await client.connect()
+                await client.init_subscriptions()
+            except Exception as err:  # noqa: BLE001 - reported, not raised
+                self.connection_error = f"{type(err).__name__}: {err}"
+                _logger.warning(
+                    "Could not connect to %s: %s",
+                    self.endpoint,
+                    self.connection_error,
+                )
+                await client.disconnect()
+                return
+
+            self.client = client
+            self.book = AddressBook.from_client(client)
+            self.connection_error = None
+            _logger.info("Connected to %s", self.endpoint)
 
     async def disconnect(self) -> None:
         """Drop the connection and the address book."""
