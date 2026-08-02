@@ -66,12 +66,17 @@ def recording_toggle() -> None:
         recording_toggle.refresh()
         status_badges.refresh()
 
+    # color=white, not a bare outline: Quasar's default outline button
+    # takes the primary colour for its text and border, which is the
+    # same colour as the header it sits on - the control was invisible.
     if STATE.recording:
         ui.button("Stop recording", on_click=stop, color="warning").props(
-            "outline size=sm",
+            "size=sm",
         )
     else:
-        button = ui.button("Record", on_click=start).props("outline size=sm")
+        button = ui.button("Record", on_click=start).props(
+            "outline size=sm color=white",
+        )
         if not STATE.database_available:
             button.disable()
             button.tooltip(STATE.database_reason)

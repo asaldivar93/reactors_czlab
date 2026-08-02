@@ -86,10 +86,16 @@ def _current(reactor: str, actuator: str, channel: str) -> float | None:
     return value
 
 
-def open_control_dialog(reactor: str, actuator: str) -> None:
-    """Open the configuration dialog for one actuator."""
+async def open_control_dialog(reactor: str, actuator: str) -> None:
+    """Open the configuration dialog for one actuator.
+
+    Awaited directly by the button rather than deferred onto a timer:
+    elements built from a timer callback are rendered but their event
+    handlers never fire, so the dialog's own Apply and Cancel did
+    nothing at all.
+    """
     _logger.info("Operator opened control config for %s", actuator)
-    ui.timer(0, lambda: _build_dialog(reactor, actuator), once=True)
+    await _build_dialog(reactor, actuator)
 
 
 async def _build_dialog(reactor: str, actuator: str) -> None:
@@ -174,8 +180,8 @@ async def _build_dialog(reactor: str, actuator: str) -> None:
             # counts, mL/min or mL depending on the unit.
             render_fields()
 
-        method_select.on_value_change(on_method_change)
-        unit_select.on_value_change(on_unit_change)
+        method_select.on_value_change(lambda _: on_method_change())
+        unit_select.on_value_change(lambda _: on_unit_change())
 
         async def apply() -> None:
             """Validate, then write the plan in order."""

@@ -17,7 +17,9 @@ from reactors_czlab.gui.components.shell import (
 )
 from reactors_czlab.gui.components.values import (
     actuator_panel,
+    actuator_readings,
     sensor_panel,
+    sensor_readings,
 )
 from reactors_czlab.gui.state import STATE
 
@@ -86,8 +88,13 @@ async def reactor_page(reactor: str) -> None:
         await pairing_panel(reactor)
 
     def refresh() -> None:
-        """Re-read the in-memory values."""
-        sensor_panel.refresh()
-        actuator_panel.refresh()
+        """Re-read the in-memory values.
+
+        Only the readings, not the cards that hold them: rebuilding the
+        cards would destroy the Configure buttons once a second,
+        underneath whatever the operator was reaching for.
+        """
+        sensor_readings.refresh()
+        actuator_readings.refresh()
 
     ui.timer(REFRESH_SECONDS, refresh)

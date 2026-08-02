@@ -114,9 +114,38 @@ async def channel_index(
     return None
 
 
+def device_id(reactor: str, name: str) -> str:
+    """The full device id the server's methods expect.
+
+    The address book keys devices by the middle part of their browse
+    name - ``R0:biomass:415`` gives ``biomass`` - but ``set_pairing``
+    validates its arguments against ``sampling.sensors``, which holds
+    the full ids. Passing the short name is refused with
+    "biomass is not a sensor of R0".
+    """
+    return f"{reactor}:{name}"
+
+
+def short_name(identifier: str) -> str:
+    """The address book's key for a full device id.
+
+    ``R0:biomass`` gives ``biomass``. The published pairing table
+    carries full ids, so this is what turns a published row back into
+    something that can be looked up or compared against the book.
+    """
+    _, _, name = identifier.partition(":")
+    return name or identifier
+
+
 def paired_actuators(pairings: list[dict]) -> set[str]:
-    """Which actuators are already following a sensor channel."""
-    return {row["actuator"] for row in pairings}
+    """Which actuators are already following a sensor channel.
+
+    Returned as short names, so the result can be compared against the
+    address book's actuator keys. Comparing published full ids against
+    those keys never matched, so every actuator stayed on offer however
+    many were already paired.
+    """
+    return {short_name(row["actuator"]) for row in pairings}
 
 
 async def label_channels(reactor: str, rows: list[dict]) -> list[dict]:
@@ -133,13 +162,24 @@ async def label_channels(reactor: str, rows: list[dict]) -> list[dict]:
 
     labelled = []
     for row in rows:
+        sensor = short_name(row["sensor"])
         name = None
-        for ref in STATE.book.sensors(reactor).get(row["sensor"], []):
-            index = await channel_index(reactor, row["sensor"], ref.channel)
+        for ref in STATE.book.sensors(reactor).get(sensor, []):
+            index = await channel_index(reactor, sensor, ref.channel)
             if index == row["channel"]:
                 name = ref.channel
                 break
-        labelled.append({**row, "channel_name": name or str(row["channel"])})
+        labelled.append(
+            {
+                **row,
+                "channel_name": name or str(row["channel"]),
+                # Short names in the table, matching the add form's
+                # selectors, so the same pump is not called "pwm0" in
+                # one place and "R0:pwm0" a line below.
+                "sensor_name": sensor,
+                "actuator_name": short_name(row["actuator"]),
+            },
+        )
     return labelled
 
 
@@ -176,16 +216,20 @@ def _render(reactor: str, rows: list[dict], reconcile) -> None:
         with ui.element("div").style("overflow-x: auto; width: 100%"):
             table = ui.table(
                 columns=[
-                    {"name": "sensor", "label": "Sensor", "field": "sensor"},
+                    {
+                        "name": "sensor_name",
+                        "label": "Sensor",
+                        "field": "sensor_name",
+                    },
                     {
                         "name": "channel_name",
                         "label": "Channel",
                         "field": "channel_name",
                     },
                     {
-                        "name": "actuator",
+                        "name": "actuator_name",
                         "label": "Actuator",
-                        "field": "actuator",
+                        "field": "actuator_name",
                     },
                 ],
                 rows=rows,
@@ -206,7 +250,7 @@ def _unpair_buttons(reactor: str, rows: list[dict], reconcile) -> None:
         return
     with ui.row().classes("flex-wrap").style("gap: 0.5rem"):
         for row in rows:
-            label = f"Unpair {row['actuator']}"
+            label = f"Unpair {short_name(row['actuator'])}"
             ui.button(
                 label,
                 on_click=lambda r=row: _unpair(reactor, r, reconcile),
@@ -251,7 +295,7 @@ def _add_form(reactor: str, rows: list[dict], reconcile) -> None:
             channel_select.value = options[0] if options else None
             channel_select.update()
 
-        sensor_select.on_value_change(refresh_channels)
+        sensor_select.on_value_change(lambda _: refresh_channels())
         refresh_channels()
 
         async def pair() -> None:
@@ -301,8 +345,8 @@ async def _pair(
             reactor,
             None,
             "set_pairing",
-            sensor,
-            actuator,
+            device_id(reactor, sensor),
+            device_id(reactor, actuator),
             index,
         )
     except (LookupError, OSError) as err:

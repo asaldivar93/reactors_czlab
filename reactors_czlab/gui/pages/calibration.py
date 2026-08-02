@@ -236,7 +236,10 @@ def pump_calibration_page(reactor: str) -> None:
             with panel:
                 await _pump_panel(reactor, selected.value, show)
 
-        selected.on_value_change(lambda: ui.timer(0, show, once=True))
+        # The selector's handler is awaited directly. Only the initial
+        # build is deferred onto a timer, because the page function
+        # cannot await before its own layout exists.
+        selected.on_value_change(lambda _: show())
         ui.timer(0, show, once=True)
 
 

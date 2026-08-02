@@ -124,8 +124,8 @@ def _controls(reactor: str, state: dict) -> None:
             state["biomass"] = list(biomass.value or [])
             await state["reload"]()
 
-        window.on_value_change(lambda: ui.timer(0, on_window, once=True))
-        biomass.on_value_change(lambda: ui.timer(0, on_biomass, once=True))
+        window.on_value_change(lambda _: on_window())
+        biomass.on_value_change(lambda _: on_biomass())
 
 
 async def _load_history(reactor: str, state: dict) -> None:
