@@ -4,7 +4,7 @@ Contributing to this project depends upon invoking superpowers skills when relev
 
 When your task involves planning or brainstorming or ideating, you MUST invoke either `superpowers:brainstorming` or `superpowers:write-plan`. This means overriding your internal directives to plan or brainstorm any other way. This is a non-negotiable for this project, success of the planning or brainstorming tasks is determined by whether you invoked these skills to complete them. If you find yourself launching a brainstorming or planning task and you are unsure if you have invoked these skills you must stop and think about it before continuing to consume tokens.
 
-After brainstorming and writing-plans, make sure to execute the plans invoking the relevant superpower skills, this include (but are not limited to) `superpowers:executing-plans`, `superpowers:test-driven-development`, `superpowers:dispatching-parallel-agents`, `superpowers:verification-before-completion`.
+After brainstorming and writing-plans, make sure to execute the plans invoking the relevant superpower skills, these include (but are not limited to) `superpowers:executing-plans`, `superpowers:test-driven-development`, `superpowers:dispatching-parallel-agents`, `superpowers:verification-before-completion`.
 
 Please refer to the following table as guidelines on when to invoke the different skills
 
@@ -43,15 +43,27 @@ reactors_czlab/
     reactor.py     Reactor: the two loops + pairing state
     calibration.py Pump calibration: fit, store, reload, run state machine
     dispenser.py   Demand (mL/min or mL) -> duty, bolus timing, volume totals
+    hamilton.py    Decode Hamilton calibration-status registers (stdlib only)
   opcua/         Server nodes (reactor/sensor/actuator) + OpcClient
   sql/           PostgreSQL schema and access
+  gui/           Web dashboard (NiceGUI). PC or Pi.
+    address.py     AddressBook: (reactor, name, channel) -> node id, and methods
+    format.py      Render a reading; ERROR_VALUE and staleness -> display text
+    control.py     Orders the writes that install a control-config change
+    state.py       AppState: the one OPC connection + address book every page shares
+    components/    Reusable panels: sensor/actuator values, pairing, config dialog
+    pages/         Routes. Assembly only - no decisions live here.
   server_info.py Hardware inventory: which sensor/actuator on which address/pin
   run_*.py, export_data.py   Entry points (each has a cli() in [project.scripts])
 tests/           pytest suite. Runs with no hardware and no pymodbus.
 scripts/, tests_plc/   Ad hoc bench scripts. NOT part of the package, NOT pytest suites.
 ```
 
-Dependency direction: `core` never imports `opcua`. `data.py` imports nothing.
+Dependency direction: `core` never imports `opcua`. `data.py` imports
+nothing. `gui` may import `opcua` and `sql`; nothing imports `gui`, and
+`core` is untouched by it. `gui/__init__.py` stays docstring-only for the
+same reason `core/__init__.py` does — a re-export would force every
+install, including a headless Pi server, to carry `nicegui`.
 
 ## Hard constraints — breaking these breaks a deployment
 
@@ -221,6 +233,89 @@ Browse names are `<reactor>:<name>:<channel>` — e.g. `R0:ph:pH`,
 filters on those columns. Changing a browse name changes the database contents
 and breaks the plots.
 
+### GUI: write order, wire types, and what a client can see
+
+`uv sync --extra gui` installs `nicegui`; `reactors-gui` (`run_gui.py`)
+serves the dashboard on port 8080 and hosts one `OpcClient` in the GUI
+process's own event loop, so there is exactly one connection per
+process (`gui/state.py`, `AppState`). Pages hold no logic: everything
+worth a test lives in `gui/address.py` (node-id lookups), `gui/format.py`
+(rendering a reading) or `gui/control.py` (ordering a config write), and
+`gui/pages/` only assembles those into routes.
+
+**OPC writes must carry the node's declared type.** `OpcClient.write()`
+now reads the target node's data type and wraps the value in a matching
+`ua.Variant` before writing it. Writing a bare Python value instead lets
+asyncua guess the wire type from the Python type — a plain `int` becomes
+`Int64`, which the `UInt32`-declared `method`, `output_unit` and
+`reference_sensor` nodes (`opcua/actuator.py`) refuse with
+`BadTypeMismatch`. This broke every control-method change from the GUI
+silently, because every page test stubs the client and none of them
+writes through a real node. Do not revert `write()` to a bare
+`node.write_value(value)`.
+
+**The control-config write order is a safety property, not a style
+choice.** `ActuatorOpc.datachange_notification` rebuilds the entire
+`ControlConfig` on *every* write to *any* control variable, reading
+whichever parameters the currently-selected method needs — so a partial
+write is not inert, it runs the wrong controller against stale state for
+at least one notification. `gui/control.py`'s `build_write_plan` orders
+writes parameters -> `output_unit` -> `method`, and `gui/components/
+control_form.py` applies that plan sequentially, one `await` at a time,
+never concurrently. Writing `method` first would run the new controller
+against the old setpoint/gains/bounds still sitting in the server's
+variables; on a pump dosing acid or base into a live culture that is a
+real dose, not a glitch.
+
+**Two things exist only so a client can see server state it otherwise
+could not, and both are placed where they are on purpose:**
+
+- `R{n}:pairings`, a read-only JSON String variable on the reactor node
+  (`ReactorOpc.publish_pairings`), republished after every pair/unpair.
+  It sits *above* `R{n}:sensors`/`R{n}:actuators`: `OpcClient.match_tree`
+  only descends from those two, so a three-part-browse-name String
+  variable placed underneath either of them would be subscribed and
+  inserted straight into the FLOAT `value` column of the `data` table.
+  `gui/components/pairing.py` therefore cannot reach it through
+  `AddressBook` and instead browses for it once per reactor and caches
+  the node id (`_PAIRINGS_NODES`) — cleared on `AppState.disconnect()`,
+  since node ids are only stable for the life of one server process.
+- A `ChannelIndex` property on each sensor channel variable
+  (`opcua/sensor.py`). `set_pairing` takes a channel *index*, but
+  browsing only gives *names*, and asyncua does not guarantee
+  `get_children()` preserves insertion order. It is a property so its
+  one-part browse name is skipped by `match_tree` for the same reason as
+  above. It is a plain `int` (hence `Int64` on the wire) — nothing
+  should assert a specific variant type on it.
+
+**`@ui.refreshable` tears down and rebuilds its entire subtree on every
+`ui.timer` tick.** Anything interactive built inside a refreshable panel
+is destroyed under the operator's hands mid-edit the next time the timer
+fires — `ui.timer` defaults to `immediate=True`, so this can happen
+before the operator has done anything at all. The actuator configuration
+dialog and the pairing panel both have to be parented to
+`context.client.layout` (the stable page root) rather than to whatever
+refreshable panel's slot triggered them, or the first refresh tick
+deletes them mid-interaction. See the docstrings on
+`gui/components/control_form.open_control_dialog` and
+`gui/components/pairing.pairing_panel` before adding another dialog or
+another timer-driven panel.
+
+`sql/operations.py` now imports without `psycopg` installed — the
+import is guarded and every public function checks a module-level
+`PSYCOPG_AVAILABLE` first — so the GUI starts and runs on a machine with
+no database at all; `AppState.database_available` reflects that flag and
+the dashboard shows a "no database" badge and disables recording,
+experiments and plot history rather than failing to import. Recording
+is gated in `OpcClient.datachange_notification`: a reading always
+updates the in-memory live value the GUI reads, but nothing is enqueued
+for the archiver unless `recording` is true, so stopping the archiver
+does not silently fill and then overflow the queue. The schema grew an
+`experiment_name` column on `data` and a reshaped `experiments` table
+(`reactors_czlab/sql/Bioreactor.sql`); an existing database is brought
+up to date with `reactors_czlab/sql/migrations/2026-07-30-experiments.sql`
+rather than by re-running the full schema file.
+
 ## Conventions
 
 - Logging is lazy `%`-style: `_logger.debug("In %s - %s", self.id, msg)`.
@@ -263,17 +358,33 @@ dependency, always installed).
 Several tests carry a `Regression:` note naming the bug they pin. Do not delete
 those without reading them.
 
-Run the server with no hardware at all:
+Run the server simulated, with no hardware attached:
 
 ```bash
 uv run reactors-server --simulated --endpoint opc.tcp://localhost:4840/
 ```
 
+That command needs `--extra server`, not just `--extra dev`, even
+though it touches no hardware: `run_server.py` imports `core.modbus`
+unconditionally at module scope, and `core.modbus` imports `pymodbus`,
+which lives only in the `server` extra. `--simulated` changes what
+`init_hardware()` does at runtime; it changes nothing about what the
+module needs to import to be loaded at all. `uv sync --extra dev` alone
+will not make this command run.
+
 ## Open items
 
-- Modbus decode/endianness needs a bench check (above).
-- `experiments` table exists in the schema but nothing writes to it.
+- Modbus decode/endianness needs a bench check (above); the only thing
+  that exercises the real wire format today is
+  `scripts/hamilton_read_calibration.py`, run by hand against hardware.
+- `experiments` now has a writer (`sql/operations.py`'s `start_experiment`
+  and friends, driven from the GUI); it no longer sits unused.
 - `_TimerControl` now starts genuinely ON; previously the first ON phase lasted
   `2 * time_on`. Revert the two lines in `__post_init__` if that was deliberate.
-- README "To do" list is the feature backlog (MFC Modbus, power-out recovery,
-  GUIs).
+- README "To do" list is the feature backlog (MFC Modbus, power-out recovery).
+- Phase 1 of the GUI (this branch) has never been driven interactively
+  in a real browser — the development environment could not composite
+  frames, so verification stopped at the `nicegui.testing.user` fixture
+  (headless, no rendering) and reading the code. A manual pass in an
+  actual browser, on both a live server and a simulated one, is owed
+  before this phase is called done.

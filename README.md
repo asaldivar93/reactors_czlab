@@ -11,9 +11,11 @@ subscribes to that server and archives the readings in PostgreSQL.
 | `reactors_czlab/core/` | Pi | Sensors, actuators, control strategies, the reactor loops |
 | `reactors_czlab/opcua/` | Pi + PC | OPC UA server nodes and the client |
 | `reactors_czlab/sql/` | PC | PostgreSQL schema and access |
+| `reactors_czlab/gui/` | Pi + PC | Web dashboard (NiceGUI) |
 | `reactors_czlab/run_server.py` | Pi | Starts the OPC UA server |
 | `reactors_czlab/run_client.py` | PC | Subscribes and archives to PostgreSQL |
 | `reactors_czlab/run_plots.py` | PC | Live plots of the archived data |
+| `reactors_czlab/run_gui.py` | Pi + PC | Starts the web dashboard |
 | `reactors_czlab/export_data.py` | PC | Dumps the archive to csv |
 | `scripts/`, `tests_plc/` | Pi | Ad hoc bench scripts, not part of the package |
 
@@ -120,6 +122,45 @@ Calibrations are saved to `~/.reactors_czlab/calibrations/` as
 `<name>.json`; the `REACTORS_CALIBRATION_DIR` environment variable
 overrides that directory.
 
+## GUI
+
+A web dashboard for watching live readings, configuring an actuator's
+controller and pairing sensors to actuators, built on NiceGUI. It runs
+on the PC or on the Pi.
+
+Install:
+
+```bash
+uv sync --extra gui
+```
+
+Add `--extra client` as well to get recording, experiments and plot
+history — without it the GUI still runs, but those features are
+disabled because `psycopg` is not installed (see `sql/operations.py`,
+`PSYCOPG_AVAILABLE`).
+
+Run:
+
+```bash
+uv run reactors-gui --endpoint opc.tcp://<pi>:55488/
+```
+
+Then open `http://<host>:8080` in a browser.
+
+Recording needs a PostgreSQL server reachable from wherever the GUI
+runs. On the Pi, either install `postgresql` locally and run
+`Bioreactor.sql` there, or set `BIOREACTOR_DB_HOST` to point at the
+PC's database instead. Do not record from two machines against two
+separate local databases at once — there is nothing that merges them
+after the fact, so you end up with two divergent copies of the run.
+
+Bringing an existing database up to date for the GUI (the
+`experiment_name` column and the `experiments` table's new shape):
+
+```bash
+psql -f reactors_czlab/sql/migrations/2026-07-30-experiments.sql
+```
+
 ## Tests
 
 ```bash
@@ -134,7 +175,3 @@ The suite under `tests/` runs without hardware and without pymodbus.
 - Mass Flow Controller Modbus
 - Restore server from power out
 - Restore client from power out
-
-Non essential:
-
-- GUI
