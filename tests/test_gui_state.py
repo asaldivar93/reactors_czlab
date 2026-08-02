@@ -37,6 +37,7 @@ class FakeOpcClient:
         self.disconnected = False
         self.writes: list[tuple[str, object]] = []
         self.calls: list[tuple[str, tuple]] = []
+        self.slow_calls: list[tuple[str, tuple, float]] = []
         self.fail_on_connect: Exception | None = None
         FakeOpcClient.instances.append(self)
 
@@ -62,6 +63,16 @@ class FakeOpcClient:
     async def call_method(self, nodeid: str, *args: object) -> object:
         """Record a call."""
         self.calls.append((nodeid, args))
+        return "ok"
+
+    async def call_slow_method(
+        self,
+        nodeid: str,
+        *args: object,
+        timeout: float,
+    ) -> object:
+        """Record a call made on a separate short-lived session."""
+        self.slow_calls.append((nodeid, args, timeout))
         return "ok"
 
     async def start_recording(self) -> None:
@@ -364,3 +375,48 @@ class TestAdoptRunningExperiments:
 
         assert app.connected
         assert app.client.experiment_tags == {}
+
+
+class TestSlowCalls:
+    """Calls that outlive asyncua's reconnect watchdog."""
+
+    async def test_a_slow_call_does_not_use_the_shared_connection(
+        self,
+        app: AppState,
+    ) -> None:
+        """Regression: a long call tears the shared session down.
+
+        asyncua's reconnect supervisor probes every watchdog_intervall
+        (1s) with a timeout of the same length, so a method call that
+        outlasts the probe makes it conclude the link is dead and tear
+        the session down - taking the subscription, and the whole live
+        display, with it. Measured against a real server: with
+        auto_reconnect a call of 4s or more kills the session whatever
+        the timeout is set to.
+
+        calibrate_point runs a pump for up to 600s, so it can never go
+        through the shared connection.
+        """
+        await app.connect()
+        app.book.methods[("R0", "pwm0", "calibrate_point")] = "ns=2;i=40"
+
+        await app.call_slow(
+            "R0",
+            "pwm0",
+            "calibrate_point",
+            1000.0,
+            60.0,
+            timeout=90.0,
+        )
+
+        assert app.client.slow_calls == [("ns=2;i=40", (1000.0, 60.0), 90.0)]
+        assert app.client.calls == []
+
+    async def test_an_unknown_slow_method_raises(
+        self,
+        app: AppState,
+    ) -> None:
+        """Same contract as call(): a missing method is a bug."""
+        await app.connect()
+        with pytest.raises(LookupError):
+            await app.call_slow("R0", "pwm0", "nope", timeout=10.0)

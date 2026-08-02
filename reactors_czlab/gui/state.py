@@ -233,6 +233,39 @@ class AppState:
             raise LookupError(error_message)
         return await self.client.call_method(nodeid, *args)
 
+    async def call_slow(
+        self,
+        reactor: str,
+        owner: str | None,
+        method: str,
+        *args: object,
+        timeout: float,
+    ) -> object:
+        """Call a method that takes seconds to minutes to answer.
+
+        Goes through a separate short-lived session; see
+        ``OpcClient.call_slow_method`` for why that is required rather
+        than merely tidy.
+
+        Raises
+        ------
+        LookupError
+            If the method is not in the address book.
+
+        """
+        if self.client is None or self.book is None:
+            error_message = "not connected"
+            raise LookupError(error_message)
+        nodeid = self.book.method(reactor, owner, method)
+        if nodeid is None:
+            error_message = f"No method {method} on {reactor}/{owner}"
+            raise LookupError(error_message)
+        return await self.client.call_slow_method(
+            nodeid,
+            *args,
+            timeout=timeout,
+        )
+
     async def start_recording(self) -> None:
         """Begin archiving readings.
 

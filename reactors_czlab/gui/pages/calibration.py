@@ -37,6 +37,10 @@ UNSUPPORTED = "unsupported"
 #: Actuators that are not pumps and have no calibration slot.
 NOT_A_PUMP = "mfc"
 
+#: Seconds allowed on top of the run the operator asked for, to cover
+#: the connect and the round trip.
+CALL_MARGIN_SECONDS = 30.0
+
 
 @ui.page("/reactor/{reactor}/calibration/sensors")
 def sensor_calibration_page(reactor: str) -> None:
@@ -335,6 +339,27 @@ async def _run_controls(reactor: str, pump: str, view, reload) -> None:
         ui.notify(str(status))
         await reload()
 
+    async def slow_call(
+        method: str,
+        *args: object,
+        timeout: float,
+    ) -> None:
+        """Call a CalibrationRun method that runs the pump."""
+        _logger.info("Operator called %s on %s %s", method, pump, args)
+        try:
+            status = await STATE.call_slow(
+                reactor,
+                pump,
+                method,
+                *args,
+                timeout=timeout,
+            )
+        except (LookupError, OSError) as err:
+            ui.notify(f"{method} failed: {err}", type="negative")
+            return
+        ui.notify(str(status))
+        await reload()
+
     with ui.card().classes("w-full"):
         ui.label("Run a point").classes("text-sm font-semibold")
         with ui.row().classes("items-end flex-wrap").style("gap: 0.5rem"):
@@ -352,10 +377,14 @@ async def _run_controls(reactor: str, pump: str, view, reload) -> None:
                     f"Running {pump} at {duty.value:.0f} for "
                     f"{seconds.value:.0f}s...",
                 )
-                await call(
+                # The one call that outlives asyncua's reconnect
+                # watchdog, so it goes on its own session - see
+                # OpcClient.call_slow_method.
+                await slow_call(
                     "calibrate_point",
                     float(duty.value),
                     float(seconds.value),
+                    timeout=float(seconds.value) + CALL_MARGIN_SECONDS,
                 )
 
             run_button = ui.button("Run", on_click=run_point).props(

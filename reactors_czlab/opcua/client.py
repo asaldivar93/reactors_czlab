@@ -432,3 +432,61 @@ class OpcClient:
         node = self.client.get_node(nodeid)
         parent = await node.get_parent()
         return await parent.call_method(node, *args)
+
+    async def call_slow_method(
+        self,
+        nodeid: str,
+        *args: object,
+        timeout: float,
+    ) -> object:
+        """Call a method that takes seconds to minutes to answer.
+
+        Opens a second, short-lived session for the call instead of
+        using this client's own.
+
+        This is not an optimisation, it is a correctness requirement.
+        asyncua's reconnect supervisor probes the connection every
+        ``watchdog_intervall`` (1 s) with a timeout of the same length,
+        and a method call that outlasts the probe makes the supervisor
+        conclude the link is dead and tear the session down - taking the
+        subscription, and so the whole live display, with it. Measured:
+        with ``auto_reconnect=True`` a call of 4 s or more kills the
+        session regardless of ``timeout``.
+
+        ``calibrate_point`` runs a pump for up to MAX_RUN_SECONDS (600),
+        so it can never go through the shared connection. A separate
+        session is unaffected - and the run's state lives server-side,
+        on the one CalibrationRun the actuator node owns, so a call made
+        from another session drives the same run.
+
+        Parameters
+        ----------
+        nodeid:
+            The method's node id. Node ids are stable for the life of
+            the server process, so one resolved on this client's browse
+            is valid on the temporary session.
+        args:
+            The method arguments.
+        timeout:
+            Seconds to allow. Should exceed however long the operator
+            asked the method to take.
+
+        Raises
+        ------
+        ua.UaError
+            If the server rejected the call.
+        OSError
+            If the temporary session could not be opened.
+
+        """
+        # No auto_reconnect: this session exists for one call, and the
+        # supervisor is exactly what must not run during it.
+        client = Client(url=self.endpoint, timeout=timeout)
+        await client.connect()
+        try:
+            node = client.get_node(nodeid)
+            parent = await node.get_parent()
+            return await parent.call_method(node, *args)
+        finally:
+            with contextlib.suppress(Exception):
+                await client.disconnect()
