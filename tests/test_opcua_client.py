@@ -92,36 +92,46 @@ def _client_with(module: Any, actuator_channels: list[str]) -> Any:
         }
         for channel in actuator_channels
     }
+    opc.variables = {**opc.sensor_vars, **opc.actuator_vars}
     return opc
 
 
-async def test_total_volume_is_subscribed_and_cal_fields_are_not(
+class _NotifyingNode:
+    """A node that reports its id the way datachange_notification reads it."""
+
+    def __init__(self, nodeid: str) -> None:
+        self.nodeid = types.SimpleNamespace(to_string=lambda: nodeid)
+
+
+async def test_total_volume_is_archived_and_cal_fields_are_not(
     client_module: Any,
 ) -> None:
     """The spec's ``total_volume`` trace has to reach the ``data`` table.
 
     Regression: ``match_tree`` only builds the ``{nodeid: info}`` map;
-    this filter decides what is actually watched, and it named
-    ``curr_value`` alone. Every new pump variable published fine and was
-    archived by nothing, so ``run_plots.py`` filtering on
-    ``total_volume`` found an empty table. ``opcua/client.py`` is in
-    neither the branch diff nor any task's files, which is why eleven
-    per-task reviews could not have seen it.
+    something else has to decide what is actually stored, and that
+    decision named ``curr_value`` alone. Every new pump variable
+    published fine and was archived by nothing, so ``run_plots.py``
+    filtering on ``total_volume`` found an empty table.
 
-    The ``cal_*`` variables stay unsubscribed on purpose: they move only
-    on a refit, so at the 500 ms publishing interval they would fill the
-    table with constants. They remain published and readable by any OPC
-    client.
+    The decision used to be taken at subscribe time and is now taken per
+    notification by ``archives()``, because a user interface needs the
+    ``cal_*`` and control-config variables live. What reaches the table
+    is unchanged, which is what this pins. The ``cal_*`` variables stay
+    out on purpose: they move only on a refit, so at the 500 ms
+    publishing interval they would fill the table with constants.
     """
     opc = _client_with(
         client_module,
         ["curr_value", "total_volume", "cal_a", "cal_b", "cal_r2"],
     )
 
-    await opc.init_subscriptions()
-
-    watched = {node.nodeid for node in opc.client.subscription.subscribed}
-    assert watched == {
+    archived = {
+        nodeid
+        for nodeid, info in opc.variables.items()
+        if opc.archives(nodeid, info)
+    }
+    assert archived == {
         "R0:ph:pH",
         "R0:pwm0:curr_value",
         "R0:pwm0:total_volume",
@@ -143,9 +153,7 @@ def test_the_archived_channel_set_is_exactly_the_two_series(
     }
 
 
-async def test_every_sensor_channel_is_subscribed(
-    client_module: Any,
-) -> None:
+def test_every_sensor_channel_is_archived(client_module: Any) -> None:
     """The filter is actuator-only; sensors are archived wholesale."""
     opc = _client_with(client_module, ["cal_a"])
     opc.sensor_vars["R0:spectral:nm415"] = {
@@ -153,8 +161,197 @@ async def test_every_sensor_channel_is_subscribed(
         "name": "spectral",
         "channel": "nm415",
     }
+    opc.variables = {**opc.sensor_vars, **opc.actuator_vars}
+
+    archived = {
+        nodeid
+        for nodeid, info in opc.variables.items()
+        if opc.archives(nodeid, info)
+    }
+    assert archived == {"R0:ph:pH", "R0:spectral:nm415"}
+
+
+async def test_display_only_variables_are_still_subscribed(
+    client_module: Any,
+) -> None:
+    """The GUI reads control config and fitted lines off the subscription.
+
+    They are published by the server but were never watched, so a client
+    had no live view of them at all - only an explicit read would do,
+    and nothing re-read them when an operator changed a gain.
+    """
+    opc = _client_with(
+        client_module,
+        ["curr_value", "total_volume", "cal_a", "kp", "setpoint"],
+    )
 
     await opc.init_subscriptions()
 
     watched = {node.nodeid for node in opc.client.subscription.subscribed}
-    assert watched == {"R0:ph:pH", "R0:spectral:nm415"}
+    assert watched == set(opc.variables)
+    assert "R0:pwm0:kp" in watched
+
+
+async def _notify(opc: Any, nodeid: str, value: float) -> None:
+    """Deliver one data change the way asyncua would."""
+    await opc.datachange_notification(_NotifyingNode(nodeid), value, None)
+
+
+def _drain(opc: Any) -> list[tuple[str, dict]]:
+    """Everything currently waiting to be written to the database."""
+    rows = []
+    while not opc._queue.empty():
+        rows.append(opc._queue.get_nowait())
+    return rows
+
+
+class TestRecording:
+    """Archiving is a thing an operator turns on and off."""
+
+    async def test_nothing_is_queued_until_recording_starts(
+        self,
+        client_module: Any,
+    ) -> None:
+        """Regression: the queue filled whenever the archiver was stopped.
+
+        datachange_notification used to enqueue unconditionally, so with
+        no archiver draining it the 1000-slot queue filled and then
+        logged a dropped-row error on every sample forever. That made
+        start_psql/stop_psql unusable as a UI toggle.
+        """
+        opc = _client_with(client_module, ["curr_value"])
+
+        for _ in range(20):
+            await _notify(opc, "R0:ph:pH", 7.0)
+
+        assert opc.recording is False
+        assert _drain(opc) == []
+
+    async def test_readings_stay_live_while_not_recording(
+        self,
+        client_module: Any,
+    ) -> None:
+        """The dashboard works with recording off - they are separate."""
+        opc = _client_with(client_module, ["curr_value"])
+
+        await _notify(opc, "R0:ph:pH", 7.25)
+
+        assert opc.variables["R0:ph:pH"]["value"] == 7.25
+        assert opc.variables["R0:ph:pH"]["timestamp"] is not None
+
+    async def test_queues_once_recording(self, client_module: Any) -> None:
+        """With recording on, an archivable reading is queued."""
+        opc = _client_with(client_module, ["curr_value"])
+        opc._recording = True
+
+        await _notify(opc, "R0:ph:pH", 7.0)
+
+        [(nodeid, row)] = _drain(opc)
+        assert nodeid == "R0:ph:pH"
+        assert row["value"] == 7.0
+
+    async def test_display_only_variables_are_never_queued(
+        self,
+        client_module: Any,
+    ) -> None:
+        """Subscribed for the UI, but they must not reach the table."""
+        opc = _client_with(client_module, ["curr_value", "kp"])
+        opc._recording = True
+
+        await _notify(opc, "R0:pwm0:kp", 120.0)
+
+        assert _drain(opc) == []
+        assert opc.variables["R0:pwm0:kp"]["value"] == 120.0
+
+
+class TestErrorSentinel:
+    """A failed device read is visible but never archived."""
+
+    async def test_the_sentinel_is_recorded_for_display(
+        self,
+        client_module: Any,
+    ) -> None:
+        """A failing probe must be visible, not silently frozen.
+
+        The callback used to return before touching the value, so the
+        last good reading stayed on screen and an operator could not
+        tell a working probe from a dead one.
+        """
+        from reactors_czlab.core.data import ERROR_VALUE
+
+        opc = _client_with(client_module, ["curr_value"])
+
+        await _notify(opc, "R0:ph:pH", ERROR_VALUE)
+
+        assert opc.variables["R0:ph:pH"]["value"] == ERROR_VALUE
+
+    async def test_the_sentinel_is_never_queued(
+        self,
+        client_module: Any,
+    ) -> None:
+        """-0.111 in the data table would read as a measurement."""
+        from reactors_czlab.core.data import ERROR_VALUE
+
+        opc = _client_with(client_module, ["curr_value"])
+        opc._recording = True
+
+        await _notify(opc, "R0:ph:pH", ERROR_VALUE)
+
+        assert _drain(opc) == []
+
+
+class TestExperimentTags:
+    """Rows carry the experiment that was running when they were taken."""
+
+    async def test_untagged_rows_record_no_experiment(
+        self,
+        client_module: Any,
+    ) -> None:
+        """Plain recording outside any experiment is still recording."""
+        opc = _client_with(client_module, ["curr_value"])
+        opc._recording = True
+
+        await _notify(opc, "R0:ph:pH", 7.0)
+
+        [(_, row)] = _drain(opc)
+        assert row["experiment_name"] is None
+
+    async def test_a_tagged_reactor_stamps_its_experiment(
+        self,
+        client_module: Any,
+    ) -> None:
+        """The tag is per reactor, so concurrent runs stay separable."""
+        opc = _client_with(client_module, ["curr_value"])
+        opc._recording = True
+        opc.experiment_tags = {"R0": "fed-batch-3"}
+
+        await _notify(opc, "R0:ph:pH", 7.0)
+
+        [(_, row)] = _drain(opc)
+        assert row["experiment_name"] == "fed-batch-3"
+
+    async def test_other_reactors_are_unaffected(
+        self,
+        client_module: Any,
+    ) -> None:
+        """A reactor not in an experiment records without a name."""
+        opc = _client_with(client_module, ["curr_value"])
+        opc._recording = True
+        opc.experiment_tags = {"R1": "fed-batch-3"}
+
+        await _notify(opc, "R0:ph:pH", 7.0)
+
+        [(_, row)] = _drain(opc)
+        assert row["experiment_name"] is None
+
+
+class TestConnectionState:
+    """What a page polls to decide what to show."""
+
+    def test_reports_disconnected_before_connecting(
+        self,
+        client_module: Any,
+    ) -> None:
+        """No client yet is a disconnected client, not a crash."""
+        opc = client_module.OpcClient("opc.tcp://localhost:4840/")
+        assert opc.state.value == "disconnected"

@@ -10,6 +10,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from asyncua import Client, ua
+from asyncua.client.ua_client import UaClientState
 
 from reactors_czlab.core.data import ERROR_VALUE
 from reactors_czlab.sql.operations import (
@@ -34,14 +35,16 @@ QUEUE_MAXSIZE = 1000
 NAME_PARTS = 3
 
 #: Actuator channels archived to the ``data`` table. Every actuator
-#: variable is published by the server and readable by any OPC client;
-#: only the ones named here are subscribed to and stored.
+#: variable is published by the server, readable by any OPC client and
+#: - since the GUI needs live control config and fitted lines -
+#: subscribed to; only the ones named here are *stored*.
 #: ``curr_value`` is the duty last written to the pin, ``total_volume``
 #: the mL a pump has delivered since the server started - both are time
-#: series ``run_plots.py`` filters on. The ``cal_*`` variables are
-#: deliberately absent: they change only when a pump is refitted, so at
-#: the 500 ms publishing interval below, across every actuator on every
-#: reactor, they would fill the table with constants.
+#: series ``run_plots.py`` filters on. The ``cal_*`` and control-config
+#: variables are deliberately absent: they change only when a pump is
+#: refitted or an operator retunes a controller, so at the 500 ms
+#: publishing interval below, across every actuator on every reactor,
+#: they would fill the table with constants.
 ARCHIVED_ACTUATOR_CHANNELS = frozenset({"curr_value", "total_volume"})
 
 
@@ -64,11 +67,37 @@ class OpcClient:
         self._connected = False
         self._queue: asyncio.Queue = asyncio.Queue(maxsize=QUEUE_MAXSIZE)
         self._db_task: asyncio.Task | None = None
+        self._recording = False
         self.client: Client | None = None
         self.variables: dict[str, dict] = {}
         self.sensor_vars: dict[str, dict] = {}
         self.actuator_vars: dict[str, dict] = {}
         self.methods: dict[str, dict] = {}
+        #: Reactor id -> the name of the experiment currently running on
+        #: it. Stamped onto every archived row so a run's data can be
+        #: pulled back out later. A reactor absent from this map records
+        #: with no experiment name, which is what plain recording does.
+        self.experiment_tags: dict[str, str] = {}
+
+    @property
+    def state(self) -> UaClientState:
+        """The live connection state, as asyncua sees it.
+
+        A plain attribute read rather than a round trip, so a user
+        interface can poll it on a timer. Distinguishing CONNECTED from
+        RECONNECTING is what lets a page say "the link dropped and is
+        recovering on its own" instead of a flat "disconnected" that an
+        operator would answer by hitting Retry - which is the one thing
+        that must not happen while asyncua is already recovering.
+        """
+        if self.client is None:
+            return UaClientState.DISCONNECTED
+        return self.client.uaclient.state
+
+    @property
+    def recording(self) -> bool:
+        """Whether readings are being archived to the database."""
+        return self._recording
 
     async def __aenter__(self) -> OpcClient:
         """Connect on entry."""
@@ -92,7 +121,15 @@ class OpcClient:
         if self._connected:
             return
 
-        self.client = Client(url=self.endpoint, timeout=self.timeout)
+        # auto_reconnect: the server runs on a Pi that gets rebooted and
+        # restarted independently of whatever is watching it. Without
+        # this, a dropped link stays dropped until the client process is
+        # restarted too.
+        self.client = Client(
+            url=self.endpoint,
+            timeout=self.timeout,
+            auto_reconnect=True,
+        )
         await self.client.connect()
         self._connected = True
         _logger.info("Connected to %s", self.endpoint)
@@ -114,6 +151,10 @@ class OpcClient:
 
     async def disconnect(self) -> None:
         """Stop the archiver task and close the connection."""
+        # Lower the flag with the task, or `recording` keeps reporting
+        # True after the session is gone and a user interface shows a
+        # recording badge over a dead connection.
+        self._recording = False
         await self.stop_psql()
         if not self._connected or self.client is None:
             return
@@ -206,18 +247,30 @@ class OpcClient:
         params.MaxNotificationsPerPublish = 0
         sub = await self.client.create_subscription(params, self)
 
+        # Subscribe to everything that was browsed. What is *archived* is
+        # a separate decision, taken per notification by archives()
+        # below: a user interface needs the control config and the
+        # fitted pump line live, and neither belongs in the data table.
         vars_to_sub = [
-            self.client.get_node(nodeid) for nodeid in self.sensor_vars
+            self.client.get_node(nodeid) for nodeid in self.variables
         ]
-        vars_to_sub.extend(
-            self.client.get_node(nodeid)
-            for nodeid, info in self.actuator_vars.items()
-            if info["channel"] in ARCHIVED_ACTUATOR_CHANNELS
-        )
         await sub.subscribe_data_change(vars_to_sub)
 
         names = [(await node.read_browse_name()).Name for node in vars_to_sub]
         _logger.info("Subscribed to variables %s", names)
+
+    def archives(self, nodeid: str, info: dict) -> bool:
+        """Whether a notification for this variable belongs in the table.
+
+        Sensor channels are archived wholesale. Actuator variables are
+        filtered to the two that are genuine time series; the rest are
+        subscribed for display only.
+        """
+        if nodeid in self.sensor_vars:
+            return True
+        if nodeid in self.actuator_vars:
+            return info["channel"] in ARCHIVED_ACTUATOR_CHANNELS
+        return False
 
     async def datachange_notification(
         self,
@@ -225,20 +278,40 @@ class OpcClient:
         val: float,
         data: object,
     ) -> None:
-        """Queue new values for the sql database on data change."""
+        """Record a new value, and queue it for the database if archiving.
+
+        ``self.variables`` doubles as the live read model a user
+        interface polls, so the value is recorded first and the
+        decisions about archiving come after.
+        """
         nodeid = node.nodeid.to_string()
         info = self.variables.get(nodeid)
         if info is None:
             return
+
+        # Recorded even when it is the error sentinel, so a display can
+        # show that a probe is failing right now. It is still never
+        # archived - a -0.111 in the data table would be indistinguishable
+        # from a reading.
+        info["value"] = val
+        info["timestamp"] = datetime.now()
+
         if val == ERROR_VALUE:
-            # The server could not read the device; do not archive it.
             _logger.debug("Skipping error value from %s", nodeid)
             return
 
-        info["value"] = val
-        info["timestamp"] = datetime.now()
+        # Without this the queue fills whenever the archiver is stopped,
+        # and then logs a dropped-row error on every sample forever.
+        if not self._recording:
+            return
+
+        if not self.archives(nodeid, info):
+            return
+
+        row = dict(info)
+        row["experiment_name"] = self.experiment_tags.get(info["reactor"])
         try:
-            self._queue.put_nowait((nodeid, dict(info)))
+            self._queue.put_nowait((nodeid, row))
         except asyncio.QueueFull:
             _logger.error(
                 "Database queue is full (%s items), dropping %s",
@@ -246,7 +319,7 @@ class OpcClient:
                 nodeid,
             )
         else:
-            _logger.debug("Data change in %s: %s", nodeid, info)
+            _logger.debug("Data change in %s: %s", nodeid, row)
 
     async def start_psql(self) -> None:
         """Start the task that archives queued readings."""
@@ -255,9 +328,31 @@ class OpcClient:
         self._db_task = asyncio.create_task(self.commit_to_db())
         _logger.info("Database task created")
 
+    async def start_recording(self) -> None:
+        """Begin archiving readings to the database.
+
+        Idempotent, so a user interface can call it whenever an
+        experiment starts without first checking whether plain recording
+        was already running.
+        """
+        await self.start_psql()
+        self._recording = True
+        _logger.info("Recording started")
+
+    async def stop_recording(self) -> None:
+        """Stop archiving. Readings keep arriving and stay readable.
+
+        The flag is lowered before the task is cancelled so nothing can
+        be enqueued in between and sit in the queue until the next
+        start.
+        """
+        self._recording = False
+        await self.stop_psql()
+        _logger.info("Recording stopped")
+
     async def run_archiver(self) -> None:
         """Start archiving and block until the task finishes."""
-        await self.start_psql()
+        await self.start_recording()
         if self._db_task is not None:
             await self._db_task
 
@@ -305,13 +400,21 @@ class OpcClient:
         return await asyncio.to_thread(connect_to_db)
 
     async def write(self, nodeid: str, value: object) -> bool:
-        """Write a Python value to a node.
+        """Write a Python value to a node, in the node's own type.
+
+        The type is read from the server rather than inferred from the
+        Python value: asyncua encodes a bare ``int`` as ``Int64``, and
+        the control-config nodes that matter most here - ``method`` and
+        ``output_unit`` - are ``UInt32``, which rejects it with
+        ``BadTypeMismatch``. Every enum on an actuator would otherwise be
+        unwritable from a client.
 
         Returns True on success so the caller can react to a failure.
         """
         try:
             node = self.client.get_node(nodeid)
-            await node.write_value(value)
+            variant_type = await node.read_data_type_as_variant_type()
+            await node.write_value(ua.Variant(value, variant_type))
         except (ua.UaError, OSError):
             _logger.exception("Write failed for %s <- %r", nodeid, value)
             return False
