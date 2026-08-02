@@ -1,0 +1,93 @@
+"""Reactor list and per-reactor dashboard.
+
+Assembly only: anything that had to be decided lives in
+``gui/address.py``, ``gui/format.py`` or ``gui/control.py``, where a
+test can reach it without a browser.
+"""
+
+from __future__ import annotations
+
+from nicegui import ui
+
+from reactors_czlab.gui.components.pairing import pairing_panel
+from reactors_czlab.gui.components.shell import (
+    header,
+    not_connected_notice,
+    reactor_tabs,
+)
+from reactors_czlab.gui.components.values import (
+    actuator_panel,
+    sensor_panel,
+)
+from reactors_czlab.gui.state import STATE
+
+#: How often the panels re-read the in-memory values. The server
+#: publishes on its sampling period; this only has to feel live.
+REFRESH_SECONDS = 1.0
+
+
+@ui.page("/")
+def index() -> None:
+    """List the reactors, or say why there are none."""
+    header()
+    with ui.column().classes("w-full").style("padding: 1rem; gap: 1rem"):
+        if not STATE.connected:
+            not_connected_notice()
+            return
+
+        ui.label("Reactors").classes("text-xl font-semibold")
+        with ui.row().classes("flex-wrap").style("gap: 1rem"):
+            for reactor in STATE.book.reactors:
+                _reactor_card(reactor)
+
+
+def _reactor_card(reactor: str) -> None:
+    """One card in the reactor list."""
+    with ui.card().style("width: 16rem"):
+        ui.label(reactor).classes("text-lg font-semibold font-mono")
+        ui.label(
+            f"{len(STATE.book.sensors(reactor))} sensors, "
+            f"{len(STATE.book.actuators(reactor))} actuators",
+        ).classes("text-sm text-gray-500")
+        with ui.row().style("gap: 0.5rem"):
+            ui.button(
+                "Open",
+                on_click=lambda r=reactor: ui.navigate.to(f"/reactor/{r}"),
+            ).props("size=sm")
+            ui.button(
+                "Plots",
+                on_click=lambda r=reactor: ui.navigate.to(
+                    f"/reactor/{r}/plots",
+                ),
+            ).props("outline size=sm")
+
+
+@ui.page("/reactor/{reactor}")
+async def reactor_page(reactor: str) -> None:
+    """Live values, control configuration and pairing for one reactor."""
+    header(reactor)
+    with ui.column().classes("w-full").style("padding: 1rem; gap: 1rem"):
+        reactor_tabs(reactor, "Dashboard")
+
+        if not STATE.connected:
+            not_connected_notice()
+            return
+
+        ui.label("Sensors").classes("text-lg font-semibold")
+        sensor_panel(reactor)
+
+        ui.label("Actuators").classes("text-lg font-semibold")
+        actuator_panel(reactor)
+
+        ui.label("Pairings").classes("text-lg font-semibold")
+        # Awaited here rather than deferred to a timer: its first row
+        # list depends on a network read, and awaiting means the first
+        # paint already carries the published table.
+        await pairing_panel(reactor)
+
+    def refresh() -> None:
+        """Re-read the in-memory values."""
+        sensor_panel.refresh()
+        actuator_panel.refresh()
+
+    ui.timer(REFRESH_SECONDS, refresh)

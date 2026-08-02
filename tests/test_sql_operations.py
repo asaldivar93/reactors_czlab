@@ -10,10 +10,14 @@ behaviour against one is not something a unit test can claim.
 from __future__ import annotations
 
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 import pytest
 
 from reactors_czlab.sql import operations
+
+if TYPE_CHECKING:
+    from typing import Self
 
 
 @pytest.fixture
@@ -149,11 +153,12 @@ class _FakeCursor:
     def __init__(self, store: list) -> None:
         self.store = store
 
-    def __enter__(self) -> _FakeCursor:
+    def __enter__(self) -> Self:
+        """Used as a context manager, the way psycopg cursors are."""
         return self
 
     def __exit__(self, *args: object) -> None:
-        return None
+        """Nothing to release in a fake."""
 
     def execute(self, query: str, params: tuple = ()) -> None:
         """Record instead of talking to a server."""

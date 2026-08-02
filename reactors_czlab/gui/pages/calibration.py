@@ -1,0 +1,452 @@
+"""Calibration screens: Hamilton sensors and analog pumps.
+
+Both are driven entirely by OPC method calls that return status strings
+written for an operator - ``installable_reason()`` and the
+``CalibrationRun`` messages. Those strings are shown verbatim: the core
+is the authority on why a calibration was refused, and rewording it here
+would be a second opinion that can drift from the first.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+
+from nicegui import ui
+
+from reactors_czlab.core.hamilton import CALIBRATION_POINTS
+from reactors_czlab.gui.components.shell import (
+    header,
+    not_connected_notice,
+    reactor_tabs,
+)
+from reactors_czlab.gui.controllers.pump_calibration import (
+    duty_error,
+    seconds_error,
+    view_from_payload,
+    volume_error,
+)
+from reactors_czlab.gui.format import render_value
+from reactors_czlab.gui.state import STATE
+
+_logger = logging.getLogger("gui")
+
+#: Reported by the server for a sensor with no calibration points.
+UNSUPPORTED = "unsupported"
+
+#: Actuators that are not pumps and have no calibration slot.
+NOT_A_PUMP = "mfc"
+
+
+@ui.page("/reactor/{reactor}/calibration/sensors")
+def sensor_calibration_page(reactor: str) -> None:
+    """Two-point calibration for the Hamilton probes."""
+    header(reactor)
+    with ui.column().classes("w-full").style("padding: 1rem; gap: 1rem"):
+        reactor_tabs(reactor, "Sensor calibration")
+
+        if not STATE.connected:
+            not_connected_notice()
+            return
+
+        ui.label("Sensor calibration").classes("text-xl font-semibold")
+        ui.label(
+            "CP1 and CP2 are set independently. Reading a point does not "
+            "change it.",
+        ).classes("text-sm text-gray-500")
+
+        sensors = [
+            name
+            for name in sorted(STATE.book.sensors(reactor))
+            if STATE.book.has_method(reactor, name, "read_calibration_status")
+        ]
+        if not sensors:
+            ui.label(
+                "No sensor on this reactor exposes a calibration read-back.",
+            ).classes("text-gray-500")
+            return
+
+        for sensor in sensors:
+            _sensor_card(reactor, sensor)
+
+
+def _sensor_card(reactor: str, sensor: str) -> None:
+    """One sensor, with CP1 and CP2 side by side."""
+    with ui.card().classes("w-full"):
+        ui.label(sensor).classes("text-lg font-semibold font-mono")
+        # min-width: 0 on the flex children, or a wide status line stops
+        # the two points sitting side by side and they stack instead.
+        with ui.element("div").style(
+            "display: flex; flex-wrap: wrap; gap: 1rem; width: 100%",
+        ):
+            for point in CALIBRATION_POINTS:
+                with ui.element("div").style(
+                    "flex: 1 1 18rem; min-width: 0",
+                ):
+                    _point_panel(reactor, sensor, point)
+
+
+def _point_panel(reactor: str, sensor: str, point: str) -> None:
+    """One calibration point: its state, and how to set it."""
+    number = float(point.removeprefix("cp"))
+
+    with ui.card().classes("w-full"):
+        ui.label(point.upper()).classes("text-sm font-semibold")
+
+        status_label = ui.label("not read yet").classes(
+            "text-sm font-mono",
+        )
+        value_label = ui.label("").classes("text-sm text-gray-600 font-mono")
+        quality_label = ui.label("").classes(
+            "text-sm text-gray-600 font-mono",
+        )
+        process_label = ui.label("").classes(
+            "text-sm text-gray-600 font-mono",
+        )
+
+        async def read() -> None:
+            """Read the point's stored state from the sensor."""
+            _logger.info("Operator read %s of %s", point, sensor)
+            try:
+                result = await STATE.call(
+                    reactor,
+                    sensor,
+                    "read_calibration_status",
+                    number,
+                )
+            except (LookupError, OSError) as err:
+                ui.notify(f"Could not read {point}: {err}", type="negative")
+                return
+
+            status, quality, value, process = _unpack(result)
+            if status == UNSUPPORTED:
+                status_label.set_text("unsupported by this sensor")
+                return
+
+            status_label.set_text(f"status: {status}")
+            value_label.set_text(f"stored value: {render_value(value)}")
+            quality_label.set_text(f"quality: {render_value(quality)}")
+            process_label.set_text(
+                f"process value now: {render_value(process)}",
+            )
+
+        with ui.row().classes("items-end w-full").style("gap: 0.5rem"):
+            new_value = ui.number(
+                "New value",
+                value=None,
+                format="%.3f",
+            ).style("flex: 1; min-width: 0")
+
+            async def apply() -> None:
+                """Write this point, then show what the sensor reports."""
+                if new_value.value is None:
+                    ui.notify("Enter a calibration value", type="warning")
+                    return
+                _logger.info(
+                    "Operator calibrating %s %s to %s",
+                    sensor,
+                    point,
+                    new_value.value,
+                )
+                try:
+                    result = await STATE.call(
+                        reactor,
+                        sensor,
+                        "calibration",
+                        number,
+                        float(new_value.value),
+                    )
+                except (LookupError, OSError) as err:
+                    ui.notify(f"Calibration failed: {err}", type="negative")
+                    return
+
+                status, quality, value = _unpack(result)[:3]
+                status_label.set_text(f"status: {status}")
+                value_label.set_text(f"stored value: {render_value(value)}")
+                quality_label.set_text(f"quality: {render_value(quality)}")
+                if status == "ok":
+                    ui.notify(f"{point.upper()} calibrated", type="positive")
+                else:
+                    # The sensor refused it - an unstable reading, or a
+                    # value that matches no calibration standard. Its own
+                    # status code is more use than anything worded here.
+                    ui.notify(
+                        f"{point.upper()} not accepted: {status}",
+                        type="negative",
+                    )
+
+            ui.button("Apply", on_click=apply).props("size=sm color=primary")
+            ui.button("Read", on_click=read).props("outline size=sm")
+
+
+def _unpack(result: object) -> tuple:
+    """Normalise an OPC method result to a plain tuple."""
+    if result is None:
+        return ("", 0.0, 0.0, 0.0)
+    if isinstance(result, (list, tuple)):
+        values = list(result)
+    else:
+        values = [result]
+    while len(values) < 4:
+        values.append(0.0)
+    return tuple(values)
+
+
+@ui.page("/reactor/{reactor}/calibration/pumps")
+def pump_calibration_page(reactor: str) -> None:
+    """Drive a full CalibrationRun for one pump at a time."""
+    header(reactor)
+    with ui.column().classes("w-full").style("padding: 1rem; gap: 1rem"):
+        reactor_tabs(reactor, "Pump calibration")
+
+        if not STATE.connected:
+            not_connected_notice()
+            return
+
+        ui.label("Pump calibration").classes("text-xl font-semibold")
+        ui.label(
+            "Run the pump at a duty, weigh what it delivered, record it. "
+            "Two distinct duties are enough to fit.",
+        ).classes("text-sm text-gray-500")
+
+        pumps = [
+            name
+            for name in sorted(STATE.book.actuators(reactor))
+            if not name.endswith(NOT_A_PUMP)
+            and STATE.book.has_method(reactor, name, "get_calibration")
+        ]
+        if not pumps:
+            ui.label("No calibratable pumps on this reactor").classes(
+                "text-gray-500",
+            )
+            return
+
+        selected = ui.select(pumps, value=pumps[0], label="Pump").style(
+            "min-width: 12rem",
+        )
+        panel = ui.column().classes("w-full").style("gap: 0.75rem")
+
+        async def show() -> None:
+            """Redraw the panel for the selected pump."""
+            panel.clear()
+            with panel:
+                await _pump_panel(reactor, selected.value, show)
+
+        selected.on_value_change(lambda: ui.timer(0, show, once=True))
+        ui.timer(0, show, once=True)
+
+
+async def _pump_panel(reactor: str, pump: str, reload) -> None:
+    """The whole calibration workflow for one pump."""
+    try:
+        payload = json.loads(
+            await STATE.call(reactor, pump, "get_calibration"),
+        )
+    except (LookupError, OSError, TypeError, ValueError) as err:
+        ui.label(f"Could not read the calibration: {err}").classes(
+            "text-red-600",
+        )
+        return
+
+    view = view_from_payload(payload)
+
+    if not view.has_slot:
+        ui.label(
+            f"{pump} has no calibration slot on its channel.",
+        ).classes("text-gray-500")
+        return
+
+    _installed_line(view)
+    _collected_points(view)
+    await _run_controls(reactor, pump, view, reload)
+
+
+def _installed_line(view) -> None:
+    """The fitted line currently installed, and its duty limits."""
+    cal = view.calibration
+    with ui.card().classes("w-full"):
+        if view.fitted:
+            ui.label(
+                f"flow = {cal['a']:.6g} * duty + {cal['b']:.6g}  "
+                f"(r2 {cal['r2']:.4f})",
+            ).classes("font-mono text-sm")
+            ui.label(f"fitted at {cal['fitted_at']}").classes(
+                "text-xs text-gray-500",
+            )
+        else:
+            ui.label("No fitted calibration installed").classes(
+                "text-orange-700 text-sm",
+            )
+            ui.label(
+                "This pump can only be driven in raw duty counts until "
+                "it is calibrated.",
+            ).classes("text-xs text-gray-500")
+
+        ui.label(
+            f"min duty {cal['min_duty']:.0f}, dispense duty "
+            f"{cal['dispense_duty']:.0f}, max duty {cal['max_duty']:.0f}",
+        ).classes("text-xs text-gray-500 font-mono")
+
+        if cal.get("installable_reason"):
+            # The single authority on whether this may be installed,
+            # already worded for an operator.
+            ui.label(cal["installable_reason"]).classes(
+                "text-sm text-red-700",
+            )
+
+
+def _collected_points(view) -> None:
+    """The points collected so far in this run."""
+    with ui.card().classes("w-full"):
+        ui.label("Collected points").classes("text-sm font-semibold")
+        if not view.points:
+            ui.label("None yet").classes("text-sm text-gray-500")
+            return
+        with ui.element("div").style("overflow-x: auto; width: 100%"):
+            ui.table(
+                columns=[
+                    {"name": "duty", "label": "Duty", "field": "duty"},
+                    {
+                        "name": "flow",
+                        "label": "Flow (mL/min)",
+                        "field": "flow",
+                    },
+                ],
+                rows=[
+                    {"duty": f"{duty:.0f}", "flow": f"{flow:.4f}"}
+                    for duty, flow in view.points
+                ],
+            ).props("dense flat").classes("w-full")
+
+
+async def _run_controls(reactor: str, pump: str, view, reload) -> None:
+    """Run a point, record a volume, fit, and the housekeeping calls."""
+
+    async def call(method: str, *args: object) -> None:
+        """Call one CalibrationRun method and show what it said."""
+        _logger.info("Operator called %s on %s %s", method, pump, args)
+        try:
+            status = await STATE.call(reactor, pump, method, *args)
+        except (LookupError, OSError) as err:
+            ui.notify(f"{method} failed: {err}", type="negative")
+            return
+        # These strings are written for an operator by core.calibration
+        # and core.data; showing them verbatim is the point.
+        ui.notify(str(status))
+        await reload()
+
+    with ui.card().classes("w-full"):
+        ui.label("Run a point").classes("text-sm font-semibold")
+        with ui.row().classes("items-end flex-wrap").style("gap: 0.5rem"):
+            duty = ui.number("Duty (counts)", value=1000.0, format="%.0f")
+            seconds = ui.number("Run for (s)", value=60.0, format="%.0f")
+
+            async def run_point() -> None:
+                problem = duty_error(duty.value) or seconds_error(
+                    seconds.value,
+                )
+                if problem:
+                    ui.notify(problem, type="warning")
+                    return
+                ui.notify(
+                    f"Running {pump} at {duty.value:.0f} for "
+                    f"{seconds.value:.0f}s...",
+                )
+                await call(
+                    "calibrate_point",
+                    float(duty.value),
+                    float(seconds.value),
+                )
+
+            run_button = ui.button("Run", on_click=run_point).props(
+                "color=primary",
+            )
+            if not view.can_run_point:
+                run_button.disable()
+                run_button.tooltip(
+                    "A run is in flight, or a measurement is owed",
+                )
+
+    with ui.card().classes("w-full"):
+        ui.label("Record the measured volume").classes(
+            "text-sm font-semibold",
+        )
+        if view.state.value == "awaiting":
+            ui.label(
+                f"{view.pending_duty:.0f} counts ran for "
+                f"{view.pending_seconds:.3f}s - how much came out?",
+            ).classes("text-sm text-orange-700")
+        with ui.row().classes("items-end flex-wrap").style("gap: 0.5rem"):
+            volume = ui.number("Volume (mL)", value=None, format="%.3f")
+
+            async def record() -> None:
+                problem = volume_error(volume.value)
+                if problem:
+                    ui.notify(problem, type="warning")
+                    return
+                await call("record_point", float(volume.value))
+
+            record_button = ui.button("Record", on_click=record)
+            if not view.can_record:
+                record_button.disable()
+                record_button.tooltip("Run a point first")
+
+    with ui.row().classes("flex-wrap").style("gap: 0.5rem"):
+        fit_button = ui.button(
+            "Fit calibration",
+            on_click=lambda: call("fit_calibration"),
+        ).props("color=primary")
+        if not view.can_fit:
+            fit_button.disable()
+            fit_button.tooltip(
+                "Two points at different duties are needed to fit",
+            )
+
+        for label, method in (
+            ("Clear points", "clear_points"),
+            ("Reload from disk", "reload_calibration"),
+        ):
+            button = ui.button(
+                label,
+                on_click=lambda m=method: call(m),
+            ).props("outline")
+            if not view.can_edit:
+                button.disable()
+
+    _set_duties_card(view, call)
+
+
+def _set_duties_card(view, call) -> None:
+    """Adjust the stall floor and bolus duty without a refit."""
+    cal = view.calibration
+    with ui.card().classes("w-full"):
+        ui.label("Duty limits").classes("text-sm font-semibold")
+        ui.label(
+            "Changes the stall floor and the duty used for volume "
+            "boluses. Does not refit the line.",
+        ).classes("text-xs text-gray-500")
+        with ui.row().classes("items-end flex-wrap").style("gap: 0.5rem"):
+            min_duty = ui.number(
+                "Min duty",
+                value=cal["min_duty"],
+                format="%.0f",
+            )
+            dispense = ui.number(
+                "Dispense duty",
+                value=cal["dispense_duty"],
+                format="%.0f",
+            )
+
+            async def apply() -> None:
+                if min_duty.value is None or dispense.value is None:
+                    ui.notify("Both duties are needed", type="warning")
+                    return
+                await call(
+                    "set_duties",
+                    float(min_duty.value),
+                    float(dispense.value),
+                )
+
+            button = ui.button("Apply", on_click=apply).props("outline")
+            if not view.can_edit:
+                button.disable()
