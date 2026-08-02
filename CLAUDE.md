@@ -292,14 +292,29 @@ could not, and both are placed where they are on purpose:**
 `ui.timer` tick.** Anything interactive built inside a refreshable panel
 is destroyed under the operator's hands mid-edit the next time the timer
 fires — `ui.timer` defaults to `immediate=True`, so this can happen
-before the operator has done anything at all. The actuator configuration
-dialog and the pairing panel both have to be parented to
-`context.client.layout` (the stable page root) rather than to whatever
-refreshable panel's slot triggered them, or the first refresh tick
-deletes them mid-interaction. See the docstrings on
-`gui/components/control_form.open_control_dialog` and
-`gui/components/pairing.pairing_panel` before adding another dialog or
-another timer-driven panel.
+before the operator has done anything at all. The two places this
+matters escape it by two different mechanisms, not one, and neither is
+the obvious "just don't put it in a refreshable":
+
+- The actuator configuration dialog (`gui/components/control_form.py`)
+  is built under `context.client.layout` (the stable page root) rather
+  than under `actuator_panel`'s own slot, even though the Configure
+  button that opens it lives inside that refreshable panel. Opening it
+  there instead would tie the dialog's lifetime to the panel that
+  spawned it, and the very next refresh tick deletes it out from under
+  the operator.
+- The pairing panel (`gui/components/pairing.py`) is itself
+  `@ui.refreshable`, but `gui/pages/dashboard.py`'s `ui.timer` callback
+  only calls `sensor_panel.refresh()` and `actuator_panel.refresh()` —
+  `pairing_panel.refresh()` is deliberately never wired to it. It
+  escapes by never being on the timer's rebuild path in the first
+  place, not by reparenting; do not "fix" this by adding
+  `pairing_panel.refresh()` to that callback, or every in-progress pair
+  gets torn down every second.
+
+See the docstrings on `gui/components/control_form.open_control_dialog`
+and `gui/components/pairing.pairing_panel` before adding another dialog
+or another timer-driven panel.
 
 `sql/operations.py` now imports without `psycopg` installed — the
 import is guarded and every public function checks a module-level
