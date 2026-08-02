@@ -34,6 +34,8 @@ def header(reactor: str | None = None) -> None:
         with ui.row().classes("items-center gap-3"):
             if STATE.connected:
                 ui.badge("connected", color="green")
+            elif STATE.reconnecting:
+                ui.badge("reconnecting", color="orange")
             else:
                 ui.badge("disconnected", color="red")
             if not STATE.database_available:

@@ -12,6 +12,7 @@ import types
 from typing import Callable
 
 import pytest
+from asyncua.client.ua_client import UaClientState
 
 from reactors_czlab.core.actuator import RandomActuator
 from reactors_czlab.core.data import (
@@ -255,6 +256,13 @@ def gui_state(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
         GUI_STATE,
         "client",
-        types.SimpleNamespace(recording=False),
+        # AppState.connected now reads .state off this stand-in for a
+        # real OpcClient, rather than trusting book is not None -
+        # CONNECTED keeps every page test that expects a connected
+        # STATE working unchanged.
+        types.SimpleNamespace(
+            recording=False,
+            state=UaClientState.CONNECTED,
+        ),
     )
     return GUI_STATE

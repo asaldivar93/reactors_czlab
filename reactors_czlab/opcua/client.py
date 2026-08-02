@@ -10,6 +10,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from asyncua import Client, ua
+from asyncua.client.ua_client import UaClientState
 
 from reactors_czlab.core.data import ERROR_VALUE
 from reactors_czlab.sql.operations import (
@@ -96,7 +97,19 @@ class OpcClient:
         if self._connected:
             return
 
-        self.client = Client(url=self.endpoint, timeout=self.timeout)
+        # auto_reconnect turns on asyncua's own reconnect supervisor: on
+        # a dropped link it retries with backoff and re-creates every
+        # subscription this client made (it tracks them for exactly
+        # that). Without it a restarted OPC server or a rebooted Pi
+        # left this client silently dead until the GUI process itself
+        # was restarted. Backoff and request-timeout defaults
+        # (reconnect_max_delay=30s, reconnect_request_timeout=60s) are
+        # left alone - no reason yet to tune them.
+        self.client = Client(
+            url=self.endpoint,
+            timeout=self.timeout,
+            auto_reconnect=True,
+        )
         await self.client.connect()
         self._connected = True
         _logger.info("Connected to %s", self.endpoint)
@@ -237,6 +250,22 @@ class OpcClient:
         if nodeid not in self.actuator_vars:
             return True
         return info["channel"] in ARCHIVED_ACTUATOR_CHANNELS
+
+    @property
+    def state(self) -> UaClientState:
+        """The live connection state, straight from asyncua.
+
+        Mirrors ``Client.state`` (itself a mirror of the internal
+        ``UaClient``'s), not something this class tracks on its own, so
+        it reflects what the ``auto_reconnect`` supervisor is doing
+        right now - including ``RECONNECTING`` - without a network
+        round trip: it is a plain attribute read, safe to poll from a
+        page on a timer. ``DISCONNECTED`` before ``connect()`` has ever
+        built a ``Client``.
+        """
+        if self.client is None:
+            return UaClientState.DISCONNECTED
+        return self.client.state
 
     @property
     def recording(self) -> bool:

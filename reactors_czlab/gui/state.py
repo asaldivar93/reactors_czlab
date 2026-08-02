@@ -11,6 +11,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from asyncua.client.ua_client import UaClientState
+
 from reactors_czlab.gui.address import AddressBook
 from reactors_czlab.opcua.client import OpcClient
 from reactors_czlab.sql import operations
@@ -48,8 +50,34 @@ class AppState:
 
     @property
     def connected(self) -> bool:
-        """Whether the OPC client is up and the address space browsed."""
-        return self.book is not None
+        """Whether the OPC session is live right now.
+
+        Reads the asyncua client's real connection state - a plain
+        attribute read, not a round trip, so pages can poll it on a
+        timer - rather than a flag latched at startup. A server
+        restart or a rebooted Pi is then reflected the moment
+        asyncua's auto-reconnect supervisor notices, not only after
+        the GUI process itself is restarted.
+        """
+        return (
+            self.client is not None
+            and self.book is not None
+            and self.client.state == UaClientState.CONNECTED
+        )
+
+    @property
+    def reconnecting(self) -> bool:
+        """Whether the link dropped and asyncua is retrying it.
+
+        Distinct from ``connected`` so a page can show "the link is
+        down but recovering on its own" rather than the flat
+        "disconnected" that would otherwise be indistinguishable from
+        a session that needs an operator to hit Retry.
+        """
+        return (
+            self.client is not None
+            and self.client.state == UaClientState.RECONNECTING
+        )
 
     @property
     def database_available(self) -> bool:

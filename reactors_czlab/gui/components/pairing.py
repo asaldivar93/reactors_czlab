@@ -49,6 +49,18 @@ async def read_pairings(reactor: str) -> list[dict]:
     """
     if STATE.client is None or STATE.book is None:
         return []
+    if not STATE.connected:
+        # The link is down - a transient drop asyncua's auto-reconnect
+        # is retrying, or a server restart that rebuilt the address
+        # space under a client that has not caught up yet. Either way
+        # a cached nodeid from before must not be reused: once the
+        # link comes back, a stale id degrades into a warning and an
+        # empty panel, indistinguishable from a genuinely empty
+        # pairing table. Mirrors the clear AppState.disconnect() does
+        # at process shutdown, but for a link that recovers without
+        # the GUI process ever restarting.
+        _PAIRINGS_NODES.pop(reactor, None)
+        return []
     # The pairings variable hangs off the reactor node, above
     # R{n}:sensors / R{n}:actuators, so match_tree never indexes it and
     # the address book cannot resolve it. Browse for it once and cache.

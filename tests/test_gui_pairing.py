@@ -22,6 +22,7 @@ import asyncio
 from collections.abc import Callable
 
 import pytest
+from asyncua.client.ua_client import UaClientState
 from nicegui import ui
 from nicegui.testing import User
 from nicegui.testing.user_interaction import UserInteraction
@@ -162,6 +163,32 @@ async def test_the_published_table_is_rendered(
     """
     await user.open("/reactor/R0")
     await user.should_see("R0:ph ch0 -> R0:pwm0")
+
+
+async def test_a_stale_pairing_node_is_cleared_when_the_link_drops(
+    gui_state,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: _PAIRINGS_NODES cached a nodeid for the life of the
+    GUI process and was cleared only by AppState.disconnect(), which is
+    wired solely to app shutdown. With auto_reconnect the underlying
+    OpcClient survives a dropped link (RECONNECTING, not torn down), so
+    a server restart substitutes a new address space under a client
+    that never called disconnect() - a cached nodeid from before must
+    not be reused once the link comes back, or the panel silently
+    degrades to reading as "nothing paired".
+    """
+    pairing._PAIRINGS_NODES["R0"] = "ns=2;i=999"  # a nodeid from before
+    monkeypatch.setattr(
+        gui_state.client,
+        "state",
+        UaClientState.RECONNECTING,
+    )
+
+    rows = await pairing.read_pairings("R0")
+
+    assert rows == []
+    assert "R0" not in pairing._PAIRINGS_NODES
 
 
 async def test_unpair_calls_the_method_with_the_published_row(
