@@ -25,9 +25,16 @@ DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8080
 
 
+#: Loggers whose output belongs in gui.log. The GUI process hosts the
+#: archiver, so `client` (OpcClient) and `client.sql` are where a
+#: recording or database failure is reported - attaching handlers only
+#: to `gui` sent those nowhere, and an operator debugging a recording
+#: problem had no log at all.
+LOGGERS = ("gui", "client")
+
+
 def setup_logging(verbose: bool = True) -> None:
-    """Attach the file and stream handlers to the gui logger."""
-    _logger.setLevel(logging.DEBUG if verbose else logging.INFO)
+    """Attach the file and stream handlers to the logs this process owns."""
     formatter = logging.Formatter(
         "%(name)s: %(asctime)s %(levelname)s - %(message)s",
     )
@@ -40,8 +47,11 @@ def setup_logging(verbose: bool = True) -> None:
     stream_handler.setFormatter(formatter)
     stream_handler.setLevel(logging.DEBUG if verbose else logging.INFO)
 
-    _logger.addHandler(file_handler)
-    _logger.addHandler(stream_handler)
+    for name in LOGGERS:
+        logger = logging.getLogger(name)
+        logger.setLevel(logging.DEBUG if verbose else logging.INFO)
+        logger.addHandler(file_handler)
+        logger.addHandler(stream_handler)
 
 
 def cli() -> None:

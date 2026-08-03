@@ -256,8 +256,25 @@ class OpcClient:
         ]
         await sub.subscribe_data_change(vars_to_sub)
 
-        names = [(await node.read_browse_name()).Name for node in vars_to_sub]
-        _logger.info("Subscribed to variables %s", names)
+        # The count at INFO, the names at DEBUG. Since this subscribes to
+        # every browsed variable rather than the archived handful, the
+        # full list is over three hundred names - one INFO line that
+        # buries every other message in the log it shares with the GUI.
+        archived = sum(
+            1
+            for nodeid, info in self.variables.items()
+            if self.archives(nodeid, info)
+        )
+        _logger.info(
+            "Subscribed to %s variables, %s of them archived",
+            len(vars_to_sub),
+            archived,
+        )
+        if _logger.isEnabledFor(logging.DEBUG):
+            names = [
+                (await node.read_browse_name()).Name for node in vars_to_sub
+            ]
+            _logger.debug("Subscribed to variables %s", names)
 
     def archives(self, nodeid: str, info: dict) -> bool:
         """Whether a notification for this variable belongs in the table.
