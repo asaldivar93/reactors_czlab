@@ -19,7 +19,15 @@ reactors_czlab/
     reactor.py     Reactor: the two loops + pairing state
     calibration.py Pump calibration: fit, store, reload, run state machine
     dispenser.py   Demand (mL/min or mL) -> duty, bolus timing, volume totals
+    hamilton.py    What a CP status block MEANS. stdlib only, no pymodbus
   opcua/         Server nodes (reactor/sensor/actuator) + OpcClient
+  gui/           NiceGUI web app
+    address.py     AddressBook: the browse dicts -> the lookups pages make
+    format.py      Rendering; ERROR_VALUE never reaches a screen as a number
+    control.py     The control-config write plan (ORDER MATTERS, see below)
+    state.py       AppState/STATE: the one connection, the one address book
+    controllers/   Page logic that is testable without a browser
+    components/, pages/   Assembly only, no decisions
   sql/           PostgreSQL schema and access
   server_info.py Hardware inventory: which sensor/actuator on which address/pin
   run_*.py, export_data.py   Entry points (each has a cli() in [project.scripts])
@@ -197,6 +205,75 @@ Browse names are `<reactor>:<name>:<channel>` — e.g. `R0:ph:pH`,
 filters on those columns. Changing a browse name changes the database contents
 and breaks the plots.
 
+Two sides of the same name. A *device* id is `<reactor>:<name>` —
+`R0:biomass` — and that is what `set_pairing`/`unpair` validate against
+(`sampling.sensors` holds full ids) and what `R{n}:pairings` publishes. The
+GUI's `AddressBook` keys devices by the **middle part only** (`biomass`),
+because that is what `match_tree` puts in the `name` column. `device_id()` and
+`short_name()` in `gui/components/pairing.py` are the only crossing point;
+three separate bugs came from crossing it by hand, each failing silently with
+`biomass is not a sensor of R0` in the *server's* log and a bare `False` at
+the client.
+
+### What the server publishes only because the GUI needs it
+
+`cal_a/cal_b/cal_r2` were the only calibration data published, and the pairing
+table and CP status were not readable at all. Four additions exist purely so a
+client can *show* state it could previously only change:
+
+- `R{n}:pairings` — JSON on the reactor node. Two browse-name parts, below
+  `match_tree`'s `NAME_PARTS = 3`, so it is never archived. Republished under
+  `_publish_lock` from both pairing methods.
+- `{id}:get_calibration` — JSON: duty limits, `fitted_at`, the fitted points,
+  the in-flight run's points and pending measurement, and
+  `installable_reason()` verbatim.
+- `{id}:read_calibration_status` — reads a Hamilton CP without writing one.
+  On demand, never published: CP status registers need administrator or
+  specialist level, so every read escalates and drops the operator level on
+  the RS485 bus the sampling loop shares.
+- `ChannelIndex` — a **Property** (so `match_tree` skips it) on each channel
+  variable, because `set_pairing` takes the index and browsing only gives
+  names.
+
+### GUI invariants that cost real debugging
+
+- **A long OPC method call kills the session when `auto_reconnect` is on.**
+  asyncua's supervisor probes every `watchdog_intervall` (1 s) with a probe
+  timeout of the same length; a call outlasting it reads as a dead link and
+  the session is torn down, subscription and all. Measured: 4 s or more fails,
+  whatever `timeout` says. `calibrate_point` runs a pump for up to
+  `MAX_RUN_SECONDS` (600), so it goes through `OpcClient.call_slow_method`,
+  which opens a throwaway session. **Any future long-running method must do
+  the same.**
+- **Control-config writes are ordered: parameters, then `output_unit`, then
+  `method` last.** `ActuatorOpc.datachange_notification` rebuilds the whole
+  `ControlConfig` on *every* notification, reading only the fields the
+  currently selected method needs, so writing `method` first applies the new
+  controller to the previous configuration's gains for one notification —
+  on a pump, that doses. `gui/control.py` builds the plan; a test pins the
+  order with a `Regression:` note.
+- **A rejected control config is silent.** `set_control_config` catches the
+  `TypeError`, logs it and keeps the running controller. So does
+  `check_unit()` for a flow/volume unit on an unfitted pump. The form asks
+  `unit_rejection_reason()` *before* writing, or the operator sees a
+  configuration that looks accepted and is not.
+- **Elements built inside a `ui.timer` callback render but their event
+  handlers never fire.** This made the control dialog's Apply and Cancel dead.
+  Pass async handlers to `on_click` directly, and let a page `await` its own
+  initial load rather than deferring it — a `once=True` timer can also fire
+  after the client is gone and raise against a page nobody is looking at.
+- **`on_value_change` handlers take an argument:** `lambda _: f()`.
+- **Do not put controls inside a refreshable a timer drives.** The dashboard
+  rebuilt every Configure button once a second, destroying it under the
+  operator's pointer. Only the readings refresh; the cards are built once.
+- **Quasar's `outline` button takes the primary colour**, which on the header
+  is the header's own background — the Record button was invisible. Header
+  buttons need `color=white`.
+- Every sensor node carries the calibration methods, so nothing in the address
+  space distinguishes a Hamilton probe from a spectral one. The sensor
+  calibration screen asks each sensor and hides the ones that answer
+  `unsupported`.
+
 ## Conventions
 
 - Logging is lazy `%`-style: `_logger.debug("In %s - %s", self.id, msg)`.
@@ -239,17 +316,49 @@ dependency, always installed).
 Several tests carry a `Regression:` note naming the bug they pin. Do not delete
 those without reading them.
 
+GUI tests are in three layers, matching the package: `test_gui_address.py`,
+`test_gui_format.py`, `test_gui_control.py`, `test_gui_plots.py`,
+`test_gui_pump_calibration.py` and `test_gui_pairing.py` are pure functions
+over fixture dicts; `test_gui_state.py` drives `AppState` against a fake
+`OpcClient`; `test_gui_pages.py` opens every route through NiceGUI's `user`
+fixture, which builds the real element tree. `tests/gui_main.py` is the module
+that fixture imports — it must call `ui.run()`, which the plugin intercepts,
+or the fixture cannot find the routes. The pytest config loads
+`nicegui.testing.user_plugin` only, **not** `nicegui.testing.plugin`, which
+would drag in the Selenium-backed `screen` fixture and make the suite need a
+browser and a webdriver.
+
+`test_sensor_calibration.py` covers the Modbus orchestration around a Hamilton
+calibration and is behind a `pytest.importorskip("pymodbus")`, so it runs
+where the server extra is installed and stays out of the way of the
+client-only install. What the registers *mean* is in `core/hamilton.py` and is
+tested without pymodbus at all.
+
 Run the server with no hardware at all:
 
 ```bash
 uv run reactors-server --simulated --endpoint opc.tcp://localhost:4840/
 ```
 
+Note `--simulated` still needs the `server` extra: `run_server.py` imports
+`core.modbus` at module scope. It also builds a `RandomSensor` for the
+Hamilton configs, so `read_calibration_status` answers `unsupported` and the
+sensor calibration screen cannot be exercised simulated — that one needs a
+real probe.
+
 ## Open items
 
-- Modbus decode/endianness needs a bench check (above).
-- `experiments` table exists in the schema but nothing writes to it.
+- Modbus decode/endianness needs a bench check (above). The sensor calibration
+  screen renders decoded floats, so **its numbers cannot be trusted until that
+  check is done.**
+- The GUI has never run on a Raspberry Pi, and the experiment interface has
+  never touched a real PostgreSQL — the sql module is covered only by guard
+  and statement-construction tests.
+- The plots page's biomass multi-select was never opened in a browser (the
+  popup would not open in the verification environment; the single-select
+  beside it was). Its handler wiring is the same construct, and the
+  multi-channel filtering is unit tested.
 - `_TimerControl` now starts genuinely ON; previously the first ON phase lasted
   `2 * time_on`. Revert the two lines in `__post_init__` if that was deliberate.
-- README "To do" list is the feature backlog (MFC Modbus, power-out recovery,
-  GUIs).
+- No authentication on the GUI; pump control is reachable from a browser URL.
+- README "To do" list is the feature backlog (MFC Modbus, power-out recovery).

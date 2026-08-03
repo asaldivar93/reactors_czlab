@@ -33,9 +33,25 @@ On the PC:
 uv sync --extra client
 ```
 
-The two extras are independent: a client install has no pymodbus and a
-server install has no psycopg, so import the subpackage you need rather
-than the top level package.
+For the web GUI, on either machine:
+
+```bash
+uv sync --extra gui
+```
+
+The `server` and `client` extras are independent: a client install has
+no pymodbus and a server install has no psycopg, so import the
+subpackage you need rather than the top level package. `gui` is
+independent of both — it carries only NiceGUI, and the screens that
+need a database disable themselves with a reason when psycopg is
+missing.
+
+psycopg installs on a Raspberry Pi: its wheel is `py3-none-any`, the
+core package being pure Python. What it needs at runtime is libpq:
+
+```bash
+sudo apt install libpq5
+```
 
 ## Running
 
@@ -57,6 +73,41 @@ Archive to PostgreSQL from the PC:
 uv run reactors-client --endpoint opc.tcp://10.10.10.20:55488/
 ```
 
+## The web GUI
+
+```bash
+uv run reactors-gui --endpoint opc.tcp://10.10.10.20:55488/ --port 8080
+```
+
+Then open `http://<host>:8080`. It listens on all interfaces, so the Pi
+can serve it to a laptop on the same network.
+
+**It replaces `reactors-client`, it does not run beside it.** The GUI
+process hosts the archiver itself, so running both against one database
+inserts every reading twice. Recording is a button in the header,
+independent of any experiment; if the GUI process dies, recording stops
+— the same exposure `reactors-client` has.
+
+The screens are:
+
+| Route | What it does |
+|---|---|
+| `/` | The reactors, and the recording toggle |
+| `/reactor/{r}` | Live values, controller configuration, pair/unpair |
+| `/reactor/{r}/plots` | pH, dissolved oxygen, temperature, biomass |
+| `/reactor/{r}/calibration/sensors` | Hamilton CP1 and CP2 |
+| `/reactor/{r}/calibration/pumps` | A full pump calibration run |
+| `/experiments` | Create, start, stop and export experiments |
+
+`--period` tells the GUI the server's sampling period so it can grey
+out a reading that has stopped arriving; it defaults to 10 s and must
+match `SAMPLE_PERIOD` in `run_server.py` to be useful.
+
+There is **no authentication**. Pump control is reachable from a
+browser URL by anyone who can route to the port. That is acceptable on
+an isolated lab network — the OPC server is already unauthenticated
+there — and wants revisiting before this is on a routable network.
+
 Live plots and csv export:
 
 ```bash
@@ -73,6 +124,14 @@ Create the schema once:
 
 ```bash
 psql -f reactors_czlab/sql/Bioreactor.sql
+```
+
+A database created before the experiment interface existed needs the
+migration instead — it adds `data.experiment_name`, the indexes the
+plots query on, and rebuilds `experiments`:
+
+```bash
+psql -d bioreactor_db -f reactors_czlab/sql/migrations/2026-08-02-experiments.sql
 ```
 
 Connection settings come from the environment, defaulting to the
@@ -134,7 +193,14 @@ The suite under `tests/` runs without hardware and without pymodbus.
 - Mass Flow Controller Modbus
 - Restore server from power out
 - Restore client from power out
+- Run the GUI on the Pi, and against a real Hamilton probe: the
+  calibration screen's numbers depend on the Modbus word order, which
+  has never been checked against hardware (see CLAUDE.md)
+- Exercise the experiment interface against a real PostgreSQL
+- Authentication, before the GUI is on a routable network
 
 Non essential:
 
-- GUI
+- Actuator traces on the plots page. The panels are a
+  `(name, channel)` filter list, so this is an entry in
+  `gui/controllers/plots.py`'s `PANELS`, not a rewrite.
