@@ -11,6 +11,8 @@ A page that raises while rendering shows an operator a blank screen, so
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from nicegui.testing import User
 
@@ -22,6 +24,7 @@ pytest_plugins = ("nicegui.testing.user_plugin",)
 SENSOR_VARS = {
     "ns=2;i=10": {"reactor": "R0", "name": "ph", "channel": "pH"},
     "ns=2;i=11": {"reactor": "R0", "name": "ph", "channel": "oC"},
+    "ns=2;i=12": {"reactor": "R0", "name": "do", "channel": "ppm"},
 }
 
 ACTUATOR_VARS = {
@@ -32,15 +35,26 @@ ACTUATOR_VARS = {
     "ns=2;i=24": {"reactor": "R0", "name": "pwm0", "channel": "cal_r2"},
 }
 
+PH_STATUS_METHOD = "ns=2;i=33"
+DO_STATUS_METHOD = "ns=2;i=35"
+PWM0_CALIBRATION_METHOD = "ns=2;i=34"
+
 METHODS = {
     "ns=2;i=30": {"reactor": "R0", "name": ["set_pairing"]},
     "ns=2;i=31": {"reactor": "R0", "name": ["unpair"]},
     "ns=2;i=32": {"reactor": "R0", "name": ["ph", "calibration"]},
-    "ns=2;i=33": {
+    PH_STATUS_METHOD: {
         "reactor": "R0",
         "name": ["ph", "read_calibration_status"],
     },
-    "ns=2;i=34": {"reactor": "R0", "name": ["pwm0", "get_calibration"]},
+    PWM0_CALIBRATION_METHOD: {
+        "reactor": "R0",
+        "name": ["pwm0", "get_calibration"],
+    },
+    DO_STATUS_METHOD: {
+        "reactor": "R0",
+        "name": ["do", "read_calibration_status"],
+    },
 }
 
 
@@ -68,6 +82,40 @@ class FakeClient:
         from asyncua.client.ua_client import UaClientState
 
         return UaClientState.CONNECTED
+
+    async def call_method(self, nodeid: str, *args: object) -> object:
+        """Answer the calls a page makes while it renders.
+
+        ``ph`` answers as a calibratable probe and ``do`` as one that is
+        not, so the sensor page's two branches are both exercised.
+        """
+        if nodeid == PH_STATUS_METHOD:
+            return ["ok", 0.98, 7.0, 7.01]
+        if nodeid == DO_STATUS_METHOD:
+            return ["unsupported", 0.0, 0.0, 0.0]
+        if nodeid == PWM0_CALIBRATION_METHOD:
+            return json.dumps(
+                {
+                    "actuator": "R0:pwm0",
+                    "running": False,
+                    "pending": None,
+                    "run_points": [],
+                    "calibration": {
+                        "file": "R0_pwm0",
+                        "a": 0.001,
+                        "b": 0.0,
+                        "r2": 1.0,
+                        "min_duty": 0.0,
+                        "max_duty": 4095.0,
+                        "dispense_duty": 4095.0,
+                        "fitted_at": "2026-08-02T12:00:00+00:00",
+                        "is_fitted": True,
+                        "points": [[1000.0, 1.0], [3000.0, 3.0]],
+                        "installable_reason": None,
+                    },
+                },
+            )
+        return None
 
 
 @pytest.fixture
@@ -164,18 +212,35 @@ class TestCalibrationPages:
         await user.should_see("CP1")
         await user.should_see("CP2")
 
-    async def test_sensor_page_lists_only_capable_sensors(
+    async def test_the_state_is_shown_without_pressing_read(
         self,
         user: User,
         connected: None,
     ) -> None:
-        """A sensor without the read-back method is not offered.
+        """The requirement is that the screen *shows* the state.
 
-        Offering it and failing at the call reads to an operator as the
-        sensor being broken.
+        It used to say "not read yet" until an operator pressed Read,
+        which is not the same thing.
         """
         await user.open("/reactor/R0/calibration/sensors")
-        await user.should_see("ph")
+        await user.should_see("stored value")
+        await user.should_see("quality")
+        await user.should_not_see("not read yet")
+
+    async def test_a_sensor_that_cannot_be_calibrated_says_so(
+        self,
+        user: User,
+        connected: None,
+    ) -> None:
+        """Every sensor node carries the calibration methods.
+
+        The address book therefore cannot tell a Hamilton probe from a
+        spectral one, and the page used to offer an Apply button on the
+        biomass sensor that silently did nothing. Asking the sensor is
+        what distinguishes them.
+        """
+        await user.open("/reactor/R0/calibration/sensors")
+        await user.should_see("does not support calibration")
 
     async def test_pump_page_builds(
         self,
@@ -185,6 +250,20 @@ class TestCalibrationPages:
         """The pump selector renders even before a run is read."""
         await user.open("/reactor/R0/calibration/pumps")
         await user.should_see("Pump calibration")
+
+    async def test_pump_page_shows_the_installed_line_and_points(
+        self,
+        user: User,
+        connected: None,
+    ) -> None:
+        """The fitted line and the points behind it.
+
+        Neither is a published variable - only cal_a/cal_b/cal_r2 are -
+        so this is what get_calibration was added for.
+        """
+        await user.open("/reactor/R0/calibration/pumps")
+        await user.should_see("Collected points")
+        await user.should_see("Duty limits")
 
 
 class TestExperimentsPage:

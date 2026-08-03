@@ -34,6 +34,7 @@ from reactors_czlab.gui.controllers.plots import (
 )
 from reactors_czlab.gui.state import STATE
 from reactors_czlab.sql import operations
+from reactors_czlab.sql.operations import get_date_filter_range
 
 _logger = logging.getLogger("gui")
 
@@ -42,7 +43,7 @@ TAIL_SECONDS = 2.0
 
 
 @ui.page("/reactor/{reactor}/plots")
-def plots_page(reactor: str) -> None:
+async def plots_page(reactor: str) -> None:
     """Four charts, a window selector and a biomass channel picker."""
     header(reactor)
 
@@ -62,11 +63,13 @@ def plots_page(reactor: str) -> None:
 
         _controls(reactor, state)
 
-        if not STATE.database_available:
-            ui.label(
-                "No database: charts show only what has arrived since "
-                "this page was opened.",
-            ).classes("text-sm text-orange-700")
+        # One standing notice rather than a toast per panel: a missing
+        # database is a condition, not an event, and it is the same
+        # condition for all four charts. Its text is owned by
+        # _report_history_state, which runs on every load.
+        notice = ui.label("").classes("text-sm text-orange-700")
+        notice.set_visibility(False)
+        state["notice"] = notice
 
         # Two charts per row on a wide screen, stacking on a narrow one.
         # min-width: 0 on the children, or the charts' intrinsic width
@@ -91,7 +94,9 @@ def plots_page(reactor: str) -> None:
         await _load_history(reactor, state)
 
     state["reload"] = reload
-    ui.timer(0, reload, once=True)
+    # Awaited, not deferred onto a once-timer: that can fire after the
+    # client is gone and raise against a page nobody is looking at.
+    await reload()
     ui.timer(TAIL_SECONDS, lambda: _append_tail(reactor, state))
 
 
@@ -131,11 +136,18 @@ def _controls(reactor: str, state: dict) -> None:
 async def _load_history(reactor: str, state: dict) -> None:
     """Fill every panel from the database, then redraw."""
     time_range = window_range(state["window"])
+    state["cutoff"] = get_date_filter_range(*time_range)
+
+    # One failure, reported once. Every panel queries the same database,
+    # so a database that is not there produced one toast per panel -
+    # four identical warnings stacked over the charts, and four more on
+    # every window change.
+    failure: str | None = None
 
     for panel in PANELS:
         filters = panel_filters(panel, state["biomass"])
         rows: list = []
-        if STATE.database_available and filters:
+        if STATE.database_available and filters and failure is None:
             try:
                 rows = await asyncio.to_thread(
                     operations.query_series,
@@ -144,15 +156,40 @@ async def _load_history(reactor: str, state: dict) -> None:
                     time_range,
                 )
             except operations.SqlError as err:
-                _logger.warning(
-                    "Could not load %s history: %s",
-                    panel.key,
-                    err,
-                )
-                ui.notify(f"{panel.title}: {err}", type="warning")
+                _logger.warning("Could not load history: %s", err)
+                failure = str(err)
 
         state["series"][panel.key] = build_series(rows, filters)
         _redraw(panel, state)
+
+    _report_history_state(state, failure)
+
+
+def _report_history_state(state: dict, failure: str | None) -> None:
+    """Say once whether the charts show history or only a live tail.
+
+    The only place that decides this. It ran after the page had already
+    set the notice for a missing psycopg and, seeing no query failure -
+    there had been no query to fail - cleared it again.
+    """
+    notice = state.get("notice")
+    if notice is None:
+        return
+
+    reason = failure
+    if reason is None and not STATE.database_available:
+        reason = STATE.database_reason
+
+    if reason is None:
+        notice.set_text("")
+        notice.set_visibility(False)
+        return
+
+    notice.set_text(
+        f"No database: {reason}. The charts show only what has arrived "
+        f"since this page was opened.",
+    )
+    notice.set_visibility(True)
 
 
 def _append_tail(reactor: str, state: dict) -> None:
@@ -199,12 +236,29 @@ def _redraw(panel, state: dict) -> None:
     chart = state["charts"].get(panel.key)
     if chart is None:
         return
-    chart.options.update(_options(panel, state["series"].get(panel.key, [])))
+    chart.options.update(
+        _options(
+            panel,
+            state["series"].get(panel.key, []),
+            state.get("cutoff"),
+        ),
+    )
     chart.update()
 
 
-def _options(panel, series: list) -> dict:
-    """The ECharts option dictionary for one panel."""
+def _options(panel, series: list, cutoff: datetime | None = None) -> dict:
+    """The ECharts option dictionary for one panel.
+
+    ``cutoff`` pins the left edge of the time axis to the start of the
+    selected window. Without it ECharts scales the axis to whatever
+    points exist, so a freshly opened page with two live readings drew a
+    multi-day axis while the selector said "2 h" - the window control
+    appeared to do nothing.
+    """
+    x_axis: dict = {"type": "time"}
+    if cutoff is not None:
+        x_axis["min"] = _millis(cutoff)
+
     return {
         "tooltip": {"trigger": "axis"},
         "legend": {
@@ -216,7 +270,7 @@ def _options(panel, series: list) -> dict:
         # A real time axis, not category labels: the requirement is that
         # the x axis reads as dates and times rather than elapsed
         # minutes or hours.
-        "xAxis": {"type": "time"},
+        "xAxis": x_axis,
         "yAxis": {"type": "value", "name": panel.units, "scale": True},
         "dataZoom": [
             {"type": "inside"},

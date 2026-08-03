@@ -220,3 +220,56 @@ class TestSeriesLabel:
         """Two identical legend entries would otherwise be possible."""
         assert series_label("ph", "oC") == "ph:oC"
         assert series_label("do", "oC") != series_label("ph", "oC")
+
+
+class TestChartOptions:
+    """The ECharts option dictionary the page builds."""
+
+    def test_the_x_axis_is_a_real_time_axis(self) -> None:
+        """The requirement is dates and times, not elapsed minutes."""
+        from reactors_czlab.gui.pages.plots import _options
+
+        options = _options(PANELS[0], [])
+        assert options["xAxis"]["type"] == "time"
+
+    def test_the_window_pins_the_left_edge_of_the_axis(self) -> None:
+        """Regression: the window selector appeared to do nothing.
+
+        Without a min, ECharts scales the axis to whatever points
+        exist, so a freshly opened page holding two live readings drew a
+        multi-day axis while the selector said "2 h".
+        """
+        from reactors_czlab.gui.pages.plots import _options
+
+        cutoff = BASE - timedelta(hours=2)
+        options = _options(PANELS[0], [], cutoff)
+
+        assert options["xAxis"]["min"] == int(cutoff.timestamp() * 1000)
+
+    def test_the_all_window_leaves_the_axis_free(self) -> None:
+        """"All" has no cutoff, so the axis must not be pinned."""
+        from reactors_czlab.gui.pages.plots import _options
+
+        assert "min" not in _options(PANELS[0], [], None)["xAxis"]
+
+    def test_series_are_scatter_on_the_time_axis(self) -> None:
+        """The requirement names scatter plots."""
+        from reactors_czlab.gui.pages.plots import _options
+
+        series = build_series([_row("ph", "pH", 7.0)], (("ph", "pH"),))
+        options = _options(PANELS[0], series)
+
+        assert options["series"][0]["type"] == "scatter"
+        assert options["series"][0]["data"] == [
+            [int(BASE.timestamp() * 1000), 7.0],
+        ]
+
+    def test_every_series_is_in_the_legend(self) -> None:
+        """Two probes on the temperature chart need two legend entries."""
+        from reactors_czlab.gui.pages.plots import _options
+
+        temperature = next(p for p in PANELS if p.key == "temperature")
+        series = build_series([], temperature.filters)
+        options = _options(temperature, series)
+
+        assert options["legend"]["data"] == ["ph:oC", "do:oC"]

@@ -26,7 +26,7 @@ DEFAULT_EXPORT = "experiment.csv"
 
 
 @ui.page("/experiments")
-def experiments_page() -> None:
+async def experiments_page() -> None:
     """The experiment interface."""
     header()
     with ui.column().classes("w-full").style("padding: 1rem; gap: 1rem"):
@@ -52,9 +52,10 @@ def experiments_page() -> None:
 
         _create_form(reload)
         ui.separator()
-        with table:
-            ui.label("Loading...").classes("text-gray-500")
-        ui.timer(0, reload, once=True)
+        # Awaited, not deferred onto a once-timer: that can fire after
+        # the client is gone. Awaiting also means the first paint
+        # carries the list rather than a "Loading..." placeholder.
+        await reload()
 
 
 def _create_form(reload) -> None:

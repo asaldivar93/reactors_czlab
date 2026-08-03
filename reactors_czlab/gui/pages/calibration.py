@@ -14,7 +14,11 @@ import logging
 
 from nicegui import ui
 
-from reactors_czlab.core.hamilton import CALIBRATION_POINTS
+from reactors_czlab.core.hamilton import (
+    CALIBRATION_OK,
+    CALIBRATION_POINTS,
+    status_text,
+)
 from reactors_czlab.gui.components.shell import (
     header,
     not_connected_notice,
@@ -34,6 +38,9 @@ _logger = logging.getLogger("gui")
 #: Reported by the server for a sensor with no calibration points.
 UNSUPPORTED = "unsupported"
 
+#: What core.hamilton.status_text() renders for an accepted point.
+CALIBRATION_OK_TEXT = status_text(CALIBRATION_OK)
+
 #: Actuators that are not pumps and have no calibration slot.
 NOT_A_PUMP = "mfc"
 
@@ -43,7 +50,7 @@ CALL_MARGIN_SECONDS = 30.0
 
 
 @ui.page("/reactor/{reactor}/calibration/sensors")
-def sensor_calibration_page(reactor: str) -> None:
+async def sensor_calibration_page(reactor: str) -> None:
     """Two-point calibration for the Hamilton probes."""
     header(reactor)
     with ui.column().classes("w-full").style("padding: 1rem; gap: 1rem"):
@@ -71,13 +78,67 @@ def sensor_calibration_page(reactor: str) -> None:
             return
 
         for sensor in sensors:
-            _sensor_card(reactor, sensor)
+            await _sensor_card(reactor, sensor)
 
 
-def _sensor_card(reactor: str, sensor: str) -> None:
-    """One sensor, with CP1 and CP2 side by side."""
+async def read_point(
+    reactor: str,
+    sensor: str,
+    point: str,
+) -> tuple | None:
+    """Read one calibration point, or None if the read failed.
+
+    Returns the four out-arguments as they came back, including the
+    ``unsupported`` marker - the caller decides what that means.
+    """
+    number = float(point.removeprefix("cp"))
+    try:
+        return _unpack(
+            await STATE.call(
+                reactor,
+                sensor,
+                "read_calibration_status",
+                number,
+            ),
+        )
+    except (LookupError, OSError) as err:
+        _logger.warning("Could not read %s of %s: %s", point, sensor, err)
+        return None
+
+
+async def _sensor_card(reactor: str, sensor: str) -> None:
+    """One sensor, with CP1 and CP2 side by side.
+
+    Both points are read when the page opens, because the requirement
+    is that the screen *shows* their current state - an operator should
+    not have to press a button to find out what a probe holds.
+
+    The cost is two status reads per Hamilton sensor per page open,
+    each escalating and dropping the sensor's operator level on the
+    RS485 bus the sampling loop shares. That is acceptable for an
+    operator-initiated page open and is why the read is not on a timer.
+    A sensor that cannot be calibrated answers without touching the bus
+    at all.
+    """
+    statuses = {
+        point: await read_point(reactor, sensor, point)
+        for point in CALIBRATION_POINTS
+    }
+
     with ui.card().classes("w-full"):
         ui.label(sensor).classes("text-lg font-semibold font-mono")
+
+        if all(_is_unsupported(status) for status in statuses.values()):
+            # Every sensor node carries the calibration methods, so the
+            # address book cannot tell a Hamilton probe from a spectral
+            # one. Asking is what distinguishes them - and offering an
+            # Apply button that silently does nothing would be worse
+            # than saying so.
+            ui.label(
+                "This sensor does not support calibration.",
+            ).classes("text-sm text-gray-500")
+            return
+
         # min-width: 0 on the flex children, or a wide status line stops
         # the two points sitting side by side and they stack instead.
         with ui.element("div").style(
@@ -87,19 +148,27 @@ def _sensor_card(reactor: str, sensor: str) -> None:
                 with ui.element("div").style(
                     "flex: 1 1 18rem; min-width: 0",
                 ):
-                    _point_panel(reactor, sensor, point)
+                    _point_panel(reactor, sensor, point, statuses[point])
 
 
-def _point_panel(reactor: str, sensor: str, point: str) -> None:
+def _is_unsupported(status: tuple | None) -> bool:
+    """Whether a read said the sensor has no calibration points."""
+    return status is None or status[0] == UNSUPPORTED
+
+
+def _point_panel(
+    reactor: str,
+    sensor: str,
+    point: str,
+    initial: tuple | None,
+) -> None:
     """One calibration point: its state, and how to set it."""
     number = float(point.removeprefix("cp"))
 
     with ui.card().classes("w-full"):
         ui.label(point.upper()).classes("text-sm font-semibold")
 
-        status_label = ui.label("not read yet").classes(
-            "text-sm font-mono",
-        )
+        status_label = ui.label("").classes("text-sm font-mono")
         value_label = ui.label("").classes("text-sm text-gray-600 font-mono")
         quality_label = ui.label("").classes(
             "text-sm text-gray-600 font-mono",
@@ -108,31 +177,34 @@ def _point_panel(reactor: str, sensor: str, point: str) -> None:
             "text-sm text-gray-600 font-mono",
         )
 
-        async def read() -> None:
-            """Read the point's stored state from the sensor."""
-            _logger.info("Operator read %s of %s", point, sensor)
-            try:
-                result = await STATE.call(
-                    reactor,
-                    sensor,
-                    "read_calibration_status",
-                    number,
-                )
-            except (LookupError, OSError) as err:
-                ui.notify(f"Could not read {point}: {err}", type="negative")
-                return
+        def show(status: tuple | None) -> None:
+            """Render one read's four out-arguments.
 
-            status, quality, value, process = _unpack(result)
-            if status == UNSUPPORTED:
+            One render path for the read on page open, the Read button
+            and the read-back after a write, so the three cannot drift.
+            """
+            if status is None:
+                status_label.set_text("could not be read")
+                return
+            if _is_unsupported(status):
                 status_label.set_text("unsupported by this sensor")
                 return
 
-            status_label.set_text(f"status: {status}")
+            text, quality, value, process = status
+            status_label.set_text(f"status: {text}")
             value_label.set_text(f"stored value: {render_value(value)}")
             quality_label.set_text(f"quality: {render_value(quality)}")
-            process_label.set_text(
-                f"process value now: {render_value(process)}",
-            )
+            if process is not None:
+                process_label.set_text(
+                    f"process value now: {render_value(process)}",
+                )
+
+        show(initial)
+
+        async def read() -> None:
+            """Re-read the point's stored state from the sensor."""
+            _logger.info("Operator read %s of %s", point, sensor)
+            show(await read_point(reactor, sensor, point))
 
         with ui.row().classes("items-end w-full").style("gap: 0.5rem"):
             new_value = ui.number(
@@ -164,11 +236,12 @@ def _point_panel(reactor: str, sensor: str, point: str) -> None:
                     ui.notify(f"Calibration failed: {err}", type="negative")
                     return
 
+                # The write's out-arguments are Status, Quality, Value -
+                # no process value - so they are reshaped into what
+                # show() renders rather than being formatted separately.
                 status, quality, value = _unpack(result)[:3]
-                status_label.set_text(f"status: {status}")
-                value_label.set_text(f"stored value: {render_value(value)}")
-                quality_label.set_text(f"quality: {render_value(quality)}")
-                if status == "ok":
+                show((status, quality, value, None))
+                if status == CALIBRATION_OK_TEXT:
                     ui.notify(f"{point.upper()} calibrated", type="positive")
                 else:
                     # The sensor refused it - an unstable reading, or a
@@ -197,7 +270,7 @@ def _unpack(result: object) -> tuple:
 
 
 @ui.page("/reactor/{reactor}/calibration/pumps")
-def pump_calibration_page(reactor: str) -> None:
+async def pump_calibration_page(reactor: str) -> None:
     """Drive a full CalibrationRun for one pump at a time."""
     header(reactor)
     with ui.column().classes("w-full").style("padding: 1rem; gap: 1rem"):
@@ -236,11 +309,14 @@ def pump_calibration_page(reactor: str) -> None:
             with panel:
                 await _pump_panel(reactor, selected.value, show)
 
-        # The selector's handler is awaited directly. Only the initial
-        # build is deferred onto a timer, because the page function
-        # cannot await before its own layout exists.
         selected.on_value_change(lambda _: show())
-        ui.timer(0, show, once=True)
+        # Awaited here rather than deferred onto a timer: a once-timer
+        # created while the page builds can fire after the client is
+        # gone - an operator navigating straight back out - and then
+        # raises "the client this element belongs to has been deleted"
+        # against a page nobody is looking at. Awaiting also means the
+        # first paint already carries the pump's real state.
+        await show()
 
 
 async def _pump_panel(reactor: str, pump: str, reload) -> None:
