@@ -529,6 +529,7 @@ class ActuatorOpc:
         payload = {
             "method": method.value,
             "output_unit": config.output_unit.value,
+            "demand": controller.value,
             "value": config.value,
             "time_on": config.time_on,
             "time_off": config.time_off,

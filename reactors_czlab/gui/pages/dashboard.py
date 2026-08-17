@@ -7,9 +7,16 @@ test can reach it without a browser.
 
 from __future__ import annotations
 
+import asyncio
+
 from nicegui import ui
 
-from reactors_czlab.gui.components.pairing import pairing_panel
+from reactors_czlab.gui.components.control_form import read_control_config
+from reactors_czlab.gui.components.pairing import (
+    label_channels,
+    pairing_panel,
+    read_pairings,
+)
 from reactors_czlab.gui.components.shell import (
     header,
     not_connected_notice,
@@ -76,21 +83,44 @@ async def reactor_page(reactor: str) -> None:
             not_connected_notice()
             return
 
+        actuators = sorted(STATE.book.actuators(reactor))
+        configs = dict(
+            zip(
+                actuators,
+                await asyncio.gather(
+                    *(read_control_config(reactor, name) for name in actuators),
+                ),
+                strict=True,
+            ),
+        )
+        pairings = await label_channels(
+            reactor,
+            await read_pairings(reactor),
+        )
+
         with ui.row().classes("items-center").style("gap: 0.75rem"):
-            ui.label("Recording").classes("text-sm font-semibold")
+            active = (
+                STATE.client.experiment_tags.get(reactor)
+                if STATE.client is not None
+                else None
+            )
+            ui.badge(
+                f"Experiment: {active}" if active else "No active experiment",
+                color="blue" if active else "grey",
+            )
             reactor_recording_toggle(reactor)
 
         ui.label("Sensors").classes("text-lg font-semibold")
         sensor_panel(reactor)
 
         ui.label("Actuators").classes("text-lg font-semibold")
-        actuator_panel(reactor)
+        update_pairings = actuator_panel(reactor, configs, pairings)
 
         ui.label("Pairings").classes("text-lg font-semibold")
         # Awaited here rather than deferred to a timer: its first row
         # list depends on a network read, and awaiting means the first
         # paint already carries the published table.
-        await pairing_panel(reactor)
+        await pairing_panel(reactor, pairings, update_pairings)
 
     def refresh() -> None:
         """Re-read the in-memory values.

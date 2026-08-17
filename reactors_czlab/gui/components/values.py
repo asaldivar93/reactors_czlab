@@ -15,6 +15,7 @@ button element was gone from the document within 2.5 s.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime
 
 from nicegui import ui
@@ -35,10 +36,17 @@ ACTUATOR_CHANNELS = (
 CALIBRATION_CHANNELS = (("cal_a", "a"), ("cal_b", "b"), ("cal_r2", "r2"))
 
 
-def value_chip(label: str, text: str, stale: bool) -> None:
+def value_chip(
+    label: str,
+    text: str,
+    stale: bool,
+    description: str = "",
+) -> None:
     """One labelled reading, greyed out when it has stopped updating."""
     with ui.column().style("gap: 0"):
-        ui.label(label).classes("text-xs text-gray-500")
+        label_element = ui.label(label).classes("text-xs text-gray-500")
+        if description:
+            label_element.tooltip(description)
         chip = ui.label(text).classes("text-lg font-mono")
         if stale:
             chip.classes("text-gray-400 line-through")
@@ -78,10 +86,51 @@ def sensor_readings(reactor: str, name: str) -> None:
                 ref.channel,
                 render_value(value),
                 is_stale(stamp, now, STATE.period),
+                ref.description,
             )
 
 
-def actuator_panel(reactor: str) -> None:
+def control_summary(config: dict | None) -> str:
+    """Render the method, unit and current demand from server read-back."""
+    if config is None:
+        return "Control configuration unavailable"
+    units = {
+        "duty": "counts",
+        "flow": "mL/min",
+        "volume": "mL",
+    }
+    unit = str(config["output_unit"])
+    demand = render_value(config.get("demand"), units=units.get(unit, unit))
+    return f"{config['method']} · {unit} · demand {demand}"
+
+
+def pairing_summary(actuator: str, rows: list[dict]) -> str:
+    """Render what an actuator follows, or that it is unpaired."""
+    for row in rows:
+        full_actuator = str(row.get("actuator", ""))
+        actuator_name = (
+            row.get("actuator_name")
+            or full_actuator.partition(":")[2]
+            or full_actuator
+        )
+        if actuator_name != actuator:
+            continue
+        full_sensor = str(row.get("sensor", ""))
+        sensor = (
+            row.get("sensor_name")
+            or full_sensor.partition(":")[2]
+            or full_sensor
+        )
+        channel = row.get("channel_name", row.get("channel", ""))
+        return f"Paired to {sensor}:{channel}"
+    return "Unpaired"
+
+
+def actuator_panel(
+    reactor: str,
+    configs: dict[str, dict | None],
+    pairings: list[dict],
+) -> Callable[[list[dict]], None]:
     """One card per actuator. Built once; only the readings refresh."""
     if STATE.book is None:
         ui.label("Not connected")
@@ -90,22 +139,57 @@ def actuator_panel(reactor: str) -> None:
     actuators = STATE.book.actuators(reactor)
     if not actuators:
         ui.label("No actuators on this reactor").classes("text-gray-500")
-        return
+        return lambda rows: None
 
+    pairing_labels: dict[str, ui.element] = {}
     for name in sorted(actuators):
-        with ui.card().classes("w-full"):
-            with ui.row().classes("w-full items-center justify-between"):
-                ui.label(name).classes("text-sm font-semibold font-mono")
-                disable_when_read_only(
-                    ui.button(
-                        "Configure",
-                        on_click=lambda r=reactor, n=name: open_control_dialog(
-                            r,
-                            n,
-                        ),
-                    ).props("outline size=sm"),
-                )
-            actuator_readings(reactor, name)
+        pairing_labels[name] = _actuator_card(
+            reactor,
+            name,
+            configs.get(name),
+            pairings,
+        )
+
+    def update_pairings(rows: list[dict]) -> None:
+        """Update pairing labels without rebuilding cards or buttons."""
+        for actuator, label in pairing_labels.items():
+            label.set_text(pairing_summary(actuator, rows))
+
+    return update_pairings
+
+
+def _actuator_card(
+    reactor: str,
+    name: str,
+    config: dict | None,
+    pairings: list[dict],
+) -> ui.element:
+    """Build one actuator card and return its pairing label."""
+    with ui.card().classes("w-full"):
+        with ui.row().classes("w-full items-center justify-between"):
+            ui.label(name).classes("text-sm font-semibold font-mono")
+            config_label = ui.label(control_summary(config)).classes(
+                "text-xs text-gray-600",
+            )
+
+            def update_config(latest: dict) -> None:
+                config_label.set_text(control_summary(latest))
+
+            disable_when_read_only(
+                ui.button(
+                    "Configure",
+                    on_click=lambda: open_control_dialog(
+                        reactor,
+                        name,
+                        update_config,
+                    ),
+                ).props("outline size=sm"),
+            )
+        pairing_label = ui.label(pairing_summary(name, pairings)).classes(
+            "text-xs text-gray-500",
+        )
+        actuator_readings(reactor, name)
+    return pairing_label
 
 
 @ui.refreshable

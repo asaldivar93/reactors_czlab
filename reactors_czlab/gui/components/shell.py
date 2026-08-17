@@ -80,7 +80,12 @@ def reactor_recording_toggle(reactor: str) -> None:
         reactor_recording_toggle.refresh()
         status_badges.refresh()
 
-    if STATE.is_recording(reactor):
+    recording = STATE.is_recording(reactor)
+    ui.badge(
+        "recording" if recording else "paused",
+        color="blue" if recording else "grey",
+    )
+    if recording:
         disable_when_read_only(
             ui.button(
                 "Stop recording",

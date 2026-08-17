@@ -22,7 +22,12 @@ from reactors_czlab.gui.address import AddressBook
 pytest_plugins = ("nicegui.testing.user_plugin",)
 
 SENSOR_VARS = {
-    "ns=2;i=10": {"reactor": "R0", "name": "ph", "channel": "pH"},
+    "ns=2;i=10": {
+        "reactor": "R0",
+        "name": "ph",
+        "channel": "pH",
+        "description": "acidity",
+    },
     "ns=2;i=11": {"reactor": "R0", "name": "ph", "channel": "oC"},
     "ns=2;i=12": {"reactor": "R0", "name": "do", "channel": "ppm"},
 }
@@ -38,6 +43,7 @@ ACTUATOR_VARS = {
 PH_STATUS_METHOD = "ns=2;i=33"
 DO_STATUS_METHOD = "ns=2;i=35"
 PWM0_CALIBRATION_METHOD = "ns=2;i=34"
+PWM0_CONTROL_METHOD = "ns=2;i=36"
 
 METHODS = {
     "ns=2;i=30": {"reactor": "R0", "name": ["set_pairing"]},
@@ -50,6 +56,10 @@ METHODS = {
     PWM0_CALIBRATION_METHOD: {
         "reactor": "R0",
         "name": ["pwm0", "get_calibration"],
+    },
+    PWM0_CONTROL_METHOD: {
+        "reactor": "R0",
+        "name": ["pwm0", "get_control_config"],
     },
     DO_STATUS_METHOD: {
         "reactor": "R0",
@@ -122,6 +132,29 @@ class FakeClient:
                         "points": [[1000.0, 1.0], [3000.0, 3.0]],
                         "installable_reason": None,
                     },
+                },
+            )
+        if nodeid == PWM0_CONTROL_METHOD:
+            return json.dumps(
+                {
+                    "method": "manual",
+                    "output_unit": "duty",
+                    "demand": 0.0,
+                    "value": 0.0,
+                    "time_on": 0.0,
+                    "time_off": 0.0,
+                    "lb": 0.0,
+                    "ub": 0.0,
+                    "setpoint": 0.0,
+                    "kp": 100.0,
+                    "ki": 0.01,
+                    "kd": 0.0,
+                    "min_integral": 0.0,
+                    "max_integral": 4095.0,
+                    "auto_integral_band": True,
+                    "backwards": False,
+                    "methods": ["manual", "timer", "on_boundaries", "pid"],
+                    "output_units": ["duty", "flow", "volume"],
                 },
             )
         return None
@@ -197,6 +230,17 @@ class TestReactorDashboard:
         """Modifying actuator configuration starts here."""
         await user.open("/reactor/R0")
         await user.should_see("Configure")
+
+    async def test_shows_running_control_and_experiment_state(
+        self,
+        user: User,
+        connected: None,
+    ) -> None:
+        """The card states what drives the actuator without a dialog."""
+        await user.open("/reactor/R0")
+        await user.should_see("manual · duty · demand")
+        await user.should_see("No active experiment")
+        await user.should_see("Unpaired")
 
     async def test_says_so_when_disconnected(
         self,

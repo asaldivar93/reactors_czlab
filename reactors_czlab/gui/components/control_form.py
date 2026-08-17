@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 
 from asyncua import ua
 from nicegui import ui
@@ -67,7 +68,11 @@ async def read_control_config(
     return config
 
 
-async def open_control_dialog(reactor: str, actuator: str) -> None:
+async def open_control_dialog(
+    reactor: str,
+    actuator: str,
+    on_change: Callable[[dict], object] | None = None,
+) -> None:
     """Open the configuration dialog for one actuator.
 
     Awaited directly by the button rather than deferred onto a timer:
@@ -76,14 +81,18 @@ async def open_control_dialog(reactor: str, actuator: str) -> None:
     nothing at all.
     """
     _logger.info("Operator opened control config for %s", actuator)
-    if not await _build_dialog(reactor, actuator):
+    if not await _build_dialog(reactor, actuator, on_change):
         ui.notify(
             f"Could not read the running configuration for {actuator}",
             type="negative",
         )
 
 
-async def _build_dialog(reactor: str, actuator: str) -> bool:
+async def _build_dialog(
+    reactor: str,
+    actuator: str,
+    on_change: Callable[[dict], object] | None = None,
+) -> bool:
     """Build and show the dialog, prefilled from the running config."""
     state = await read_control_config(reactor, actuator)
     if state is None:
@@ -219,6 +228,8 @@ async def _build_dialog(reactor: str, actuator: str) -> bool:
                     method_select.set_value(state["method"])
                     unit_select.set_value(state["output_unit"])
                     render_fields()
+                    if on_change is not None:
+                        on_change(latest)
             except (LookupError, OSError, ua.UaError) as err:
                 accepted = False
                 message = f"Could not apply configuration: {err}"

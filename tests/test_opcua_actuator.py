@@ -364,6 +364,7 @@ def test_get_control_config_round_trips_every_pid_field(
     assert state["method"] == "pid"
     assert state["output_unit"] == "flow"
     assert state["setpoint"] == 7.1
+    assert state["demand"] == 0.0
     assert (state["kp"], state["ki"], state["kd"]) == (2.0, 3.0, 4.0)
     assert state["backwards"] is True
     assert state["auto_integral_band"] is False

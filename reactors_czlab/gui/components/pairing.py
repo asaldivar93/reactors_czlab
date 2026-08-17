@@ -184,7 +184,11 @@ async def label_channels(reactor: str, rows: list[dict]) -> list[dict]:
     return labelled
 
 
-async def pairing_panel(reactor: str) -> None:
+async def pairing_panel(
+    reactor: str,
+    rows: list[dict] | None = None,
+    on_change=None,
+) -> None:
     """The pairing table and the form that adds to it.
 
     Async because the initial row list depends on a network read that
@@ -192,13 +196,16 @@ async def pairing_panel(reactor: str) -> None:
     the first paint already carries the published table, rather than
     depending on a deferred timer that can outlive the request.
     """
-    rows = await label_channels(reactor, await read_pairings(reactor))
+    if rows is None:
+        rows = await label_channels(reactor, await read_pairings(reactor))
 
     container = ui.column().classes("w-full").style("gap: 0.5rem")
 
     async def reconcile() -> None:
         """Re-read the table and rebuild the panel."""
         fresh = await label_channels(reactor, await read_pairings(reactor))
+        if on_change is not None:
+            on_change(fresh)
         container.clear()
         with container:
             _render(reactor, fresh, reconcile)
