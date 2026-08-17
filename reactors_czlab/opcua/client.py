@@ -135,20 +135,24 @@ class OpcClient:
         _logger.info("Connected to %s", self.endpoint)
 
         try:
-            self.sensor_vars = await self.get_sensor_vars()
-            await self._read_sensor_descriptions()
-            self.actuator_vars = await self.get_actuator_vars()
-            self.variables = {**self.sensor_vars, **self.actuator_vars}
-            self.methods = await self.get_methods()
-            self.mappings = {
-                "sensor_vars": self.sensor_vars,
-                "actuator_vars": self.actuator_vars,
-                "methods": self.methods,
-            }
+            await self.refresh_browse()
         except Exception:
             _logger.exception("Failed to browse %s", self.endpoint)
             await self.disconnect()
             raise
+
+    async def refresh_browse(self) -> None:
+        """Rebuild every address-space mapping from the connected server."""
+        self.sensor_vars = await self.get_sensor_vars()
+        await self._read_sensor_descriptions()
+        self.actuator_vars = await self.get_actuator_vars()
+        self.variables = {**self.sensor_vars, **self.actuator_vars}
+        self.methods = await self.get_methods()
+        self.mappings = {
+            "sensor_vars": self.sensor_vars,
+            "actuator_vars": self.actuator_vars,
+            "methods": self.methods,
+        }
 
     async def disconnect(self) -> None:
         """Stop the archiver task and close the connection."""

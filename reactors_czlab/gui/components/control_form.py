@@ -9,6 +9,7 @@ from asyncua import ua
 from nicegui import ui
 
 from reactors_czlab.core.data import OutputUnit
+from reactors_czlab.gui.components.shell import disable_when_read_only
 from reactors_czlab.gui.control import (
     CONFIG_FIELDS,
     build_config_args,
@@ -244,6 +245,7 @@ async def _build_dialog(reactor: str, actuator: str) -> bool:
             apply_button = ui.button("Apply", on_click=apply).props(
                 "color=primary",
             )
+            disable_when_read_only(apply_button)
 
         render_fields()
 

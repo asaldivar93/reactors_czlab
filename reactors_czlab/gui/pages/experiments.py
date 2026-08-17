@@ -15,7 +15,11 @@ import logging
 
 from nicegui import ui
 
-from reactors_czlab.gui.components.shell import header, status_badges
+from reactors_czlab.gui.components.shell import (
+    disable_when_read_only,
+    header,
+    status_badges,
+)
 from reactors_czlab.gui.state import STATE
 from reactors_czlab.sql import operations
 
@@ -147,10 +151,12 @@ def _experiment_card(row: dict, reload) -> None:
 
         with ui.row().classes("flex-wrap").style("gap: 0.5rem"):
             if row["state"] == "created":
-                ui.button(
-                    "Start",
-                    on_click=lambda r=row: _start(r, reload),
-                ).props("size=sm color=primary")
+                disable_when_read_only(
+                    ui.button(
+                        "Start",
+                        on_click=lambda r=row: _start(r, reload),
+                    ).props("size=sm color=primary"),
+                )
             elif row["state"] == "running":
                 ui.button(
                     "Stop",
@@ -164,6 +170,7 @@ def _experiment_card(row: dict, reload) -> None:
                 restart.tooltip(
                     "Recording resumes under the same experiment name",
                 )
+                disable_when_read_only(restart)
 
             ui.button(
                 "Export CSV",

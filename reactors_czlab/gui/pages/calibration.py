@@ -20,6 +20,7 @@ from reactors_czlab.core.hamilton import (
     status_text,
 )
 from reactors_czlab.gui.components.shell import (
+    disable_when_read_only,
     header,
     not_connected_notice,
     reactor_tabs,
@@ -252,8 +253,14 @@ def _point_panel(
                         type="negative",
                     )
 
-            ui.button("Apply", on_click=apply).props("size=sm color=primary")
-            ui.button("Read", on_click=read).props("outline size=sm")
+            disable_when_read_only(
+                ui.button("Apply", on_click=apply).props(
+                    "size=sm color=primary",
+                ),
+            )
+            disable_when_read_only(
+                ui.button("Read", on_click=read).props("outline size=sm"),
+            )
 
 
 def _unpack(result: object) -> tuple:
@@ -474,6 +481,8 @@ async def _run_controls(reactor: str, pump: str, view, reload) -> None:
                 run_button.tooltip(
                     "A run is in flight, or a measurement is owed",
                 )
+            else:
+                disable_when_read_only(run_button)
 
     with ui.card().classes("w-full"):
         ui.label("Record the measured volume").classes(
@@ -498,6 +507,8 @@ async def _run_controls(reactor: str, pump: str, view, reload) -> None:
             if not view.can_record:
                 record_button.disable()
                 record_button.tooltip("Run a point first")
+            else:
+                disable_when_read_only(record_button)
 
     with ui.row().classes("flex-wrap").style("gap: 0.5rem"):
         fit_button = ui.button(
@@ -509,6 +520,8 @@ async def _run_controls(reactor: str, pump: str, view, reload) -> None:
             fit_button.tooltip(
                 "Two points at different duties are needed to fit",
             )
+        else:
+            disable_when_read_only(fit_button)
 
         for label, method in (
             ("Clear points", "clear_points"),
@@ -520,6 +533,8 @@ async def _run_controls(reactor: str, pump: str, view, reload) -> None:
             ).props("outline")
             if not view.can_edit:
                 button.disable()
+            else:
+                disable_when_read_only(button)
 
     _set_duties_card(view, call)
 
@@ -558,3 +573,5 @@ def _set_duties_card(view, call) -> None:
             button = ui.button("Apply", on_click=apply).props("outline")
             if not view.can_edit:
                 button.disable()
+            else:
+                disable_when_read_only(button)

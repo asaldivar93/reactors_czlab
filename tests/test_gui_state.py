@@ -38,6 +38,8 @@ class FakeOpcClient:
         self.writes: list[tuple[str, object]] = []
         self.calls: list[tuple[str, tuple]] = []
         self.slow_calls: list[tuple[str, tuple, float]] = []
+        self.subscription_count = 0
+        self.browse_count = 0
         self.fail_on_connect: Exception | None = None
         FakeOpcClient.instances.append(self)
 
@@ -49,6 +51,11 @@ class FakeOpcClient:
 
     async def init_subscriptions(self) -> None:
         """Nothing to subscribe to in a fake."""
+        self.subscription_count += 1
+
+    async def refresh_browse(self) -> None:
+        """Record the rebrowse a recovered connection needs."""
+        self.browse_count += 1
 
     async def disconnect(self) -> None:
         """Record the teardown."""
@@ -183,6 +190,33 @@ class TestConnect:
         assert len(FakeOpcClient.instances) == 1
         assert not app.client.disconnected
 
+    async def test_reconnect_rebrowses_and_bumps_generation(
+        self,
+        app: AppState,
+    ) -> None:
+        """A restarted server's node ids replace the cached address book."""
+        from reactors_czlab.gui.components import pairing
+
+        await app.connect()
+        first_generation = app.generation
+        pairing._PAIRINGS_NODES["R0"] = "stale"
+        pairing._CHANNEL_INDICES[("R0", "ph", "pH")] = 0
+
+        app.client.state = UaClientState.RECONNECTING
+        await asyncio.sleep(state_module.SUPERVISOR_SECONDS * 2)
+        app.client.state = UaClientState.CONNECTED
+        for _ in range(10):
+            if app.generation > first_generation:
+                break
+            await asyncio.sleep(state_module.SUPERVISOR_SECONDS)
+
+        assert app.generation == first_generation + 1
+        assert app.client.browse_count == 1
+        assert app.client.subscription_count == 1
+        assert pairing._PAIRINGS_NODES == {}
+        assert pairing._CHANNEL_INDICES == {}
+        await app.disconnect()
+
 
 class TestConnectionState:
     """What the header shows."""
@@ -279,8 +313,21 @@ class TestWriteAndCall:
         app: AppState,
     ) -> None:
         """There is no node id to resolve without a connection."""
-        with pytest.raises(LookupError, match="not connected"):
+        with pytest.raises(LookupError, match="not writable"):
             await app.call("R0", None, "set_pairing")
+
+    async def test_writes_are_refused_while_reconnecting(
+        self,
+        app: AppState,
+    ) -> None:
+        """Controls fail clearly before asyncua starts a doomed request."""
+        await app.connect()
+        app.book.variables[("R0", "pwm0", "value")] = "ns=2;i=23"
+        app.client.state = UaClientState.RECONNECTING
+
+        assert app.writable is False
+        assert not await app.write_variable("R0", "pwm0", "value", 10.0)
+        assert app.client.writes == []
 
 
 class TestRecording:

@@ -10,6 +10,7 @@ is no callback fan-out here, and no second copy of the values.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from typing import TYPE_CHECKING
 
@@ -30,6 +31,7 @@ DEFAULT_ENDPOINT = "opc.tcp://10.10.10.20:55488/"
 #: server's SAMPLE_PERIOD is not published, so this is a setting rather
 #: than something that can be discovered.
 DEFAULT_PERIOD = 10.0
+SUPERVISOR_SECONDS = 0.1
 
 
 class AppState:
@@ -46,6 +48,8 @@ class AppState:
         self.client: OpcClient | None = None
         self.book: AddressBook | None = None
         self.connection_error: str | None = None
+        self.generation = 0
+        self._supervisor_task: asyncio.Task | None = None
         #: Serialises connect() so an operator double-clicking Retry, or
         #: two browser tabs retrying at once, cannot both build an
         #: OpcClient and race to overwrite self.client - the loser would
@@ -85,6 +89,11 @@ class AppState:
             self.client is not None
             and self.client.state == UaClientState.RECONNECTING
         )
+
+    @property
+    def writable(self) -> bool:
+        """Whether commands may safely be sent to the shared session."""
+        return self.connected
 
     @property
     def database_available(self) -> bool:
@@ -137,10 +146,56 @@ class AppState:
 
             self.client = client
             self.book = AddressBook.from_client(client)
+            self.generation += 1
             self.connection_error = None
             _logger.info("Connected to %s", self.endpoint)
 
             await self.adopt_running_experiments()
+            self._supervisor_task = asyncio.create_task(
+                self._supervise_connection(client),
+            )
+
+    async def _supervise_connection(self, client: OpcClient) -> None:
+        """Rebrowse after asyncua recovers from a server restart.
+
+        asyncua 2.0.1 recreates its live subscriptions during reconnect, so
+        this supervisor must not subscribe again. It rebuilds only the node-id
+        mappings that belong to the restarted server process.
+        """
+        previous = client.state
+        while self.client is client:
+            await asyncio.sleep(SUPERVISOR_SECONDS)
+            current = client.state
+            if (
+                previous == UaClientState.RECONNECTING
+                and current == UaClientState.CONNECTED
+            ):
+                try:
+                    await self._rebrowse(client)
+                except Exception:
+                    _logger.exception(
+                        "Could not rebuild the address book after reconnect",
+                    )
+                    # Treat the next connected poll as another transition so
+                    # a transient browse failure does not strand stale ids for
+                    # the rest of the process.
+                    previous = UaClientState.RECONNECTING
+                    continue
+            previous = current
+
+    async def _rebrowse(self, client: OpcClient) -> None:
+        """Replace address-derived state after one successful reconnect."""
+        await client.refresh_browse()
+        self.book = AddressBook.from_client(client)
+        from reactors_czlab.gui.components import pairing
+
+        pairing.forget_cached_nodes()
+        await self.adopt_running_experiments()
+        self.generation += 1
+        _logger.info(
+            "Rebuilt address book after reconnect (generation %s)",
+            self.generation,
+        )
 
     async def adopt_running_experiments(self) -> None:
         """Pick up experiment tags for reactors already running one.
@@ -156,12 +211,17 @@ class AppState:
         except operations.SqlError as err:
             _logger.warning("Could not read running experiments: %s", err)
             return
+        self.client.experiment_tags = dict(tags)
         if tags:
-            self.client.experiment_tags = dict(tags)
             _logger.info("Adopted running experiments: %s", tags)
 
     async def disconnect(self) -> None:
         """Drop the connection, the address book and the cached ids."""
+        if self._supervisor_task is not None:
+            self._supervisor_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._supervisor_task
+            self._supervisor_task = None
         if self.client is not None:
             await self.client.disconnect()
         self.client = None
@@ -199,7 +259,13 @@ class AppState:
         value: object,
     ) -> bool:
         """Write one variable. False if it could not be written."""
-        if self.client is None or self.book is None:
+        if not self.writable or self.client is None or self.book is None:
+            _logger.warning(
+                "Refusing write to %s:%s:%s while connection is not writable",
+                reactor,
+                name,
+                channel,
+            )
             return False
         nodeid = self.book.variable(reactor, name, channel)
         if nodeid is None:
@@ -224,8 +290,8 @@ class AppState:
             failure, so it is not folded into a status string.
 
         """
-        if self.client is None or self.book is None:
-            error_message = "not connected"
+        if not self.writable or self.client is None or self.book is None:
+            error_message = "connection is not writable"
             raise LookupError(error_message)
         nodeid = self.book.method(reactor, owner, method)
         if nodeid is None:
@@ -253,8 +319,8 @@ class AppState:
             If the method is not in the address book.
 
         """
-        if self.client is None or self.book is None:
-            error_message = "not connected"
+        if not self.writable or self.client is None or self.book is None:
+            error_message = "connection is not writable"
             raise LookupError(error_message)
         nodeid = self.book.method(reactor, owner, method)
         if nodeid is None:

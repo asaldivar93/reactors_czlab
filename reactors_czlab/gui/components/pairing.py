@@ -18,6 +18,7 @@ import logging
 
 from nicegui import ui
 
+from reactors_czlab.gui.components.shell import disable_when_read_only
 from reactors_czlab.gui.state import STATE
 
 _logger = logging.getLogger("gui")
@@ -251,10 +252,12 @@ def _unpair_buttons(reactor: str, rows: list[dict], reconcile) -> None:
     with ui.row().classes("flex-wrap").style("gap: 0.5rem"):
         for row in rows:
             label = f"Unpair {short_name(row['actuator'])}"
-            ui.button(
-                label,
-                on_click=lambda r=row: _unpair(reactor, r, reconcile),
-            ).props("outline size=sm color=warning")
+            disable_when_read_only(
+                ui.button(
+                    label,
+                    on_click=lambda r=row: _unpair(reactor, r, reconcile),
+                ).props("outline size=sm color=warning"),
+            )
 
 
 def _add_form(reactor: str, rows: list[dict], reconcile) -> None:
@@ -311,6 +314,8 @@ def _add_form(reactor: str, rows: list[dict], reconcile) -> None:
         if not free:
             button.disable()
             button.tooltip("Every actuator on this reactor is already paired")
+        else:
+            disable_when_read_only(button)
 
 
 async def _pair(

@@ -20,6 +20,7 @@ from datetime import datetime
 from nicegui import ui
 
 from reactors_czlab.gui.components.control_form import open_control_dialog
+from reactors_czlab.gui.components.shell import disable_when_read_only
 from reactors_czlab.gui.format import is_stale, render_value
 from reactors_czlab.gui.state import STATE
 
@@ -95,13 +96,15 @@ def actuator_panel(reactor: str) -> None:
         with ui.card().classes("w-full"):
             with ui.row().classes("w-full items-center justify-between"):
                 ui.label(name).classes("text-sm font-semibold font-mono")
-                ui.button(
-                    "Configure",
-                    on_click=lambda r=reactor, n=name: open_control_dialog(
-                        r,
-                        n,
-                    ),
-                ).props("outline size=sm")
+                disable_when_read_only(
+                    ui.button(
+                        "Configure",
+                        on_click=lambda r=reactor, n=name: open_control_dialog(
+                            r,
+                            n,
+                        ),
+                    ).props("outline size=sm"),
+                )
             actuator_readings(reactor, name)
 
 

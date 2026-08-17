@@ -23,6 +23,13 @@ _logger = logging.getLogger("gui")
 STATUS_SECONDS = 2.0
 
 
+def disable_when_read_only(control: ui.element) -> ui.element:
+    """Disable an OPC command control while the connection cannot write."""
+    control.bind_enabled_from(STATE, "writable")
+    control.tooltip("Requires a writable OPC connection")
+    return control
+
+
 @ui.refreshable
 def status_badges() -> None:
     """Connection, database and recording state, at a glance."""
@@ -70,14 +77,20 @@ def recording_toggle() -> None:
     # takes the primary colour for its text and border, which is the
     # same colour as the header it sits on - the control was invisible.
     if STATE.recording:
-        ui.button("Stop recording", on_click=stop, color="warning").props(
-            "size=sm",
+        disable_when_read_only(
+            ui.button(
+                "Stop recording",
+                on_click=stop,
+                color="warning",
+            ).props("size=sm"),
         )
     else:
         button = ui.button("Record", on_click=start).props(
             "outline size=sm color=white",
         )
-        if not STATE.database_available:
+        if not STATE.writable:
+            disable_when_read_only(button)
+        elif not STATE.database_available:
             button.disable()
             button.tooltip(STATE.database_reason)
 
