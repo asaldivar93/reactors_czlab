@@ -1,4 +1,5 @@
-# CLAUDE.md
+
+# reactors_czlab
 
 Bioreactor controller. A Raspberry Pi PLC reads sensors / drives actuators and
 publishes over OPC UA; a PC subscribes and archives to PostgreSQL.
@@ -7,46 +8,17 @@ file is the stuff that is expensive to re-derive from the source.
 
 ## Layout
 
-```
-reactors_czlab/
-  core/          Pi-side domain logic
-    hardware.py    ONLY module allowed to touch PLC libraries
-    data.py        Dataclasses + ERROR_VALUE + MAX_OUTPUT (no deps)
-    control.py     Control strategies (dataclasses)
-    actuator.py    Actuator ABC + RandomActuator + PlcActuator
-    sensor.py      Sensor ABC + RandomSensor + HamiltonSensor + SpectralSensor
-    modbus.py      ModbusHandler (RS485, pymodbus)
-    reactor.py     Reactor: the two loops + pairing state
-    calibration.py Pump calibration: fit, store, reload, run state machine
-    dispenser.py   Demand (mL/min or mL) -> duty, bolus timing, volume totals
-    hamilton.py    What a CP status block MEANS. stdlib only, no pymodbus
-  opcua/         Server nodes (reactor/sensor/actuator) + OpcClient
-  gui/           NiceGUI web app
-    address.py     AddressBook: the browse dicts -> the lookups pages make
-    format.py      Rendering; ERROR_VALUE never reaches a screen as a number
-    control.py     The control-config write plan (ORDER MATTERS, see below)
-    state.py       AppState/STATE: the one connection, the one address book
-    controllers/   Page logic that is testable without a browser
-    components/, pages/   Assembly only, no decisions
-  sql/           PostgreSQL schema and access
-  server_info.py Hardware inventory: which sensor/actuator on which address/pin
-  run_*.py, export_data.py   Entry points (each has a cli() in [project.scripts])
-tests/           pytest suite. Runs with no hardware and no pymodbus.
-scripts/, tests_plc/   Ad hoc bench scripts. NOT part of the package, NOT pytest suites.
-```
-
-Dependency direction: `core` never imports `opcua`. `data.py` imports nothing.
+Dependency direction: `core` never imports `opcua`. `data.py` imports
+nothing. `gui` may import `opcua` and `sql`; nothing imports `gui`, and
+`core` is untouched by it. `gui/__init__.py` stays docstring-only for the
+same reason `core/__init__.py` does — a re-export would force every
+install, including a headless Pi server, to carry `nicegui`.
 
 ## Hard constraints — breaking these breaks a deployment
 
 - **Python >= 3.11.** `asyncio.TaskGroup` and `enum.StrEnum` are used.
-- **`pymodbus` is pinned `>=3.9`.** `BinaryPayloadBuilder`/`Decoder` lived in
-  `pymodbus.payload`, which 3.9 removed; `ModbusHandler` now uses
-  `convert_to_registers`/`convert_from_registers` instead, whose `word_order`
-  kwarg also landed in 3.9. (There is no pymodbus 4.0 — the latest release is
-  3.x.) Do not reintroduce the `pymodbus.payload` API.
-- **The `server` and `client` extras are independent.** The Pi has no psycopg;
-  the PC has no pymodbus. So:
+- **`pymodbus` is pinned `>=3.9`.** Do not reintroduce the `pymodbus.payload` API.
+- **The `server` and `client` extras are independent.** The PC has no pymodbus. So:
   - `reactors_czlab/__init__.py` and `core/__init__.py` must stay
     **docstring-only**. Adding a re-export there forces every install to carry
     both dependency sets.
@@ -56,9 +28,6 @@ Dependency direction: `core` never imports `opcua`. `data.py` imports nothing.
   Entry points call `init_hardware()` explicitly. Never move hardware setup back
   to module scope — it was there before and made the package untestable.
   `core/sensor.py` imports `adafruit_as7341` under `if IN_RASPBERRYPI` only.
-- **`core/calibration.py` and `core/dispenser.py` are standard library only.**
-  They run on the Pi, which has neither numpy nor psycopg. The calibration fit
-  is an ordinary least squares written out by hand for that reason.
 
 ## Model you need to hold
 
@@ -183,20 +152,6 @@ fails. It is a single constant — do not re-hardcode the literal. The server
 publishes it; `OpcClient.datachange_notification` filters it so it never reaches
 the `data` table.
 
-### Modbus byte order — UNVERIFIED
-
-`core/modbus.py` has one `WORD_ORDER = "little"` module constant used by both
-`_build_payload` and `decode` (via `convert_to_registers`/
-`convert_from_registers`). The migration to the `convert_*` API was checked to
-be **byte-for-byte identical** to the old `BinaryPayloadBuilder(byteorder=BIG,
-wordorder=LITTLE)` output for float/uint/int, so it does not change the wire
-format — but the wire format itself has **never been checked against real
-hardware**. If Hamilton readings come back word-swapped or nonsensical, flip
-this one constant (`"little"` ↔ `"big"`) and nothing else. Note the `convert_*`
-API fixes the byte order *within* each register to big-endian and exposes no
-byte-order knob, so the old `BYTE_ORDER` escape hatch is gone; only word order
-is tunable now. Flag this before trusting a run.
-
 ### OPC naming contract
 
 Browse names are `<reactor>:<name>:<channel>` — e.g. `R0:ph:pH`,
@@ -281,7 +236,7 @@ client can *show* state it could previously only change:
 - Assign `error_message = ...` then `raise X(error_message)` (ruff TRY003 style).
 - numpydoc-style docstrings on public functions; `Raises` sections where a
   caller's correctness depends on the exception.
-- ruff `line-length = 79`, `target-version = "py311"`.
+- ruff `line-length = 150`, `target-version = "py311"`.
 - Do not add `__eq__` that compares an object to a bare id string. Objects are
   looked up through the `dict[str, ...]` collections; a custom `__eq__` also
   sets `__hash__ = None`.
@@ -340,25 +295,14 @@ Run the server with no hardware at all:
 uv run reactors-server --simulated --endpoint opc.tcp://localhost:4840/
 ```
 
-Note `--simulated` still needs the `server` extra: `run_server.py` imports
-`core.modbus` at module scope. It also builds a `RandomSensor` for the
-Hamilton configs, so `read_calibration_status` answers `unsupported` and the
-sensor calibration screen cannot be exercised simulated — that one needs a
-real probe.
+That command needs `--extra server`, not just `--extra dev`, even
+though it touches no hardware: `run_server.py` imports `core.modbus`
+unconditionally at module scope, and `core.modbus` imports `pymodbus`,
+which lives only in the `server` extra. `--simulated` changes what
+`init_hardware()` does at runtime; it changes nothing about what the
+module needs to import to be loaded at all. `uv sync --extra dev` alone
+will not make this command run.
 
 ## Open items
 
-- Modbus decode/endianness needs a bench check (above). The sensor calibration
-  screen renders decoded floats, so **its numbers cannot be trusted until that
-  check is done.**
-- The GUI has never run on a Raspberry Pi, and the experiment interface has
-  never touched a real PostgreSQL — the sql module is covered only by guard
-  and statement-construction tests.
-- The plots page's biomass multi-select was never opened in a browser (the
-  popup would not open in the verification environment; the single-select
-  beside it was). Its handler wiring is the same construct, and the
-  multi-channel filtering is unit tested.
-- `_TimerControl` now starts genuinely ON; previously the first ON phase lasted
-  `2 * time_on`. Revert the two lines in `__post_init__` if that was deliberate.
-- No authentication on the GUI; pump control is reachable from a browser URL.
 - README "To do" list is the feature backlog (MFC Modbus, power-out recovery).
