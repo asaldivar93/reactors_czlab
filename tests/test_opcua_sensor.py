@@ -157,6 +157,11 @@ class TestChannelIndex:
             assert sensor.channels[index] is channel
             assert var.name.endswith(f":{channel.units}")
 
+    async def test_sensor_channels_are_read_only(self, sensor_node) -> None:
+        """A client cannot publish a typed value as if the probe read it."""
+        _, _, node = sensor_node
+        assert all(not variable.writable for variable in node.variables)
+
 
 class TestReadCalibrationStatus:
     """The on-demand status read the calibration screen uses."""

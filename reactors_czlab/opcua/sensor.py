@@ -50,7 +50,6 @@ class SensorOpc:
                 f"{self.id}:{channel.units}",
                 0.0,
             )
-            await var.set_writable()
             await var.write_attribute(
                 ua.AttributeIds.Description,
                 ua.DataValue(ua.LocalizedText(Text=channel.description)),

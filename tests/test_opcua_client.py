@@ -63,6 +63,9 @@ class _StubClient:
 
     def __init__(self) -> None:
         self.subscription = _StubSubscription()
+        self.attribute_reads: list[tuple[list[str], object]] = []
+        self.descriptions: dict[str, str] = {}
+        self.values: dict[str, object] = {}
 
     async def create_subscription(
         self,
@@ -75,6 +78,28 @@ class _StubClient:
     def get_node(self, nodeid: str) -> _StubNode:
         """Wrap a node id the way asyncua does."""
         return _StubNode(nodeid)
+
+    async def read_attributes(
+        self,
+        nodes: list[_StubNode],
+        attribute: object,
+    ) -> list[object]:
+        """Return LocalizedText-shaped description values."""
+        self.attribute_reads.append(([node.nodeid for node in nodes], attribute))
+        return [
+            types.SimpleNamespace(
+                Value=types.SimpleNamespace(
+                    Value=types.SimpleNamespace(
+                        Text=self.descriptions[node.nodeid],
+                    ),
+                ),
+            )
+            for node in nodes
+        ]
+
+    async def read_values(self, nodes: list[_StubNode]) -> list[object]:
+        """Return values for a batch of nodes."""
+        return [self.values[node.nodeid] for node in nodes]
 
 
 def _client_with(module: Any, actuator_channels: list[str]) -> Any:
@@ -171,15 +196,10 @@ def test_every_sensor_channel_is_archived(client_module: Any) -> None:
     assert archived == {"R0:ph:pH", "R0:spectral:nm415"}
 
 
-async def test_display_only_variables_are_still_subscribed(
+async def test_the_subscribed_set_is_exactly_the_archived_set(
     client_module: Any,
 ) -> None:
-    """The GUI reads control config and fitted lines off the subscription.
-
-    They are published by the server but were never watched, so a client
-    had no live view of them at all - only an explicit read would do,
-    and nothing re-read them when an operator changed a gain.
-    """
+    """Subscribe what is archived; read everything else on demand."""
     opc = _client_with(
         client_module,
         ["curr_value", "total_volume", "cal_a", "kp", "setpoint"],
@@ -188,8 +208,40 @@ async def test_display_only_variables_are_still_subscribed(
     await opc.init_subscriptions()
 
     watched = {node.nodeid for node in opc.client.subscription.subscribed}
-    assert watched == set(opc.variables)
-    assert "R0:pwm0:kp" in watched
+    archived = {
+        nodeid
+        for nodeid, info in opc.variables.items()
+        if opc.archives(nodeid, info)
+    }
+    assert watched == archived
+    assert "R0:pwm0:kp" not in watched
+
+
+async def test_read_many_uses_one_client_batch(client_module: Any) -> None:
+    """On-demand panels do not turn into one round trip per variable."""
+    opc = _client_with(client_module, [])
+    opc.client.values = {"n1": 1.0, "n2": 2.0}
+
+    assert await opc.read_many(["n1", "n2"]) == [1.0, 2.0]
+
+
+async def test_sensor_descriptions_are_batch_read(client_module: Any) -> None:
+    """Every sensor description survives browse in one attribute call."""
+    opc = _client_with(client_module, [])
+    opc.sensor_vars = {
+        "n1": {"reactor": "R0", "name": "do", "channel": "ppm"},
+        "n2": {"reactor": "R0", "name": "ph", "channel": "pH"},
+    }
+    opc.client.descriptions = {
+        "n1": "dissolved_oxygen",
+        "n2": "acidity",
+    }
+
+    await opc._read_sensor_descriptions()
+
+    assert len(opc.client.attribute_reads) == 1
+    assert opc.sensor_vars["n1"]["description"] == "dissolved_oxygen"
+    assert opc.sensor_vars["n2"]["description"] == "acidity"
 
 
 async def _notify(opc: Any, nodeid: str, value: float) -> None:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from reactors_czlab.core.control import (
     _PidControl,
     _TimerControl,
@@ -316,3 +318,65 @@ async def test_update_value_publishes_the_pump_totals(
     assert node.total_volume.value == 3.25
     assert node.cal_a.value == 0.01
     assert node.cal_r2.value == 1.0
+
+
+async def test_update_value_skips_unchanged_pump_values(
+    make_calibrated_actuator,
+) -> None:
+    """Unchanged totals and fit values cost no server writes."""
+    actuator = make_calibrated_actuator()
+    node = ActuatorOpc(actuator)
+    node.curr_value = _StubVariable(0.0)
+    node.total_volume = _StubVariable(0.0)
+    node.cal_a = _StubVariable(0.01)
+    node.cal_b = _StubVariable(0.0)
+    node.cal_r2 = _StubVariable(1.0)
+
+    await node.update_value()
+
+    assert node.total_volume.writes == []
+    assert node.cal_a.writes == []
+    assert node.cal_b.writes == []
+    assert node.cal_r2.writes == []
+
+
+def test_get_control_config_round_trips_every_pid_field(
+    make_calibrated_actuator,
+) -> None:
+    """The on-demand payload mirrors the running object, not stale nodes."""
+    actuator = make_calibrated_actuator()
+    actuator.set_control_config(
+        ControlConfig(
+            ControlMethod.pid,
+            output_unit=OutputUnit.flow,
+            setpoint=7.1,
+            kp=2.0,
+            ki=3.0,
+            kd=4.0,
+            backwards=True,
+            auto_integral_band=False,
+            min_integral=1.0,
+            max_integral=5.0,
+        ),
+    )
+    state = json.loads(ActuatorOpc(actuator).control_config_json())
+
+    assert state["method"] == "pid"
+    assert state["output_unit"] == "flow"
+    assert state["setpoint"] == 7.1
+    assert (state["kp"], state["ki"], state["kd"]) == (2.0, 3.0, 4.0)
+    assert state["backwards"] is True
+    assert state["auto_integral_band"] is False
+    assert (state["min_integral"], state["max_integral"]) == (1.0, 5.0)
+
+
+def test_get_control_config_lists_server_enum_options(
+    make_calibrated_actuator,
+) -> None:
+    """The GUI derives index-to-name mappings from the server itself."""
+    state = json.loads(
+        ActuatorOpc(make_calibrated_actuator()).control_config_json(),
+    )
+
+    assert state["methods"] == ["manual", "timer", "on_boundaries", "pid"]
+    assert state["output_units"] == ["duty", "flow", "volume"]

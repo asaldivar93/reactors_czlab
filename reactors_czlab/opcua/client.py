@@ -35,9 +35,9 @@ QUEUE_MAXSIZE = 1000
 NAME_PARTS = 3
 
 #: Actuator channels archived to the ``data`` table. Every actuator
-#: variable is published by the server, readable by any OPC client and
-#: - since the GUI needs live control config and fitted lines -
-#: subscribed to; only the ones named here are *stored*.
+#: variable is published by the server and remains readable, but only
+#: archival series are subscribed to; configuration and calibration are
+#: read on demand.
 #: ``curr_value`` is the duty last written to the pin, ``total_volume``
 #: the mL a pump has delivered since the server started - both are time
 #: series ``run_plots.py`` filters on. The ``cal_*`` and control-config
@@ -136,6 +136,7 @@ class OpcClient:
 
         try:
             self.sensor_vars = await self.get_sensor_vars()
+            await self._read_sensor_descriptions()
             self.actuator_vars = await self.get_actuator_vars()
             self.variables = {**self.sensor_vars, **self.actuator_vars}
             self.methods = await self.get_methods()
@@ -172,6 +173,29 @@ class OpcClient:
         """Get a dict of {nodeid: info} for actuators."""
         objects = self.client.nodes.objects
         return await self.match_tree(objects, ACTUATORS_NODE_RE)
+
+    async def _read_sensor_descriptions(self) -> None:
+        """Batch the Description attribute into the sensor browse model."""
+        if not self.sensor_vars:
+            return
+        nodes = [self.client.get_node(nodeid) for nodeid in self.sensor_vars]
+        values = await self.client.read_attributes(
+            nodes,
+            ua.AttributeIds.Description,
+        )
+        for info, data_value in zip(
+            self.sensor_vars.values(),
+            values,
+            strict=True,
+        ):
+            localized = (
+                data_value.Value.Value
+                if data_value.Value is not None
+                else None
+            )
+            info["description"] = (
+                localized.Text if localized is not None else ""
+            )
 
     async def match_tree(
         self,
@@ -239,7 +263,7 @@ class OpcClient:
         return methods
 
     async def init_subscriptions(self) -> None:
-        """Create a subscription to the sensor and actuator variables."""
+        """Subscribe to exactly the variables archived to the database."""
         params = ua.CreateSubscriptionParameters()
         params.RequestedPublishingInterval = 500
         params.RequestedMaxKeepAliveCount = 60
@@ -247,34 +271,31 @@ class OpcClient:
         params.MaxNotificationsPerPublish = 0
         sub = await self.client.create_subscription(params, self)
 
-        # Subscribe to everything that was browsed. What is *archived* is
-        # a separate decision, taken per notification by archives()
-        # below: a user interface needs the control config and the
-        # fitted pump line live, and neither belongs in the data table.
+        # Subscribe what is archived; read every other published value on
+        # demand. This keeps the Pi's monitored-item state aligned with the
+        # only stream this client consumes continuously.
         vars_to_sub = [
-            self.client.get_node(nodeid) for nodeid in self.variables
+            self.client.get_node(nodeid)
+            for nodeid, info in self.variables.items()
+            if self.archives(nodeid, info)
         ]
         await sub.subscribe_data_change(vars_to_sub)
 
-        # The count at INFO, the names at DEBUG. Since this subscribes to
-        # every browsed variable rather than the archived handful, the
-        # full list is over three hundred names - one INFO line that
-        # buries every other message in the log it shares with the GUI.
-        archived = sum(
-            1
-            for nodeid, info in self.variables.items()
-            if self.archives(nodeid, info)
-        )
         _logger.info(
             "Subscribed to %s variables, %s of them archived",
             len(vars_to_sub),
-            archived,
+            len(vars_to_sub),
         )
         if _logger.isEnabledFor(logging.DEBUG):
             names = [
                 (await node.read_browse_name()).Name for node in vars_to_sub
             ]
             _logger.debug("Subscribed to variables %s", names)
+
+    async def read_many(self, nodeids: list[str]) -> list[object]:
+        """Read many variable values in one OPC Read service call."""
+        nodes = [self.client.get_node(nodeid) for nodeid in nodeids]
+        return await self.client.read_values(nodes)
 
     def archives(self, nodeid: str, info: dict) -> bool:
         """Whether a notification for this variable belongs in the table.

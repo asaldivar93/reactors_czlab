@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import json
 import logging
 
+from asyncua import ua
 from nicegui import ui
 
-from reactors_czlab.core.data import ControlMethod, OutputUnit
+from reactors_czlab.core.data import OutputUnit
 from reactors_czlab.gui.control import (
+    CONFIG_FIELDS,
     build_config_args,
     fields_for,
 )
@@ -42,10 +45,25 @@ DEMAND_UNITS = {
 }
 
 
-def _current(reactor: str, actuator: str, channel: str) -> float | None:
-    """The running value of one config channel, for prefilling."""
-    value, _ = STATE.reading(reactor, actuator, channel)
-    return value
+async def read_control_config(
+    reactor: str,
+    actuator: str,
+) -> dict | None:
+    """Fetch the running config and enum options from the server."""
+    try:
+        payload = await STATE.call(
+            reactor,
+            actuator,
+            "get_control_config",
+        )
+        config = json.loads(payload)
+    except (LookupError, OSError, TypeError, json.JSONDecodeError, ua.UaError) as err:
+        _logger.warning("Could not read %s control config: %s", actuator, err)
+        return None
+    if not isinstance(config, dict):
+        _logger.warning("Unreadable control config payload for %s", actuator)
+        return None
+    return config
 
 
 async def open_control_dialog(reactor: str, actuator: str) -> None:
@@ -57,12 +75,20 @@ async def open_control_dialog(reactor: str, actuator: str) -> None:
     nothing at all.
     """
     _logger.info("Operator opened control config for %s", actuator)
-    await _build_dialog(reactor, actuator)
+    if not await _build_dialog(reactor, actuator):
+        ui.notify(
+            f"Could not read the running configuration for {actuator}",
+            type="negative",
+        )
 
 
-async def _build_dialog(reactor: str, actuator: str) -> None:
+async def _build_dialog(reactor: str, actuator: str) -> bool:
     """Build and show the dialog, prefilled from the running config."""
-    state = await _current_selection(reactor, actuator)
+    state = await read_control_config(reactor, actuator)
+    if state is None:
+        return False
+    methods = list(state["methods"])
+    units = list(state["output_units"])
 
     # Explicit height, not max-height: a percentage-height child inside
     # a max-height parent collapses to nothing.
@@ -73,13 +99,13 @@ async def _build_dialog(reactor: str, actuator: str) -> None:
         ui.label(f"Configure {actuator}").classes("text-lg font-semibold")
 
         method_select = ui.select(
-            [m.value for m in ControlMethod],
+            methods,
             value=state["method"],
             label="Control method",
         ).classes("w-full")
 
         unit_select = ui.select(
-            [u.value for u in OutputUnit],
+            units,
             value=state["output_unit"],
             label="Output unit",
         ).classes("w-full")
@@ -102,7 +128,7 @@ async def _build_dialog(reactor: str, actuator: str) -> None:
                         label = (
                             f"{label} - {DEMAND_UNITS[unit_select.value]}"
                         )
-                    current = _current(reactor, actuator, channel)
+                    current = state[channel]
                     if kind == "bool":
                         inputs[channel] = ui.switch(
                             label,
@@ -138,13 +164,13 @@ async def _build_dialog(reactor: str, actuator: str) -> None:
 
         async def apply() -> None:
             """Validate, then make one atomic server call."""
-            values = {
+            edited = {
                 channel: _field_value(widget)
                 for channel, widget in inputs.items()
             }
             missing = [
                 channel
-                for channel, value in values.items()
+                for channel, value in edited.items()
                 if value is None
             ]
             if missing:
@@ -155,9 +181,13 @@ async def _build_dialog(reactor: str, actuator: str) -> None:
                 return
 
             try:
+                values = {
+                    channel: state[channel] for channel in CONFIG_FIELDS
+                }
+                values.update(edited)
                 args = build_config_args(
-                    method_select.value,
-                    unit_select.value,
+                    methods.index(method_select.value),
+                    units.index(unit_select.value),
                     values,
                 )
             except (KeyError, ValueError) as err:
@@ -181,7 +211,14 @@ async def _build_dialog(reactor: str, actuator: str) -> None:
                     *args,
                 )
                 accepted, message = result
-            except (LookupError, OSError) as err:
+                latest = await read_control_config(reactor, actuator)
+                if latest is not None:
+                    state.clear()
+                    state.update(latest)
+                    method_select.set_value(state["method"])
+                    unit_select.set_value(state["output_unit"])
+                    render_fields()
+            except (LookupError, OSError, ua.UaError) as err:
                 accepted = False
                 message = f"Could not apply configuration: {err}"
             finally:
@@ -195,8 +232,6 @@ async def _build_dialog(reactor: str, actuator: str) -> None:
                 message,
             )
             ui.notify(message, type="positive" if accepted else "negative")
-            if accepted:
-                dialog.close()
 
         # Docked, so Save is reachable without scrolling the form.
         with ui.row().classes("w-full justify-end").style(
@@ -213,35 +248,7 @@ async def _build_dialog(reactor: str, actuator: str) -> None:
         render_fields()
 
     dialog.open()
-
-
-async def _current_selection(reactor: str, actuator: str) -> dict:
-    """The method and unit the actuator is running, for prefilling.
-
-    The server publishes both as UInt32 indices, so they are mapped back
-    to names here. An actuator whose variables have not been published
-    yet falls back to the server's own defaults.
-    """
-    methods = list(ControlMethod)
-    units = list(OutputUnit)
-
-    method_code = _current(reactor, actuator, "method")
-    unit_code = _current(reactor, actuator, "output_unit")
-
-    return {
-        "method": _decode(method_code, methods, ControlMethod.manual),
-        "output_unit": _decode(unit_code, units, OutputUnit.duty),
-    }
-
-
-def _decode(code: float | None, options: list, fallback: str) -> str:
-    """Map a published enum index back to its name."""
-    if code is None:
-        return fallback.value
-    index = int(code)
-    if 0 <= index < len(options):
-        return options[index].value
-    return fallback.value
+    return True
 
 
 def _field_value(widget: ui.element) -> object:

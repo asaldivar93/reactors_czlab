@@ -12,7 +12,12 @@ import pytest
 from reactors_czlab.gui.address import AddressBook
 
 SENSOR_VARS = {
-    "ns=2;i=10": {"reactor": "R0", "name": "ph", "channel": "pH"},
+    "ns=2;i=10": {
+        "reactor": "R0",
+        "name": "ph",
+        "channel": "pH",
+        "description": "acidity",
+    },
     "ns=2;i=11": {"reactor": "R0", "name": "ph", "channel": "oC"},
     "ns=2;i=12": {"reactor": "R0", "name": "do", "channel": "ppm"},
     "ns=2;i=13": {"reactor": "R1", "name": "ph", "channel": "pH"},
@@ -50,6 +55,15 @@ class TestVariables:
     def test_finds_a_sensor_channel(self, book: AddressBook) -> None:
         """The three-part key is how every page asks."""
         assert book.variable("R0", "ph", "pH") == "ns=2;i=10"
+
+    def test_sensor_description_survives_into_the_address_book(
+        self,
+        book: AddressBook,
+    ) -> None:
+        """A bare unit can be explained by server-owned metadata."""
+        refs = book.sensors("R0")["ph"]
+        ph = next(ref for ref in refs if ref.channel == "pH")
+        assert ph.description == "acidity"
 
     def test_finds_an_actuator_channel(self, book: AddressBook) -> None:
         """Actuator variables are indexed the same way."""

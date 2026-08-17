@@ -64,30 +64,34 @@ class ActuatorOpc:
     async def update_value(self) -> None:
         """Publish the actuator output and the pump data.
 
-        Only ``curr_value`` is change-gated: it is the one variable with
-        a cheap comparison already to hand, ``channel.old_value``, which
-        is what the actuator last pushed to the hardware. The pump
-        variables are rewritten unconditionally on every sample, and
-        asyncua notifies subscribers of a write whether or not the value
-        moved, so ``total_volume`` lands in the ``data`` table once per
-        sampling period - a sampled series of a monotone counter, which
-        is what a delivered-volume trace should be.
+        Every write is change-gated. asyncua's default StatusValue trigger
+        already suppresses notifications for identical values, so rewriting
+        constants only costs work on the Pi. ``total_volume`` is therefore a
+        step series: a row appears when delivered volume actually changes.
         """
-        published = await self.curr_value.get_value()
         # old_value is what write_output() last pushed to the hardware.
         current = self.actuator.channel.old_value
-        if current != published:
-            await self.curr_value.write_value(float(current))
+        if await self._publish_if_changed(self.curr_value, current):
             _logger.debug("Updated %s with value %s", self.id, current)
 
-        await self.total_volume.write_value(
-            float(self.actuator.dispenser.total_volume),
+        await self._publish_if_changed(
+            self.total_volume,
+            self.actuator.dispenser.total_volume,
         )
         cal = self.actuator.channel.calibration
         if cal is not None:
-            await self.cal_a.write_value(float(cal.a))
-            await self.cal_b.write_value(float(cal.b))
-            await self.cal_r2.write_value(float(cal.r2))
+            await self._publish_if_changed(self.cal_a, cal.a)
+            await self._publish_if_changed(self.cal_b, cal.b)
+            await self._publish_if_changed(self.cal_r2, cal.r2)
+
+    @staticmethod
+    async def _publish_if_changed(variable: Node, value: float) -> bool:
+        """Write one float only when its published value differs."""
+        value = float(value)
+        if await variable.get_value() == value:
+            return False
+        await variable.write_value(value)
+        return True
 
     async def init_node(
         self,
@@ -394,7 +398,7 @@ class ActuatorOpc:
         )
 
     async def init_control_methods(self, idx: int) -> None:
-        """Expose the single atomic control-configuration command."""
+        """Expose atomic configuration and its on-demand read model."""
 
         @uamethod
         async def apply_control_config(
@@ -467,6 +471,81 @@ class ActuatorOpc:
             inargs,
             outargs,
         )
+
+        @uamethod
+        def get_control_config(parent: Node) -> str:
+            """Return the running configuration and enum options."""
+            return self.control_config_json()
+
+        await self.node.add_method(
+            idx,
+            f"{self.id}:get_control_config",
+            get_control_config,
+            [],
+            [_argument("Config", ua.ObjectIds.String)],
+        )
+
+    def control_config_json(self) -> str:
+        """Serialise the controller configuration that is actually running.
+
+        Returns
+        -------
+        str
+            JSON containing every configuration field plus enum names in
+            the server's own index order.
+
+        """
+        controller = self.actuator.controller
+        method = controller.method
+        config = ControlConfig(
+            method=method,
+            output_unit=self.actuator.dispenser.unit,
+        )
+
+        match method:
+            case ControlMethod.manual:
+                config.value = controller.value
+            case ControlMethod.timer:
+                config.time_on = controller.time_on
+                config.time_off = controller.time_off
+                config.value = controller.value_on
+            case ControlMethod.on_boundaries:
+                config.lb = controller.lower_bound
+                config.ub = controller.upper_bound
+                config.value = controller.value_on
+                config.backwards = controller.backwards
+            case ControlMethod.pid:
+                config.setpoint = controller.setpoint
+                config.kp = controller.kp
+                config.ki = controller.ki
+                config.kd = controller.kd
+                config.backwards = controller.backwards
+                config.min_integral = controller.min_integral
+                config.max_integral = controller.max_integral
+                config.auto_integral_band = (
+                    controller._integral_band_is_default
+                )
+
+        payload = {
+            "method": method.value,
+            "output_unit": config.output_unit.value,
+            "value": config.value,
+            "time_on": config.time_on,
+            "time_off": config.time_off,
+            "lb": config.lb,
+            "ub": config.ub,
+            "setpoint": config.setpoint,
+            "kp": config.kp,
+            "ki": config.ki,
+            "kd": config.kd,
+            "min_integral": config.min_integral,
+            "max_integral": config.max_integral,
+            "auto_integral_band": config.auto_integral_band,
+            "backwards": config.backwards,
+            "methods": [item.value for item in control_method.values()],
+            "output_units": [item.value for item in output_unit_map.values()],
+        }
+        return json.dumps(payload)
 
     def calibration_json(self) -> str:
         """Serialise the pump's calibration and its run state.

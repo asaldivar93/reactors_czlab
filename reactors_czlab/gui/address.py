@@ -31,6 +31,7 @@ class VariableRef:
     reactor: str
     name: str
     channel: str
+    description: str = ""
 
 
 @dataclass
@@ -109,6 +110,7 @@ class AddressBook:
                     reactor=info["reactor"],
                     name=info["name"],
                     channel=info["channel"],
+                    description=info.get("description", ""),
                 )
                 book.variables[(ref.reactor, ref.name, ref.channel)] = nodeid
                 refs.setdefault(ref.reactor, {}).setdefault(
