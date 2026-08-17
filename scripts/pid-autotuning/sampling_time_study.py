@@ -26,20 +26,28 @@ from __future__ import annotations
 import argparse
 import csv
 import os
-import sys
-
-import numpy as np
-
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import matplotlib
+import numpy as np
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from ph_process_model import Chemistry, PhPlant, PlantParams
-from relay_autotune import RelayConfig, run_relay_experiment, to_code_gains, tuning_rules
-from simulate_ph_loop import Pump, SplitRangeConfig, SplitRangeController, metrics, settling_time, simulate
+from reactors_czlab.core.autotune import (
+    Pump,
+    SplitRangeConfig,
+    SplitRangeController,
+    metrics,
+    run_relay_experiment,
+    settling_time,
+    simulate,
+    to_code_gains,
+    tuning_rules,
+)
+from reactors_czlab.core.autotune import (
+    RelayTuneConfig as RelayConfig,
+)
+from reactors_czlab.core.ph_model import Chemistry, PhPlant, PlantParams
 
 CHEM = Chemistry()
 DT_VALS = [2.0, 5.0, 10.0, 20.0, 40.0]
