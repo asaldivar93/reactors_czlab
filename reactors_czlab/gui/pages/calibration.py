@@ -19,6 +19,7 @@ from reactors_czlab.core.hamilton import (
     CALIBRATION_POINTS,
     status_text,
 )
+from reactors_czlab.gui.components.confirm import confirm, in_flight
 from reactors_czlab.gui.components.shell import (
     disable_when_read_only,
     header,
@@ -205,7 +206,8 @@ def _point_panel(
         async def read() -> None:
             """Re-read the point's stored state from the sensor."""
             _logger.info("Operator read %s of %s", point, sensor)
-            show(await read_point(reactor, sensor, point))
+            with in_flight(read_button):
+                show(await read_point(reactor, sensor, point))
 
         with ui.row().classes("items-end w-full").style("gap: 0.5rem"):
             new_value = ui.number(
@@ -219,23 +221,33 @@ def _point_panel(
                 if new_value.value is None:
                     ui.notify("Enter a calibration value", type="warning")
                     return
+                if not await confirm(
+                    f"Write {point.upper()} on {sensor}?",
+                    f"The probe will store {float(new_value.value):.3f} "
+                    "as this calibration point.",
+                ):
+                    return
                 _logger.info(
                     "Operator calibrating %s %s to %s",
                     sensor,
                     point,
                     new_value.value,
                 )
-                try:
-                    result = await STATE.call(
-                        reactor,
-                        sensor,
-                        "calibration",
-                        number,
-                        float(new_value.value),
-                    )
-                except (LookupError, OSError) as err:
-                    ui.notify(f"Calibration failed: {err}", type="negative")
-                    return
+                with in_flight(apply_button):
+                    try:
+                        result = await STATE.call(
+                            reactor,
+                            sensor,
+                            "calibration",
+                            number,
+                            float(new_value.value),
+                        )
+                    except (LookupError, OSError) as err:
+                        ui.notify(
+                            f"Calibration failed: {err}",
+                            type="negative",
+                        )
+                        return
 
                 # The write's out-arguments are Status, Quality, Value -
                 # no process value - so they are reshaped into what
@@ -253,12 +265,12 @@ def _point_panel(
                         type="negative",
                     )
 
-            disable_when_read_only(
+            apply_button = disable_when_read_only(
                 ui.button("Apply", on_click=apply).props(
                     "size=sm color=primary",
                 ),
             )
-            disable_when_read_only(
+            read_button = disable_when_read_only(
                 ui.button("Read", on_click=read).props("outline size=sm"),
             )
 
@@ -412,24 +424,24 @@ def _collected_points(view) -> None:
 async def _run_controls(reactor: str, pump: str, view, reload) -> None:
     """Run a point, record a volume, fit, and the housekeeping calls."""
 
-    async def call(method: str, *args: object) -> None:
+    async def call(method: str, *args: object) -> bool:
         """Call one CalibrationRun method and show what it said."""
         _logger.info("Operator called %s on %s %s", method, pump, args)
         try:
             status = await STATE.call(reactor, pump, method, *args)
         except (LookupError, OSError) as err:
             ui.notify(f"{method} failed: {err}", type="negative")
-            return
+            return False
         # These strings are written for an operator by core.calibration
         # and core.data; showing them verbatim is the point.
         ui.notify(str(status))
-        await reload()
+        return True
 
     async def slow_call(
         method: str,
         *args: object,
         timeout: float,
-    ) -> None:
+    ) -> bool:
         """Call a CalibrationRun method that runs the pump."""
         _logger.info("Operator called %s on %s %s", method, pump, args)
         try:
@@ -442,9 +454,9 @@ async def _run_controls(reactor: str, pump: str, view, reload) -> None:
             )
         except (LookupError, OSError) as err:
             ui.notify(f"{method} failed: {err}", type="negative")
-            return
+            return False
         ui.notify(str(status))
-        await reload()
+        return True
 
     with ui.card().classes("w-full"):
         ui.label("Run a point").classes("text-sm font-semibold")
@@ -459,6 +471,13 @@ async def _run_controls(reactor: str, pump: str, view, reload) -> None:
                 if problem:
                     ui.notify(problem, type="warning")
                     return
+                if not await confirm(
+                    f"Run {pump}?",
+                    f"The pump will run at {duty.value:.0f} counts for "
+                    f"{seconds.value:.0f} seconds.",
+                    danger=True,
+                ):
+                    return
                 ui.notify(
                     f"Running {pump} at {duty.value:.0f} for "
                     f"{seconds.value:.0f}s...",
@@ -466,12 +485,15 @@ async def _run_controls(reactor: str, pump: str, view, reload) -> None:
                 # The one call that outlives asyncua's reconnect
                 # watchdog, so it goes on its own session - see
                 # OpcClient.call_slow_method.
-                await slow_call(
-                    "calibrate_point",
-                    float(duty.value),
-                    float(seconds.value),
-                    timeout=float(seconds.value) + CALL_MARGIN_SECONDS,
-                )
+                with in_flight(run_button):
+                    changed = await slow_call(
+                        "calibrate_point",
+                        float(duty.value),
+                        float(seconds.value),
+                        timeout=float(seconds.value) + CALL_MARGIN_SECONDS,
+                    )
+                if changed:
+                    await reload()
 
             run_button = ui.button("Run", on_click=run_point).props(
                 "color=primary",
@@ -501,7 +523,10 @@ async def _run_controls(reactor: str, pump: str, view, reload) -> None:
                 if problem:
                     ui.notify(problem, type="warning")
                     return
-                await call("record_point", float(volume.value))
+                with in_flight(record_button):
+                    changed = await call("record_point", float(volume.value))
+                if changed:
+                    await reload()
 
             record_button = ui.button("Record", on_click=record)
             if not view.can_record:
@@ -511,10 +536,15 @@ async def _run_controls(reactor: str, pump: str, view, reload) -> None:
                 disable_when_read_only(record_button)
 
     with ui.row().classes("flex-wrap").style("gap: 0.5rem"):
-        fit_button = ui.button(
-            "Fit calibration",
-            on_click=lambda: call("fit_calibration"),
-        ).props("color=primary")
+        async def fit() -> None:
+            with in_flight(fit_button):
+                changed = await call("fit_calibration")
+            if changed:
+                await reload()
+
+        fit_button = ui.button("Fit calibration", on_click=fit).props(
+            "color=primary",
+        )
         if not view.can_fit:
             fit_button.disable()
             fit_button.tooltip(
@@ -523,23 +553,55 @@ async def _run_controls(reactor: str, pump: str, view, reload) -> None:
         else:
             disable_when_read_only(fit_button)
 
-        for label, method in (
-            ("Clear points", "clear_points"),
-            ("Reload from disk", "reload_calibration"),
+        _calibration_method_button(
+            "Clear points",
+            "clear_points",
+            call,
+            reload,
+            view.can_edit,
+            danger=True,
+        )
+        _calibration_method_button(
+            "Reload from disk",
+            "reload_calibration",
+            call,
+            reload,
+            view.can_edit,
+        )
+
+    _set_duties_card(view, call, reload)
+
+
+def _calibration_method_button(
+    label: str,
+    method: str,
+    call,
+    reload,
+    enabled: bool,
+    danger: bool = False,
+) -> None:
+    """Build one in-flight-locked calibration housekeeping button."""
+
+    async def invoke() -> None:
+        if danger and not await confirm(
+            "Clear calibration points?",
+            "All collected run points will be discarded.",
+            danger=True,
         ):
-            button = ui.button(
-                label,
-                on_click=lambda m=method: call(m),
-            ).props("outline")
-            if not view.can_edit:
-                button.disable()
-            else:
-                disable_when_read_only(button)
+            return
+        with in_flight(button):
+            changed = await call(method)
+        if changed:
+            await reload()
 
-    _set_duties_card(view, call)
+    button = ui.button(label, on_click=invoke).props("outline")
+    if enabled:
+        disable_when_read_only(button)
+    else:
+        button.disable()
 
 
-def _set_duties_card(view, call) -> None:
+def _set_duties_card(view, call, reload) -> None:
     """Adjust the stall floor and bolus duty without a refit."""
     cal = view.calibration
     with ui.card().classes("w-full"):
@@ -564,11 +626,14 @@ def _set_duties_card(view, call) -> None:
                 if min_duty.value is None or dispense.value is None:
                     ui.notify("Both duties are needed", type="warning")
                     return
-                await call(
-                    "set_duties",
-                    float(min_duty.value),
-                    float(dispense.value),
-                )
+                with in_flight(button):
+                    changed = await call(
+                        "set_duties",
+                        float(min_duty.value),
+                        float(dispense.value),
+                    )
+                if changed:
+                    await reload()
 
             button = ui.button("Apply", on_click=apply).props("outline")
             if not view.can_edit:

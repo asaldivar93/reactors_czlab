@@ -130,6 +130,7 @@ def actuator_panel(
     reactor: str,
     configs: dict[str, dict | None],
     pairings: list[dict],
+    calibrating: set[str],
 ) -> Callable[[list[dict]], None]:
     """One card per actuator. Built once; only the readings refresh."""
     if STATE.book is None:
@@ -148,6 +149,7 @@ def actuator_panel(
             name,
             configs.get(name),
             pairings,
+            name in calibrating,
         )
 
     def update_pairings(rows: list[dict]) -> None:
@@ -163,6 +165,7 @@ def _actuator_card(
     name: str,
     config: dict | None,
     pairings: list[dict],
+    calibrating: bool,
 ) -> ui.element:
     """Build one actuator card and return its pairing label."""
     with ui.card().classes("w-full"):
@@ -175,16 +178,19 @@ def _actuator_card(
             def update_config(latest: dict) -> None:
                 config_label.set_text(control_summary(latest))
 
-            disable_when_read_only(
-                ui.button(
-                    "Configure",
-                    on_click=lambda: open_control_dialog(
-                        reactor,
-                        name,
-                        update_config,
-                    ),
-                ).props("outline size=sm"),
-            )
+            configure = ui.button(
+                "Configure",
+                on_click=lambda: open_control_dialog(
+                    reactor,
+                    name,
+                    update_config,
+                ),
+            ).props("outline size=sm")
+            if calibrating:
+                configure.disable()
+                configure.tooltip("Calibration currently owns this actuator")
+            else:
+                disable_when_read_only(configure)
         pairing_label = ui.label(pairing_summary(name, pairings)).classes(
             "text-xs text-gray-500",
         )

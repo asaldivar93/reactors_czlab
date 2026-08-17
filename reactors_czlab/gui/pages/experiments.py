@@ -15,6 +15,7 @@ import logging
 
 from nicegui import ui
 
+from reactors_czlab.gui.components.confirm import confirm, in_flight
 from reactors_czlab.gui.components.shell import (
     disable_when_read_only,
     header,
@@ -151,21 +152,41 @@ def _experiment_card(row: dict, reload) -> None:
 
         with ui.row().classes("flex-wrap").style("gap: 0.5rem"):
             if row["state"] == "created":
+                async def start() -> None:
+                    with in_flight(start_button):
+                        await _start(row, reload)
+
+                start_button = ui.button(
+                    "Start",
+                    on_click=start,
+                ).props("size=sm color=primary")
                 disable_when_read_only(
-                    ui.button(
-                        "Start",
-                        on_click=lambda r=row: _start(r, reload),
-                    ).props("size=sm color=primary"),
+                    start_button,
                 )
             elif row["state"] == "running":
-                ui.button(
+                async def stop() -> None:
+                    if not await confirm(
+                        f"Stop {row['name']}?",
+                        "The experiment will release its reactors. "
+                        "Recording will continue until paused separately.",
+                        danger=True,
+                    ):
+                        return
+                    with in_flight(stop_button):
+                        await _stop(row, reload)
+
+                stop_button = ui.button(
                     "Stop",
-                    on_click=lambda r=row: _stop(r, reload),
+                    on_click=stop,
                 ).props("size=sm color=warning")
             else:
+                async def start_again() -> None:
+                    with in_flight(restart):
+                        await _start(row, reload)
+
                 restart = ui.button(
                     "Start again",
-                    on_click=lambda r=row: _start(r, reload),
+                    on_click=start_again,
                 ).props("size=sm outline")
                 restart.tooltip(
                     "Recording resumes under the same experiment name",

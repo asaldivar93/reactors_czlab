@@ -18,6 +18,7 @@ import logging
 
 from nicegui import ui
 
+from reactors_czlab.gui.components.confirm import confirm, in_flight
 from reactors_czlab.gui.components.shell import disable_when_read_only
 from reactors_czlab.gui.state import STATE
 
@@ -188,6 +189,7 @@ async def pairing_panel(
     reactor: str,
     rows: list[dict] | None = None,
     on_change=None,
+    calibrating: set[str] | None = None,
 ) -> None:
     """The pairing table and the form that adds to it.
 
@@ -198,6 +200,7 @@ async def pairing_panel(
     """
     if rows is None:
         rows = await label_channels(reactor, await read_pairings(reactor))
+    calibrating = calibrating or set()
 
     container = ui.column().classes("w-full").style("gap: 0.5rem")
 
@@ -208,13 +211,18 @@ async def pairing_panel(
             on_change(fresh)
         container.clear()
         with container:
-            _render(reactor, fresh, reconcile)
+            _render(reactor, fresh, reconcile, calibrating)
 
     with container:
-        _render(reactor, rows, reconcile)
+        _render(reactor, rows, reconcile, calibrating)
 
 
-def _render(reactor: str, rows: list[dict], reconcile) -> None:
+def _render(
+    reactor: str,
+    rows: list[dict],
+    reconcile,
+    calibrating: set[str],
+) -> None:
     """Draw the table and the add form."""
     if STATE.book is None:
         ui.label("Not connected")
@@ -248,32 +256,69 @@ def _render(reactor: str, rows: list[dict], reconcile) -> None:
             "text-gray-500 text-sm",
         )
 
-    _add_form(reactor, rows, reconcile)
-    _unpair_buttons(reactor, rows, reconcile)
+    _add_form(reactor, rows, reconcile, calibrating)
+    _unpair_buttons(reactor, rows, reconcile, calibrating)
 
 
-def _unpair_buttons(reactor: str, rows: list[dict], reconcile) -> None:
+def _unpair_buttons(
+    reactor: str,
+    rows: list[dict],
+    reconcile,
+    calibrating: set[str],
+) -> None:
     """An Unpair button per current pairing."""
     if not rows:
         return
     with ui.row().classes("flex-wrap").style("gap: 0.5rem"):
         for row in rows:
-            label = f"Unpair {short_name(row['actuator'])}"
-            disable_when_read_only(
-                ui.button(
-                    label,
-                    on_click=lambda r=row: _unpair(reactor, r, reconcile),
-                ).props("outline size=sm color=warning"),
-            )
+            _unpair_button(reactor, row, reconcile, calibrating)
 
 
-def _add_form(reactor: str, rows: list[dict], reconcile) -> None:
+def _unpair_button(
+    reactor: str,
+    row: dict,
+    reconcile,
+    calibrating: set[str],
+) -> None:
+    """Build one confirmed, in-flight-locked Unpair button."""
+    actuator = short_name(row["actuator"])
+
+    async def unpair() -> None:
+        if not await confirm(
+            f"Unpair {actuator}?",
+            "The actuator will return to its own controller immediately.",
+        ):
+            return
+        with in_flight(button):
+            changed = await _unpair(reactor, row)
+        if changed:
+            await reconcile()
+
+    button = ui.button(
+        f"Unpair {actuator}",
+        on_click=unpair,
+    ).props("outline size=sm color=warning")
+    if actuator in calibrating:
+        button.disable()
+        button.tooltip("Calibration currently owns this actuator")
+    else:
+        disable_when_read_only(button)
+
+
+def _add_form(
+    reactor: str,
+    rows: list[dict],
+    reconcile,
+    calibrating: set[str],
+) -> None:
     """Sensor, channel and actuator selectors, plus the Pair button."""
     book = STATE.book
     sensors = book.sensors(reactor)
     already = paired_actuators(rows)
-    free = [name for name in sorted(book.actuators(reactor)) if name
-            not in already]
+    unpaired = [
+        name for name in sorted(book.actuators(reactor)) if name not in already
+    ]
+    free = [name for name in unpaired if name not in calibrating]
 
     if not sensors:
         return
@@ -309,18 +354,31 @@ def _add_form(reactor: str, rows: list[dict], reconcile) -> None:
         refresh_channels()
 
         async def pair() -> None:
-            await _pair(
-                reactor,
-                sensor_select.value,
-                channel_select.value,
-                actuator_select.value,
-                reconcile,
-            )
+            if not await confirm(
+                "Pair actuator?",
+                f"{actuator_select.value} will follow "
+                f"{sensor_select.value}:{channel_select.value}.",
+            ):
+                return
+            with in_flight(button):
+                changed = await _pair(
+                    reactor,
+                    sensor_select.value,
+                    channel_select.value,
+                    actuator_select.value,
+                )
+            if changed:
+                await reconcile()
 
         button = ui.button("Pair", on_click=pair).props("color=primary")
         if not free:
             button.disable()
-            button.tooltip("Every actuator on this reactor is already paired")
+            if unpaired:
+                button.tooltip("Calibration currently owns the free actuator")
+            else:
+                button.tooltip(
+                    "Every actuator on this reactor is already paired",
+                )
         else:
             disable_when_read_only(button)
 
@@ -330,8 +388,7 @@ async def _pair(
     sensor: str | None,
     channel: str | None,
     actuator: str | None,
-    reconcile,
-) -> None:
+) -> bool:
     """Validate and call set_pairing."""
     _logger.info(
         "Operator pairing %s:%s -> %s on %s",
@@ -342,7 +399,7 @@ async def _pair(
     )
     if not sensor or not channel or not actuator:
         ui.notify("Pick a sensor, a channel and an actuator", type="warning")
-        return
+        return False
 
     index = await channel_index(reactor, sensor, channel)
     if index is None:
@@ -350,7 +407,7 @@ async def _pair(
             f"Could not read the channel index of {sensor}:{channel}",
             type="negative",
         )
-        return
+        return False
 
     try:
         ok = await STATE.call(
@@ -363,7 +420,7 @@ async def _pair(
         )
     except (LookupError, OSError) as err:
         ui.notify(f"Pairing failed: {err}", type="negative")
-        return
+        return False
 
     if not ok:
         # Everything the server checks was checked above, so this is
@@ -374,10 +431,10 @@ async def _pair(
         )
     else:
         ui.notify(f"{actuator} now follows {sensor}:{channel}", type="positive")
-    await reconcile()
+    return True
 
 
-async def _unpair(reactor: str, row: dict, reconcile) -> None:
+async def _unpair(reactor: str, row: dict) -> bool:
     """Call unpair for one table row."""
     _logger.info("Operator unpairing %s on %s", row["actuator"], reactor)
     try:
@@ -391,7 +448,7 @@ async def _unpair(reactor: str, row: dict, reconcile) -> None:
         )
     except (LookupError, OSError) as err:
         ui.notify(f"Unpairing failed: {err}", type="negative")
-        return
+        return False
 
     if not ok:
         ui.notify(
@@ -400,4 +457,4 @@ async def _unpair(reactor: str, row: dict, reconcile) -> None:
         )
     else:
         ui.notify(f"{row['actuator']} unpaired", type="positive")
-    await reconcile()
+    return True

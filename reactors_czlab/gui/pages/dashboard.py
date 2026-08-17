@@ -8,6 +8,7 @@ test can reach it without a browser.
 from __future__ import annotations
 
 import asyncio
+import json
 
 from nicegui import ui
 
@@ -97,6 +98,17 @@ async def reactor_page(reactor: str) -> None:
             reactor,
             await read_pairings(reactor),
         )
+        calibrating = {
+            name
+            for name, running in zip(
+                actuators,
+                await asyncio.gather(
+                    *(_calibration_running(reactor, name) for name in actuators),
+                ),
+                strict=True,
+            )
+            if running
+        }
 
         with ui.row().classes("items-center").style("gap: 0.75rem"):
             active = (
@@ -114,13 +126,23 @@ async def reactor_page(reactor: str) -> None:
         sensor_panel(reactor)
 
         ui.label("Actuators").classes("text-lg font-semibold")
-        update_pairings = actuator_panel(reactor, configs, pairings)
+        update_pairings = actuator_panel(
+            reactor,
+            configs,
+            pairings,
+            calibrating,
+        )
 
         ui.label("Pairings").classes("text-lg font-semibold")
         # Awaited here rather than deferred to a timer: its first row
         # list depends on a network read, and awaiting means the first
         # paint already carries the published table.
-        await pairing_panel(reactor, pairings, update_pairings)
+        await pairing_panel(
+            reactor,
+            pairings,
+            update_pairings,
+            calibrating,
+        )
 
     def refresh() -> None:
         """Re-read the in-memory values.
@@ -133,3 +155,18 @@ async def reactor_page(reactor: str) -> None:
         actuator_readings.refresh()
 
     ui.timer(REFRESH_SECONDS, refresh)
+
+
+async def _calibration_running(reactor: str, actuator: str) -> bool:
+    """Whether the server reports a CalibrationRun in flight."""
+    if STATE.book is None or not STATE.book.has_method(
+        reactor,
+        actuator,
+        "get_calibration",
+    ):
+        return False
+    try:
+        payload = await STATE.call(reactor, actuator, "get_calibration")
+        return bool(json.loads(payload).get("running"))
+    except (LookupError, OSError, TypeError, ValueError):
+        return False

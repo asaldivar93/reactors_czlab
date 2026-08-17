@@ -213,6 +213,7 @@ async def _build_dialog(
             ]
             for control in controls:
                 control.disable()
+            apply_button.props("loading")
             try:
                 result = await STATE.call(
                     reactor,
@@ -234,6 +235,7 @@ async def _build_dialog(
                 accepted = False
                 message = f"Could not apply configuration: {err}"
             finally:
+                apply_button.props(remove="loading")
                 for control in controls:
                     control.enable()
 
