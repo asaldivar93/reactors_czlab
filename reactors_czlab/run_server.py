@@ -9,7 +9,7 @@ import logging
 from reactors_czlab.core.actuator import PlcActuator, RandomActuator
 from reactors_czlab.core.calibration import load_into
 from reactors_czlab.core.hardware import init_hardware
-from reactors_czlab.core.modbus import ModbusError, ModbusHandler
+from reactors_czlab.core.modbus import ModbusConfig, ModbusError, ModbusHandler
 from reactors_czlab.core.sensor import (
     HamiltonSensor,
     RandomSensor,
@@ -109,11 +109,7 @@ def build_reactors(*, simulated: bool = False) -> list[ReactorOpc]:
 
     init_hardware()
 
-    modbus_client = ModbusHandler(
-        port=MODBUS_PORT,
-        baudrate=MODBUS_BAUDRATE,
-        timeout=MODBUS_TIMEOUT,
-    )
+    modbus_client = ModbusHandler(ModbusConfig())
     tca = adafruit_tca9548a.TCA9548A(board.I2C())
 
     reactors = []

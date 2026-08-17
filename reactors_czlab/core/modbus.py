@@ -20,13 +20,8 @@ DATATYPE = ModbusSerialClient.DATATYPE
 
 valid_baudrates = {4800: 2, 9600: 3, 19200: 4, 38400: 5, 57600: 6, 115200: 7}
 
-# Word order used by the Hamilton Arc sensors. Encoding and decoding MUST
-# use the same value, so it lives here and nowhere else: if a reading comes
-# back word swapped, flip this one constant ("little" <-> "big") and nothing
-# else. The byte order *within* each register is fixed big-endian by the
-# convert_*_registers API (it exposes no byte-order knob), which matches the
-# old Endian.BIG byte order this handler used before the pymodbus 3.9
-# migration - only the word order was ever Endian.LITTLE.
+# PyModbus 3.9 exposes no Endian.BIG in convert_*_registers. Fixed is big-endian.
+# Hamilton uses word_order little
 WORD_ORDER = "little"
 
 #: Hamilton stores every measurement as a 32 bit value across two registers.
@@ -63,6 +58,30 @@ class ModbusRequest:
     values: list[int | float] | None = None
 
 
+@dataclass
+class ModbusConfig:
+    """Settings for modbus connection.
+
+    Parameters:
+    ----------
+    port: str
+        The serial port of the connection
+    baudrate: int
+        The speed of serial communication
+    timeout: float
+        Timeout
+
+    """
+
+    port: str = "/dev/ttyUSB0"
+    baudrate: int = 19200
+    timeout: float = 0.1
+    retries: int = 0
+    stopbits: int = 1
+    bytesize: int = 8
+    parity: str = "N"
+
+
 class ModbusHandler:
     """Handles generic Modbus requests and processing."""
 
@@ -74,34 +93,25 @@ class ModbusHandler:
         0x04: "Slave device failure",
     }
 
-    def __init__(
-        self,
-        port: str = "/dev/ttyUSB0",
-        baudrate: int = 19200,
-        timeout: float = 0.1,
-    ):
+    def __init__(self, config: ModbusConfig):
         """Initialize the Modbus handler.
 
         Parameters
         ----------
-        port: str
-            The serial port of the connection
-        baudrate: int
-            The speed of serial communication
-        timeout: float
-            Timeout
+        config: ModbusConfig
+            Settings for modbus connection.
 
         """
-        self.baudrate = baudrate
+        self.baudrate = config.baudrate
         self.client = ModbusSerialClient(
             framer=FramerType.RTU,
-            port=port,
+            port=config.port,
             baudrate=self.baudrate,
-            timeout=timeout,
-            retries=0,
-            stopbits=1,
-            bytesize=8,
-            parity="N",
+            timeout=config.timeout,
+            retries=config.retries,
+            stopbits=config.stopbits,
+            bytesize=config.bytesize,
+            parity=config.parity,
         )
         # Serialize all Modbus calls so only 1 sensor uses the
         # modbus line at a time
@@ -112,9 +122,9 @@ class ModbusHandler:
             thread_name_prefix="modbus",
         )
         if not self.client.connect():
-            error_message = f"Failed to connect to Modbus device at port {port}"
+            error_message = f"Failed to connect to Modbus device at port {config.port}"
             raise ModbusError(error_message)
-        _logger.info("Initialized ModbusHandler at port: %s", port)
+        _logger.info("Initialized ModbusHandler at port: %s", config.port)
 
     @property
     def baudrate(self) -> int:
@@ -264,7 +274,7 @@ class ModbusHandler:
         self,
         registers: Sequence[int],
         cast_type: str,
-    ) -> float | int:
+    ) -> (int | float | str | list[bool] | list[int] | list[float]):
         """Translate register values to variables.
 
         Parameters
