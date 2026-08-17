@@ -30,6 +30,8 @@ from reactors_czlab.core.data import (
 from reactors_czlab.core.dispenser import Dispenser
 from reactors_czlab.core.ph_model import Chemistry, state_from_ph
 
+NOISY_BASELINE = [7.0, 7.006, 6.994, 7.006, 6.994, 7.006, 6.994]
+
 
 def _configured_pair(make_calibrated_actuator, clock, *, period: float = 10.0):
     base = make_calibrated_actuator("R0:base")
@@ -180,16 +182,18 @@ def test_adaptation_scales_both_boluses_and_preserves_ratio(
         acknowledge_other_loops=True,
     )
     run, *_ = _started_run(make_calibrated_actuator, clock, config=config)
-    _finish_baseline(run, clock)
+    _finish_baseline(run, clock, NOISY_BASELINE)
+    # The cycle clears hysteresis but not 3*sigma, so it is not yet
+    # distinguishable enough from the measured baseline noise.
     clock.advance(10.0)
-    for ph in [7.04, 7.04, 6.96, 6.96] * 3:
+    for ph in [7.025, 7.025, 6.975, 6.975] * 3:
         _relay_step(run, clock, ph)
         if run.phase is AutotunePhase.adapting:
             break
 
     assert run.phase is AutotunePhase.adapting
-    assert run.base_bolus_ml == pytest.approx(0.15)
-    assert run.acid_bolus_ml == pytest.approx(0.30)
+    assert run.base_bolus_ml == pytest.approx(0.20)
+    assert run.acid_bolus_ml == pytest.approx(0.40)
     assert run.acid_bolus_ml / run.base_bolus_ml == pytest.approx(2.0)
 
 
@@ -203,9 +207,9 @@ def test_adaptation_fails_when_required_bolus_is_not_deliverable(
         acknowledge_other_loops=True,
     )
     run, *_ = _started_run(make_calibrated_actuator, clock, config=config, period=1.0)
-    _finish_baseline(run, clock)
+    _finish_baseline(run, clock, NOISY_BASELINE)
     clock.advance(1.0)
-    for ph in [7.03, 7.03, 6.97, 6.97] * 3:
+    for ph in [7.025, 7.025, 6.975, 6.975] * 3:
         _relay_step(run, clock, ph, period=1.0)
         if not run.is_active:
             break
@@ -225,10 +229,10 @@ def test_adaptation_fails_after_the_configured_attempt_limit(
         acknowledge_other_loops=True,
     )
     run, *_ = _started_run(make_calibrated_actuator, clock, config=config)
-    _finish_baseline(run, clock)
+    _finish_baseline(run, clock, NOISY_BASELINE)
     clock.advance(10.0)
 
-    for ph in [7.04, 7.04, 6.96, 6.96] * 12:
+    for ph in [7.025, 7.025, 6.975, 6.975] * 12:
         _relay_step(run, clock, ph)
         if not run.is_active:
             break

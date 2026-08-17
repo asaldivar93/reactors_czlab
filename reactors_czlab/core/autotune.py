@@ -150,6 +150,11 @@ def _identify_relay(
     trough = float(np.mean(_local_extrema(segment, maxima=False)))
     mean_ph = 0.5 * (peak + trough)
     amplitude = 0.5 * (peak - trough)
+    if not np.isfinite(amplitude) or amplitude <= hysteresis:
+        error_message = (
+            "relay cycle amplitude must be finite and clear hysteresis"
+        )
+        raise ValueError(error_message)
     corrected_amplitude = np.sqrt(max(amplitude**2 - hysteresis**2, 1e-12))
     ultimate_gain = 2.0 * (u_base + u_acid) / (
         np.pi * corrected_amplitude
@@ -254,7 +259,14 @@ def run_relay_experiment(
     noise_pH: float = 0.005,
     seed: int = 0,
 ) -> RelayResult:
-    """Drive a model plant with a relay and identify its steady limit cycle."""
+    """Drive a model plant with a relay and identify its steady limit cycle.
+
+    Raises
+    ------
+    ValueError
+        If a detected cycle does not have a finite amplitude that clears the
+        configured hysteresis band.
+    """
     rng = np.random.default_rng(seed)
     controller = RelayController(config)
     delay = max(0, round(config.dead_time / config.dt))
@@ -1060,7 +1072,16 @@ class AutotuneRun:
         )):
             self._terminate(AutotunePhase.failed, "relay produced a non-finite cycle", now)
             return
-        if cycle.amplitude < 3.0 * self.config.hysteresis and self.phase is AutotunePhase.settling:
+        # Use the same adequacy boundary as cycle_quality_reason().  The
+        # resize still targets 3*h below, but a cycle already clear of both
+        # hysteresis and measured noise must not be enlarged merely because
+        # its scientifically valid amplitude is below that conservative
+        # target.
+        minimum_amplitude = max(
+            self.config.hysteresis,
+            3.0 * (self.noise_sigma or 0.0),
+        )
+        if cycle.amplitude <= minimum_amplitude and self.phase is AutotunePhase.settling:
             self._adapt(cycle, now)
             return
         if self.phase is AutotunePhase.settling:

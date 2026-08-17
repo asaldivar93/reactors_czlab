@@ -57,6 +57,15 @@ def test_identify_ku_pu_for_analytic_triangle_wave() -> None:
     assert pu == pytest.approx(period)
 
 
+def test_identify_ku_pu_rejects_amplitude_inside_hysteresis() -> None:
+    """A near-flat relay trace must not turn a tiny denominator into Ku."""
+    ph = [7.00, 7.01, 7.00, 6.99] * 4
+    demand = [0.04, 0.04, -0.04, -0.04] * 4
+
+    with pytest.raises(ValueError, match="clear hysteresis"):
+        identify_ku_pu(ph, demand, 2.0, 0.04, 0.02)
+
+
 def test_tuning_rules_match_published_coefficients() -> None:
     """Every exposed rule maps Ku and Pu with its documented constants."""
     ku = 18.6
