@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
@@ -97,6 +98,57 @@ async def test_sampling_loop_reads_and_signals(
     assert reactor.sensors["R0:do"].reads >= 1
 
 
+async def test_sampling_feeds_autotune_before_unrelated_pairings(
+    make_sensor,
+    make_actuator,
+    monkeypatch,
+) -> None:
+    """The fresh pH reaches the run before normal controllers are decided."""
+    sensor = make_sensor("R0:ph", value=7.0)
+    paired = make_actuator("R0:other")
+    paired.set_control_config(
+        ControlConfig(ControlMethod.on_boundaries, lb=6.0, ub=8.0, value=200),
+    )
+    reactor = Reactor("R0", 5, [sensor], [paired], 0.01)
+    reactor.sampling.pairings[sensor.id].append((paired.id, 0))
+    reactor.unpaired.actuators.remove(paired.id)
+    order: list[tuple[str, float]] = []
+
+    async def read() -> None:
+        sensor.channels[0].value = 5.5
+        order.append(("read", 5.5))
+
+    class Run:
+        is_active = True
+        sensor_id = sensor.id
+        base_id = "R0:base"
+        acid_id = "R0:acid"
+
+        def sample(self, value: float) -> None:
+            order.append(("sample", value))
+
+    run = Run()
+    reactor.autotune = SimpleNamespace(run=run)
+    monkeypatch.setattr(sensor, "read", read)
+    original = paired.write_output
+
+    def write_output(value: float) -> None:
+        order.append(("paired", value))
+        original(value)
+
+    monkeypatch.setattr(paired, "write_output", write_output)
+    sample_ready = asyncio.Event()
+    task = asyncio.create_task(reactor.sampling_loop(sample_ready))
+    try:
+        await asyncio.wait_for(sample_ready.wait(), timeout=1.0)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    assert order[:3] == [("read", 5.5), ("sample", 5.5), ("paired", 5.5)]
+    assert paired.channel.value == 200
+
+
 async def test_actuator_loop_drives_unpaired_actuators(
     make_sensor,
     make_actuator,
@@ -122,6 +174,50 @@ async def test_actuator_loop_drives_unpaired_actuators(
         await asyncio.gather(task, return_exceptions=True)
 
     assert actuator.channel.value == 200
+
+
+async def test_actuator_loop_routes_selected_ticks_through_active_run(
+    make_sensor,
+    make_actuator,
+    monkeypatch,
+) -> None:
+    """Selected interlocked deliveries advance only through owner APIs."""
+    selected = make_actuator("R0:base")
+    unrelated = make_actuator("R0:other")
+    reactor = Reactor("R0", 5, [make_sensor()], [selected, unrelated], 1.0)
+    counts = {"run": 0, "selected": 0, "unrelated": 0}
+
+    class Run:
+        is_active = True
+        sensor_id = "R0:ph"
+        base_id = selected.id
+        acid_id = "R0:acid"
+
+        def tick(self) -> None:
+            counts["run"] += 1
+
+    reactor.autotune = SimpleNamespace(run=Run())
+    monkeypatch.setattr(
+        selected,
+        "tick",
+        lambda: counts.__setitem__("selected", counts["selected"] + 1),
+    )
+    monkeypatch.setattr(
+        unrelated,
+        "tick",
+        lambda: counts.__setitem__("unrelated", counts["unrelated"] + 1),
+    )
+
+    task = asyncio.create_task(reactor.actuator_loop())
+    try:
+        await asyncio.sleep(0.12)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    assert counts["run"] >= 2
+    assert counts["selected"] == 0
+    assert counts["unrelated"] >= 2
 
 
 async def test_actuator_loop_ticks_paired_actuators(
