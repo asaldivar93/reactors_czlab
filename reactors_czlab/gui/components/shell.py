@@ -11,6 +11,7 @@ spacing on Ubuntu, which is both the development machine and the Pi.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 
 from nicegui import ui
 
@@ -30,28 +31,82 @@ def disable_when_read_only(control: ui.element) -> ui.element:
     return control
 
 
-@ui.refreshable
-def status_badges() -> None:
-    """Connection, database and recording state, at a glance."""
-    if STATE.connected:
-        ui.badge("connected", color="green")
-    elif STATE.reconnecting:
-        # Distinct from disconnected on purpose: an operator answers
-        # "disconnected" by hitting Retry, which is the one thing that
-        # must not happen while asyncua is recovering on its own.
-        ui.badge("reconnecting", color="orange")
-    else:
-        ui.badge("disconnected", color="red")
+@dataclass
+class _StatusBadgeSet:
+    """One header's stable status elements."""
 
-    if not STATE.database_available:
-        ui.badge("no database", color="orange").tooltip(STATE.database_reason)
-    else:
+    connection: ui.badge
+    database: ui.badge
+    database_tooltip: ui.tooltip
+    recording: ui.badge
+
+    @property
+    def deleted(self) -> bool:
+        """Whether navigation discarded this header."""
+        return self.connection.is_deleted
+
+    def refresh(self) -> None:
+        """Copy current process state onto these existing badges."""
+        if self.deleted:
+            return
+        if STATE.connected:
+            connection_text, connection_color = "connected", "green"
+        elif STATE.reconnecting:
+            # Distinct from disconnected on purpose: an operator answers
+            # "disconnected" by hitting Retry, which is the one thing that
+            # must not happen while asyncua is recovering on its own.
+            connection_text, connection_color = "reconnecting", "orange"
+        else:
+            connection_text, connection_color = "disconnected", "red"
+        self.connection.set_text(connection_text)
+        self.connection.props(f"color={connection_color}")
+
+        database_missing = not STATE.database_available
+        self.database.set_visibility(database_missing)
+        self.database_tooltip.set_text(STATE.database_reason)
+
         reactors = STATE.book.reactors if STATE.book is not None else []
         recording = sum(STATE.is_recording(reactor) for reactor in reactors)
-        ui.badge(
+        self.recording.set_text(
             f"{recording} of {len(reactors)} recording",
-            color="blue" if recording else "grey",
         )
+        self.recording.props(f"color={'blue' if recording else 'grey'}")
+        self.recording.set_visibility(not database_missing)
+
+
+class _StatusBadges:
+    """Build badge sets and refresh only headers that still exist."""
+
+    def __init__(self) -> None:
+        self.targets: list[_StatusBadgeSet] = []
+
+    def __call__(self) -> _StatusBadgeSet:
+        # Navigation can discard a header without ever invoking a recording
+        # action. Prune here as well as in refresh() so opening pages faster
+        # than the status timer cannot retain one target per departed client.
+        self.targets = [target for target in self.targets if not target.deleted]
+        connection = ui.badge("")
+        database = ui.badge("no database", color="orange")
+        database_tooltip = database.tooltip("")
+        recording = ui.badge("")
+        target = _StatusBadgeSet(
+            connection,
+            database,
+            database_tooltip,
+            recording,
+        )
+        self.targets.append(target)
+        target.refresh()
+        return target
+
+    def refresh(self) -> None:
+        """Refresh every live header and forget deleted clients."""
+        self.targets = [target for target in self.targets if not target.deleted]
+        for target in self.targets:
+            target.refresh()
+
+
+status_badges = _StatusBadges()
 
 
 @ui.refreshable
@@ -120,22 +175,18 @@ def header(reactor: str | None = None) -> None:
             )
 
         with ui.row().classes("items-center").style("gap: 0.75rem"):
-            status_badges()
+            badges = status_badges()
 
-    ui.timer(STATUS_SECONDS, _refresh_status)
-
-
-def _refresh_status() -> None:
-    """Re-read the state the header shows."""
-    status_badges.refresh()
+    ui.timer(STATUS_SECONDS, badges.refresh)
 
 
 def reactor_tabs(reactor: str, active: str) -> None:
-    """Links to the four screens that exist per reactor."""
+    """Links to the screens that exist per reactor."""
     with ui.row().classes("items-center").style("gap: 0.5rem"):
         for label, suffix in (
             ("Dashboard", ""),
             ("Plots", "/plots"),
+            ("PID autotuning", "/autotune"),
             ("Sensor calibration", "/calibration/sensors"),
             ("Pump calibration", "/calibration/pumps"),
         ):

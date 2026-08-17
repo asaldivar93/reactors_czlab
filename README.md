@@ -102,6 +102,7 @@ The screens are:
 | `/` | The reactors and recording summary |
 | `/reactor/{r}` | Live values, per-reactor recording, controller configuration, pair/unpair |
 | `/reactor/{r}/plots` | pH, dissolved oxygen, temperature, biomass |
+| `/reactor/{r}/autotune` | Set up, monitor and apply pH PID autotuning |
 | `/reactor/{r}/calibration/sensors` | Hamilton CP1 and CP2 |
 | `/reactor/{r}/calibration/pumps` | A full pump calibration run |
 | `/experiments` | Create, start, stop and export experiments |
