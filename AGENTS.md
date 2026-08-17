@@ -274,9 +274,6 @@ dependency, always installed).
 Several tests carry a `Regression:` note naming the bug they pin. Do not delete
 those without reading them.
 
-<<<<<<< HEAD
-Run the server simulated, with no hardware attached:
-=======
 GUI tests are in three layers, matching the package: `test_gui_address.py`,
 `test_gui_format.py`, `test_gui_control.py`, `test_gui_plots.py`,
 `test_gui_pump_calibration.py` and `test_gui_pairing.py` are pure functions
@@ -296,11 +293,12 @@ client-only install. What the registers *mean* is in `core/hamilton.py` and is
 tested without pymodbus at all.
 
 Run the server with no hardware at all:
->>>>>>> da9da893eae3d9808e98b18c6a00cab3c72b57fc
 
 ```bash
 uv run reactors-server --simulated --endpoint opc.tcp://localhost:4840/
 ```
+
+uv run reactors-gui --endpoint opc.tcp://localhost:4840/ --port 8080
 
 That command needs `--extra server`, not just `--extra dev`, even
 though it touches no hardware: `run_server.py` imports `core.modbus`
