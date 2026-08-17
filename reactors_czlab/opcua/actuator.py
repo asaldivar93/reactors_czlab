@@ -239,8 +239,14 @@ class ActuatorOpc:
 
         # Publish only after the actuator accepted the whole object. These
         # variables are now a read-back model, never a command surface.
-        await self.method.write_value(method_index)
-        await self.output_unit.write_value(unit_index)
+        # Python ints infer Int64, but these MultiStateDiscrete variables are
+        # UInt32. The explicit type matters even for a server-side write.
+        await self.method.write_value(
+            ua.Variant(method_index, ua.VariantType.UInt32),
+        )
+        await self.output_unit.write_value(
+            ua.Variant(unit_index, ua.VariantType.UInt32),
+        )
         for name, field_value in fields.items():
             await getattr(self, name).write_value(field_value)
 
@@ -254,7 +260,8 @@ class ActuatorOpc:
         """Add configuration variables for the control method.
 
         Every controller's parameters live side by side under one node; the
-        client writes ``method`` plus the parameters that method uses.
+        server updates them as a read-back model after an atomic
+        ``apply_control_config`` call succeeds.
         """
         # Add Node to store the control settings
         self.control_method = await self.node.add_object(

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+from asyncua import ua
+
 from reactors_czlab.core.control import (
     _PidControl,
     _TimerControl,
@@ -259,7 +261,12 @@ async def test_accepted_config_updates_only_its_readback_fields(
     )
 
     assert accepted is True
-    assert node.method.writes == [2]
+    [method_write] = node.method.writes
+    [unit_write] = node.output_unit.writes
+    assert method_write.Value == 2
+    assert method_write.VariantType == ua.VariantType.UInt32
+    assert unit_write.Value == 0
+    assert unit_write.VariantType == ua.VariantType.UInt32
     assert node.lb.writes == [6.0]
     assert node.ub.writes == [8.0]
     assert node.backwards.writes == [True]
