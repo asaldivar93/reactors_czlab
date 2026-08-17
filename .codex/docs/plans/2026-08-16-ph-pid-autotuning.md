@@ -123,6 +123,55 @@ rejection.
 - Re-run the full test and lint suite after documentation changes.
 - Commit: docs: document pH PID autotuning
 
+## Subagent Execution and Review
+
+Use one persistent lead agent as coordinator and independent reviewer, with one implementation subagent per stage. Execute stages strictly in order;
+do not launch stage implementation agents in parallel. Stages 2, 4, and 6 share reactor-loop, actuator-ownership, cleanup, and OPC invariants, so
+the lead must preserve those decisions across handoffs and include the accepted interfaces from earlier stages in each later assignment.
+
+### Suggested Assignments
+
+| Stage | Model | Reasoning effort | Rationale |
+| --- | --- | --- | --- |
+| 1. Scientific model | `gpt-5.6-sol` | `medium` | Numerical correctness, API extraction, deterministic fixtures, and removal of duplicate implementations |
+| 2. Safe core workflow | `gpt-5.6-sol` | `high` | Asynchronous state machine, safety invariants, dispenser ownership, cleanup, and extensive failure paths |
+| 3. Audit persistence | `gpt-5.6-terra` | `high` | Atomic writes, schema versioning, malformed input handling, audit history, and non-compounding scaling |
+| 4. Reactor and OPC UA | `gpt-5.6-sol` | `high` | Cross-loop integration, stable lock ordering, atomic dual-controller updates, reconnect behavior, and naming contracts |
+| 5. Operator GUI | `gpt-5.6-sol` | `high` | NiceGUI lifecycle and event behavior, polling, reconnect reconstruction, confirmations, and interaction tests |
+| 6. End-to-end validation | `gpt-5.6-sol` | `high` | Adversarial cross-stage verification, numerical acceptance bounds, regression coverage, and failure diagnosis across layers |
+| 7. Documentation | `gpt-5.6-terra` | `medium` | Accurate synthesis of the completed behavior and operator workflow |
+
+If an assigned model or effort is unavailable, do not silently substitute a weaker configuration. Report the substitution, use the strongest available
+coding model with the nearest supported effort, and preserve the same acceptance and review gates.
+
+### Lead-Agent Procedure
+
+For each stage, the lead agent must:
+
+1. Inspect `git status` and record unrelated pre-existing changes before launching the stage agent. Never ask a subagent to revert, overwrite, stage,
+   or commit those changes.
+2. Give the stage agent a bounded assignment containing this plan, the repository `AGENTS.md` constraints, the exact stage scope, inherited public
+   interfaces, permitted files, acceptance tests, and the required commit message. Require applicable repository skills; in particular, the Stage 5
+   agent must use the `pythonista-nicegui` skill if it is available.
+3. Keep only that implementation agent active for repository edits. All agents share one worktree, so do not start the next stage or another editing
+   agent until review, corrections, validation, and commit are complete.
+4. Require the implementation agent to inspect existing code and tests before editing, implement the whole stage, add the specified regressions, run
+   targeted tests and Ruff, and return a concise summary of changed files, commands run, results, assumptions, and remaining risks. The implementation
+   agent must not stage or commit; the lead owns the review and commit gate.
+5. Review the actual worktree diff independently rather than accepting the agent's summary. Check the stage against every plan bullet and relevant
+   `AGENTS.md` invariant, inspect tests for meaningful failure coverage, and look specifically for dependency-boundary violations, duplicated scientific
+   logic, unsafe terminal paths, incorrect actuator ownership, OPC naming or subscription changes, config/runtime-state clobbering, and GUI lifecycle
+   regressions as applicable.
+6. Run the targeted tests and Ruff checks independently. For Stages 2, 4, and 6, also run the relevant existing reactor, dispenser, pairing, OPC,
+   calibration, and `sample_ready` regressions even if the stage agent reports them passing.
+7. Send concrete review findings back to the same stage agent for correction, then re-review the resulting diff and rerun affected checks. Repeat until
+   no material finding remains. If the stage uncovers an earlier prerequisite defect, fix and test it within the current stage as required by this plan.
+8. Confirm the diff contains only stage-owned changes, make the listed stage commit, verify the commit and clean/expected worktree state, and only then
+   launch the next stage agent.
+
+After Stage 7, the lead must inspect the cumulative commit series and final diff, run the complete test and Ruff suites, and report the exact results and
+any environmental skips or limitations. A subagent's passing report is evidence for review, not a substitute for the lead's own verification.
+
 ## Commit Discipline
 
 - After each stage, run that stage’s targeted tests and Ruff checks, inspect the diff, and commit only files belonging to that stage.
