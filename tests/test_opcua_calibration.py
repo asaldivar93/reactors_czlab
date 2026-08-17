@@ -22,11 +22,13 @@ while the other five methods' wrappers are synchronous.
 from __future__ import annotations
 
 import inspect
+import json
 
 import pytest
 from asyncua import ua
 
 from reactors_czlab.core.calibration import CALIBRATION_ENV
+from reactors_czlab.core.data import MAX_OUTPUT
 from reactors_czlab.opcua.actuator import ActuatorOpc
 
 
@@ -77,8 +79,12 @@ async def calibrating(make_calibrated_actuator, clock):
     return node_opc, node_opc.node.methods
 
 
-async def test_the_six_methods_are_registered(calibrating) -> None:
-    """The operator's whole workflow is reachable from an OPC client."""
+async def test_the_workflow_methods_are_registered(calibrating) -> None:
+    """The operator's whole workflow is reachable from an OPC client.
+
+    Six methods drive a run; get_calibration reads back what the run
+    produced, which is otherwise Python-side state no client can see.
+    """
     _, methods = calibrating
 
     assert set(methods) == {
@@ -88,6 +94,7 @@ async def test_the_six_methods_are_registered(calibrating) -> None:
         "clear_points",
         "reload_calibration",
         "set_duties",
+        "get_calibration",
     }
 
 
@@ -172,3 +179,111 @@ async def test_calibrate_point_interlock_clears_even_if_the_run_raises(
         await _call(methods["calibrate_point"], 1000.0, 60.0)
 
     assert node_opc.actuator.calibrating is False
+
+
+class TestGetCalibration:
+    """Reading back what a run produced.
+
+    The screen needs the duty limits, the fit timestamp and the measured
+    points behind the line. None of those are published variables - only
+    cal_a, cal_b and cal_r2 are - so without this method an operator
+    driving a calibration is working blind.
+    """
+
+    async def test_reports_run_state_before_any_points(
+        self,
+        calibrating,
+    ) -> None:
+        """An idle run with an unfitted placeholder is legible."""
+        _, methods = calibrating
+
+        state = json.loads(await _call(methods["get_calibration"]))
+
+        assert state["actuator"] == "R0:pwm0"
+        assert state["running"] is False
+        assert state["pending"] is None
+        assert state["run_points"] == []
+        assert state["calibration"]["is_fitted"] is False
+
+    async def test_a_pending_point_is_visible(self, calibrating) -> None:
+        """The UI must know a measurement is owed before it offers Fit."""
+        _, methods = calibrating
+
+        await _call(methods["calibrate_point"], 1000.0, 60.0)
+        state = json.loads(await _call(methods["get_calibration"]))
+
+        assert state["pending"] == [1000.0, 60.0]
+        assert state["run_points"] == []
+
+    async def test_recorded_points_are_visible_before_the_fit(
+        self,
+        calibrating,
+    ) -> None:
+        """Collected points survive a page reload: they live server-side."""
+        _, methods = calibrating
+
+        await _call(methods["calibrate_point"], 1000.0, 60.0)
+        await _call(methods["record_point"], 10.0)
+
+        state = json.loads(await _call(methods["get_calibration"]))
+
+        assert state["pending"] is None
+        assert state["run_points"] == [[1000.0, 10.0]]
+
+    async def test_reports_the_fitted_line_and_its_duties(
+        self,
+        calibrating,
+    ) -> None:
+        """After a fit, the screen can show the whole installed line."""
+        _, methods = calibrating
+
+        await _call(methods["calibrate_point"], 1000.0, 60.0)
+        await _call(methods["record_point"], 10.0)
+        await _call(methods["calibrate_point"], 3000.0, 60.0)
+        await _call(methods["record_point"], 30.0)
+        await _call(methods["fit_calibration"])
+
+        cal = json.loads(await _call(methods["get_calibration"]))[
+            "calibration"
+        ]
+
+        assert cal["is_fitted"] is True
+        assert cal["fitted_at"]
+        assert cal["a"] == pytest.approx(0.01)
+        assert cal["points"] == [[1000.0, 10.0], [3000.0, 30.0]]
+        assert cal["max_duty"] == pytest.approx(MAX_OUTPUT)
+        assert cal["min_duty"] <= cal["dispense_duty"] <= cal["max_duty"]
+
+    async def test_carries_the_installable_reason_verbatim(
+        self,
+        calibrating,
+    ) -> None:
+        """installable_reason() is the authority and is already worded.
+
+        The screen shows it rather than deriving its own explanation of
+        why a calibration cannot be used.
+        """
+        node_opc, methods = calibrating
+        node_opc.actuator.channel.calibration.a = -1.0
+
+        cal = json.loads(await _call(methods["get_calibration"]))[
+            "calibration"
+        ]
+
+        assert cal["installable_reason"] is not None
+        assert "slope" in cal["installable_reason"]
+
+    async def test_an_actuator_with_no_slot_reports_null(
+        self,
+        make_actuator,
+    ) -> None:
+        """The MFCs have calibration=None; the screen must hide, not crash."""
+        node_opc = ActuatorOpc(make_actuator("R0:mfc"))
+        node_opc.node = _CapturingNode()
+        await node_opc.init_calibration_methods(2)
+
+        state = json.loads(
+            await _call(node_opc.node.methods["get_calibration"]),
+        )
+
+        assert state["calibration"] is None

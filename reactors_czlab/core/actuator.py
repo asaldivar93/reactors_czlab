@@ -172,7 +172,7 @@ class Actuator(ABC):
                 "Write %s to %s: %s", value, self.id, self.controller
             )
 
-    def set_control_config(self, config: ControlConfig) -> None:
+    def set_control_config(self, config: ControlConfig) -> str | None:
         """Change the current configuration of the actuator outputs.
 
         Parameters
@@ -180,11 +180,17 @@ class Actuator(ABC):
         config:
             A dataclass with the parameters of the new controller
 
+        Returns
+        -------
+        str or None
+            An operator-readable rejection reason, or ``None`` when the
+            configuration was accepted.
+
         """
         reason = check_unit(config.output_unit, self.channel)
         if reason is not None:
             _logger.warning("Rejected config for %s: %s", self.id, reason)
-            return
+            return reason
 
         dispenser = self.dispenser
         if config.output_unit is not dispenser.unit:
@@ -193,29 +199,6 @@ class Actuator(ABC):
                 self.channel,
                 self._control_period,
             )
-            # Force the outgoing dispenser to accrue whatever was still
-            # in flight before reading its total - otherwise the last
-            # partial accrual interval is silently dropped on the swap.
-            self.dispenser.reset()
-            # reset() throws away the bolus deadline, so nothing is left
-            # that would ever end the bolus: the incoming dispenser has
-            # no deadline to expire, and in duty/flow mode its tick()
-            # returns None forever. Stopping the pump here is the whole
-            # of Dispenser.reset()'s "the caller must write 0" contract.
-            # Going through _write_if_changed keeps channel.old_value in
-            # step, so the next decision is compared against what the
-            # pin is really at.
-            #
-            # But not while a calibration run owns the pump: an OPC
-            # output_unit write mid-run would otherwise zero the pump
-            # under the run's feet, and the run would still report the
-            # requested duration - a silently wrong calibration point.
-            # calibrate_point()'s own finally writes 0 when the run ends.
-            if not self.calibrating:
-                self._write_if_changed(0.0)
-            # The total records the physical pump, not the configuration.
-            dispenser.total_volume = self.dispenser.total_volume
-
         min_val, max_val = dispenser.demand_limits()
         try:
             new_controller = ControlFactory().create_control(
@@ -223,11 +206,23 @@ class Actuator(ABC):
                 min_val=min_val,
                 max_val=max_val,
             )
-        except TypeError:
+        except TypeError as err:
             # Each control class checks that the values
             # passed are of the correct type
             _logger.exception("Wrong attributes in %s: %s", self.id, config)
-            return
+            return str(err)
+
+        if dispenser is not self.dispenser:
+            # Validation has succeeded, so it is now safe to disturb the
+            # running dispenser. A rejected unit-and-field change must not
+            # stop a pump before the caller learns that it was rejected.
+            # Force the outgoing dispenser to accrue whatever was still in
+            # flight before reading its total, then stop the old delivery.
+            self.dispenser.reset()
+            if not self.calibrating:
+                self._write_if_changed(0.0)
+            # The total records the physical pump, not the configuration.
+            dispenser.total_volume = self.dispenser.total_volume
 
         # How the change is applied depends on what actually changed:
         #
@@ -254,7 +249,7 @@ class Actuator(ABC):
             self.controller.adopt_config(new_controller)
             self.controller.refresh_derived_limits()
         else:
-            return
+            return None
 
         _logger.info(
             "Control config update - %s: %s in %s",
@@ -262,6 +257,7 @@ class Actuator(ABC):
             self.controller,
             self.dispenser.unit,
         )
+        return None
 
     def refresh_controller_limits(self) -> None:
         """Re-derive the controller's clamp range from the dispenser.

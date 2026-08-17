@@ -33,9 +33,31 @@ On the PC:
 uv sync --extra client
 ```
 
-The two extras are independent: a client install has no pymodbus and a
-server install has no psycopg, so import the subpackage you need rather
-than the top level package.
+For the web GUI, on either machine:
+
+```bash
+uv sync --extra gui
+```
+
+For database recording, experiments and migrations as well:
+
+```bash
+uv sync --extra gui --extra client
+```
+
+The `server` and `client` extras are independent: a client install has
+no pymodbus and a server install has no psycopg, so import the
+subpackage you need rather than the top level package. `gui` is
+independent of both — it carries NiceGUI and Plotly, and the screens that
+need a database disable themselves with a reason when psycopg is
+missing.
+
+psycopg installs on a Raspberry Pi: its wheel is `py3-none-any`, the
+core package being pure Python. What it needs at runtime is libpq:
+
+```bash
+sudo apt install libpq5
+```
 
 ## Running
 
@@ -57,6 +79,42 @@ Archive to PostgreSQL from the PC:
 uv run reactors-client --endpoint opc.tcp://10.10.10.20:55488/
 ```
 
+## The web GUI
+
+```bash
+uv run reactors-gui --endpoint opc.tcp://10.10.10.20:55488/ --port 8080
+```
+
+Then open `http://<host>:8080`. It listens on all interfaces, so the Pi
+can serve it to a laptop on the same network.
+
+**It replaces `reactors-client`, it does not run beside it.** The GUI
+process hosts the archiver itself, so running both against one database
+inserts every reading twice. Recording is selected per reactor,
+independent of any experiment. The selection is persisted in PostgreSQL:
+if the GUI process dies, archiving stops while it is down and the selected
+reactors resume when it restarts.
+
+The screens are:
+
+| Route | What it does |
+|---|---|
+| `/` | The reactors and recording summary |
+| `/reactor/{r}` | Live values, per-reactor recording, controller configuration, pair/unpair |
+| `/reactor/{r}/plots` | pH, dissolved oxygen, temperature, biomass |
+| `/reactor/{r}/calibration/sensors` | Hamilton CP1 and CP2 |
+| `/reactor/{r}/calibration/pumps` | A full pump calibration run |
+| `/experiments` | Create, start, stop and export experiments |
+
+`--period` tells the GUI the server's sampling period so it can grey
+out a reading that has stopped arriving; it defaults to 10 s and must
+match `SAMPLE_PERIOD` in `run_server.py` to be useful.
+
+There is **no authentication**. Pump control is reachable from a
+browser URL by anyone who can route to the port. That is acceptable on
+an isolated lab network — the OPC server is already unauthenticated
+there — and wants revisiting before this is on a routable network.
+
 Live plots and csv export:
 
 ```bash
@@ -75,6 +133,17 @@ Create the schema once:
 psql -f reactors_czlab/sql/Bioreactor.sql
 ```
 
+A database created by an older build must be migrated explicitly. The
+runner applies every pending migration in order and is safe to run again:
+
+```bash
+uv run reactors-db-migrate
+```
+
+The GUI checks the recorded schema version at startup. Database-dependent
+features stay disabled with the migration command shown until the schema is
+current; the server and live OPC displays continue to work.
+
 Connection settings come from the environment, defaulting to the
 `bioreactor_db` database as the current OS user:
 
@@ -88,6 +157,19 @@ from its own controller. Calling the `<reactor>:set_pairing` OPC method with
 a sensor id, an actuator id and a channel index moves that actuator into
 `sampling_loop`, where it is driven from the paired sensor channel once per
 sample period. `<reactor>:unpair` hands it back.
+
+## Configuring actuators over OPC UA
+
+Control configuration is one atomic OPC method call:
+`<actuator>:apply_control_config`. It returns an accepted flag and the
+server's validation message; `<actuator>:get_control_config` returns the
+configuration that is actually running plus the server's enum options.
+
+**The individual control variables (`method`, `output_unit`, gains, bounds,
+times, and related fields) are read-only.** Generic OPC clients that used to
+write those variables one at a time must call `apply_control_config()`
+instead. This prevents the 20 Hz actuator loop from observing a partially
+written configuration.
 
 ## Calibrating a pump
 
@@ -134,7 +216,15 @@ The suite under `tests/` runs without hardware and without pymodbus.
 - Mass Flow Controller Modbus
 - Restore server from power out
 - Restore client from power out
+- Run the GUI on the Pi, benchmark its four Plotly WebGL charts, and test
+  against a real Hamilton probe: the
+  calibration screen's numbers depend on the Modbus word order, which
+  has never been checked against hardware (see AGENTS.md)
+- Exercise the experiment interface against a real PostgreSQL
+- Authentication, before the GUI is on a routable network
 
 Non essential:
 
-- GUI
+- Actuator traces on the plots page. The panels are a
+  `(name, channel)` filter list, so this is an entry in
+  `gui/controllers/plots.py`'s `PANELS`, not a rewrite.

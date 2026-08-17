@@ -294,6 +294,26 @@ class CalibrationRun:
         """Print the actuator and how many points are collected."""
         return f"CalibrationRun({self.actuator.id}, {len(self.points)} points)"
 
+    @property
+    def is_running(self) -> bool:
+        """Whether the pump is running for a calibration point right now.
+
+        Read-only view of the flag ``calibrate_point`` sets, so a user
+        interface can disable the controls a run must not race with
+        without reaching into the run's internals.
+        """
+        return self._running
+
+    @property
+    def pending(self) -> tuple[float, float] | None:
+        """The ``(duty, seconds)`` awaiting a measured volume, if any.
+
+        ``record_point`` is the only useful thing to do while this is
+        set, and a refused measurement deliberately leaves it in place
+        so the operator can retype without re-running the pump.
+        """
+        return self._pending
+
     async def calibrate_point(self, duty: float, seconds: float) -> str:
         """Run the pump at ``duty`` for ``seconds``, then stop it.
 

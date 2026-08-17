@@ -10,6 +10,14 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, NamedTuple
 
 from reactors_czlab.core.data import ERROR_VALUE, PhysicalInfo
+from reactors_czlab.core.hamilton import (
+    CALIBRATION_POINTS,
+    PROCESS_VALUE_WORDS,
+    STATUS_WORDS,
+    VALUE_WORDS,
+    CalibrationStatus,
+    calibration_point_name,
+)
 from reactors_czlab.core.hardware import IN_RASPBERRYPI
 from reactors_czlab.core.modbus import (
     REGISTERS_PER_VALUE,
@@ -90,6 +98,31 @@ class Sensor(ABC):
             cal_value,
         )
         return ("unsupported", 0.0, 0.0)
+
+    async def read_calibration_status(
+        self,
+        cal_point: float,
+    ) -> CalibrationStatus | None:
+        """Report what a calibration point currently holds.
+
+        The default reports that the sensor has no calibration points to
+        read. Sensors that support it (HamiltonSensor) override this.
+
+        Returns
+        -------
+        CalibrationStatus | None
+            ``None`` when the sensor cannot be calibrated over the bus,
+            which is what every non-Hamilton sensor returns. A caller
+            showing this to an operator says "unsupported"; it is not an
+            error.
+
+        """
+        _logger.debug(
+            "%s has no calibration point %s to read",
+            self.id,
+            cal_point,
+        )
+        return None
 
 
 class RandomSensor(Sensor):
@@ -185,7 +218,9 @@ class HamiltonSensor(Sensor):
     }
 
     #: Calibration points that have a writable register in REGISTERS.
-    CALIBRATION_POINTS: ClassVar = frozenset({"cp1", "cp2"})
+    #: Aliased from core.hamilton so there is one list, not two that can
+    #: drift: ``calibration_point_name`` validates against that one.
+    CALIBRATION_POINTS: ClassVar = CALIBRATION_POINTS
 
     def __init__(
         self,
@@ -342,6 +377,104 @@ class HamiltonSensor(Sensor):
             _logger.exception("Failed to set baudrate of unit %s", self.id)
             raise
 
+    async def _read_calibration_point(self, cp: str) -> CalibrationStatus:
+        """Read one calibration point's status block, quality and PMC1.
+
+        The bus half of ``read_calibration_status``, split out so both
+        the read path and the write path use exactly one implementation
+        of "what does this point hold". Assumes the caller has already
+        raised the operator level: ``CP{n}Status`` is readable at
+        administrator or specialist level only.
+
+        Raises
+        ------
+        ModbusError
+            If any of the three reads failed. The caller decides what a
+            failure means - for a write it is a different outcome than
+            for a plain read.
+
+        """
+        status_response = await self.read_holding_registers(f"{cp}_status")
+        code = self.modbus_handler.decode(
+            status_response[STATUS_WORDS],
+            "int",
+        )
+        value = self.modbus_handler.decode(
+            status_response[VALUE_WORDS],
+            "float",
+        )
+
+        quality_response = await self.read_holding_registers("quality")
+        quality = self.modbus_handler.decode(
+            quality_response[STATUS_WORDS],
+            "float",
+        )
+
+        # The sensor's primary measurement. Named for what it is rather
+        # than for pH: this same code path serves a VisiFerm, where PMC1
+        # is dissolved oxygen.
+        process_response = await self.read_holding_registers("pmc1")
+        process_value = self.modbus_handler.decode(
+            process_response[PROCESS_VALUE_WORDS],
+            "float",
+        )
+
+        return CalibrationStatus(
+            point=cp,
+            code=code,
+            value=value,
+            quality=quality,
+            process_value=process_value,
+        )
+
+    async def read_calibration_status(
+        self,
+        cal_point: float,
+    ) -> CalibrationStatus | None:
+        """Report what a calibration point currently holds.
+
+        Reads only - it never writes a calibration - so an operator can
+        see the state of CP1 and CP2 before deciding to change either.
+
+        The operator level is raised for the read because ``CP{n}Status``
+        is not readable as ``user``, and always dropped back afterwards.
+
+        Returns
+        -------
+        CalibrationStatus | None
+            ``None`` if the point is not one this sensor can calibrate,
+            or if the bus read failed. Both are logged.
+
+        """
+        try:
+            cp = calibration_point_name(cal_point)
+        except ValueError:
+            _logger.exception("Cannot read calibration status of %s", self.id)
+            return None
+
+        try:
+            await self.set_operator_level("specialist")
+            status = await self._read_calibration_point(cp)
+        except ModbusError:
+            _logger.exception(
+                "Failed to read %s status of unit %s",
+                cp,
+                self.id,
+            )
+            return None
+        else:
+            _logger.info(
+                "Read %s of %s - status: %s, value: %s, quality: %s",
+                cp,
+                self.id,
+                status.text,
+                status.value,
+                status.quality,
+            )
+            return status
+        finally:
+            await self._drop_to_user_level()
+
     async def write_calibration(
         self,
         cal_point: float,
@@ -349,17 +482,26 @@ class HamiltonSensor(Sensor):
     ) -> tuple[str, float, float]:
         """Write a value to a calibration point and report the outcome.
 
-        Returns ("failed", 0.0, 0.0) if the sensor could not be calibrated;
-        the operator level is always dropped back to "user" afterwards.
+        The write and the read-back that follows it are reported apart:
+        a sensor that refuses the calibration returns its own status,
+        while a bus failure returns ``"failed"``. Conflating the two -
+        as returning ``("failed", 0.0, 0.0)`` for both used to - leaves
+        an operator unable to tell a rejected calibration from a glitch
+        on the RS485 line.
+
+        The operator level is always dropped back to "user" afterwards.
+
+        Returns
+        -------
+        tuple[str, float, float]
+            Status text, sensor quality and the value the sensor stored.
+            The order matches the OPC method's declared out-arguments.
+
         """
-        cp = f"cp{int(cal_point)}"
-        if cp not in self.CALIBRATION_POINTS:
-            _logger.error(
-                "Invalid calibration point %s for %s, expected one of %s",
-                cal_point,
-                self.id,
-                sorted(self.CALIBRATION_POINTS),
-            )
+        try:
+            cp = calibration_point_name(cal_point)
+        except ValueError:
+            _logger.exception("Cannot calibrate %s", self.id)
             return ("failed", 0.0, 0.0)
 
         try:
@@ -367,44 +509,41 @@ class HamiltonSensor(Sensor):
             # without specialist rights silently does nothing.
             await self.set_operator_level("specialist")
 
-            await self.write_registers(cp, [cal_value])
+            await self.write_registers(cp, [float(cal_value)])
 
-            status_response = await self.read_holding_registers(f"{cp}_status")
-            code = self.modbus_handler.decode(status_response[0:2], "int")
-            status = "Successful" if code == 0 else "Failed"
-            written_value = self.modbus_handler.decode(
-                status_response[4:6],
-                "float",
-            )
-
-            quality_response = await self.read_holding_registers("quality")
-            quality = self.modbus_handler.decode(quality_response[0:2], "float")
-
-            ph_response = await self.read_holding_registers("pmc1")
-            ph = self.modbus_handler.decode(ph_response[2:4], "float")
+            status = await self._read_calibration_point(cp)
 
             _logger.info(
-                "Calibration at %s - status: %s, cp: %s, quality: %s, pH: %s",
+                "Calibration at %s - %s: %s, value: %s, quality: %s, "
+                "process value: %s",
                 self.id,
-                status,
-                written_value,
-                quality,
-                ph,
+                cp,
+                status.text,
+                status.value,
+                status.quality,
+                status.process_value,
             )
         except ModbusError:
             _logger.exception("Error during calibration of unit %s", self.id)
             return ("failed", 0.0, 0.0)
         else:
-            return (status, quality, written_value)
+            return (status.text, status.quality, status.value)
         finally:
-            # Never leave the sensor sitting at specialist level.
-            try:
-                await self.set_operator_level("user")
-            except ModbusError:
-                _logger.exception(
-                    "Failed to drop %s back to user level",
-                    self.id,
-                )
+            await self._drop_to_user_level()
+
+    async def _drop_to_user_level(self) -> None:
+        """Never leave the sensor sitting at specialist level.
+
+        A failure to step back down is logged, not raised: it must not
+        replace the outcome the caller is about to report.
+        """
+        try:
+            await self.set_operator_level("user")
+        except ModbusError:
+            _logger.exception(
+                "Failed to drop %s back to user level",
+                self.id,
+            )
 
     async def read(self) -> None:
         """Read all available channels in the sensor."""

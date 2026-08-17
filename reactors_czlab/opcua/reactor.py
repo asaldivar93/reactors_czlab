@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from typing import TYPE_CHECKING
 
@@ -50,6 +51,11 @@ class ReactorOpc:
         # Flag for sensing loop completed
         self.sample_ready = asyncio.Event()
 
+        self.pairings_node: Node | None = None
+        #: Orders snapshot-and-write in publish_pairings. Always taken
+        #: before sampling.lock, never inside it.
+        self._publish_lock = asyncio.Lock()
+
     def __repr__(self) -> str:
         """Print the reactor id."""
         return f"ReactorOpc(id: {self.id})"
@@ -88,7 +94,48 @@ class ReactorOpc:
         for actuator in self.actuator_nodes:
             await actuator.init_node(server, self.anode, self.idx)
 
+        # Deliberately on the reactor node, not under :sensors or
+        # :actuators. Its browse name splits into two parts, below the
+        # three OpcClient.match_tree requires, so it is never collected
+        # as a variable and a JSON string never reaches the FLOAT
+        # `value` column of the data table.
+        self.pairings_node = await self.node.add_variable(
+            idx,
+            f"{self.id}:pairings",
+            "[]",
+            ua.VariantType.String,
+        )
         await self.init_pairing_methods(idx)
+        await self.publish_pairings()
+
+    async def pairings_json(self) -> str:
+        """Snapshot the pairing table as JSON.
+
+        Sorted so a client polling this can compare two reads without
+        having to care about dict ordering.
+        """
+        sampling = self.reactor.sampling
+        async with sampling.lock:
+            rows = [
+                {"sensor": sid, "actuator": aid, "channel": channel}
+                for sid, paired in sampling.pairings.items()
+                for aid, channel in paired
+            ]
+        rows.sort(key=lambda row: (row["sensor"], row["actuator"]))
+        return json.dumps(rows)
+
+    async def publish_pairings(self) -> None:
+        """Republish the pairing table after it changed.
+
+        Snapshot and write are serialised together: two pairings landing
+        at once could otherwise take their snapshots in one order and
+        write them in the other, leaving the published table showing the
+        older of the two states permanently.
+        """
+        if self.pairings_node is None:
+            return
+        async with self._publish_lock:
+            await self.pairings_node.write_value(await self.pairings_json())
 
     def _validate_pair(self, sid: str, aid: str) -> bool:
         """Check that a sensor id and an actuator id belong to this reactor."""
@@ -137,6 +184,7 @@ class ReactorOpc:
                     _logger.warning("%s was not in the unpaired loop", aid)
 
             _logger.info("Current pairings: %s", dict(sampling.pairings))
+            await self.publish_pairings()
             return True
 
         @uamethod
@@ -168,6 +216,7 @@ class ReactorOpc:
                     unpaired.actuators.append(aid)
 
             _logger.info("Current pairings: %s", dict(sampling.pairings))
+            await self.publish_pairings()
             return True
 
         inarg_sid = ua.Argument()

@@ -12,7 +12,7 @@ Dependency direction: `core` never imports `opcua`. `data.py` imports
 nothing. `gui` may import `opcua` and `sql`; nothing imports `gui`, and
 `core` is untouched by it. `gui/__init__.py` stays docstring-only for the
 same reason `core/__init__.py` does — a re-export would force every
-install, including a headless Pi server, to carry `nicegui`.
+install, including a headless Pi server, to carry `nicegui` and `plotly`.
 
 ## Hard constraints — breaking these breaks a deployment
 
@@ -160,103 +160,77 @@ Browse names are `<reactor>:<name>:<channel>` — e.g. `R0:ph:pH`,
 filters on those columns. Changing a browse name changes the database contents
 and breaks the plots.
 
-### GUI: write order, wire types, and what a client can see
+Two sides of the same name. A *device* id is `<reactor>:<name>` —
+`R0:biomass` — and that is what `set_pairing`/`unpair` validate against
+(`sampling.sensors` holds full ids) and what `R{n}:pairings` publishes. The
+GUI's `AddressBook` keys devices by the **middle part only** (`biomass`),
+because that is what `match_tree` puts in the `name` column. `device_id()` and
+`short_name()` in `gui/components/pairing.py` are the only crossing point;
+three separate bugs came from crossing it by hand, each failing silently with
+`biomass is not a sensor of R0` in the *server's* log and a bare `False` at
+the client.
 
-`uv sync --extra gui` installs `nicegui`; `reactors-gui` (`run_gui.py`)
-serves the dashboard on port 8080 and hosts one `OpcClient` in the GUI
-process's own event loop, so there is exactly one connection per
-process (`gui/state.py`, `AppState`). Pages hold no logic: everything
-worth a test lives in `gui/address.py` (node-id lookups), `gui/format.py`
-(rendering a reading) or `gui/control.py` (ordering a config write), and
-`gui/pages/` only assembles those into routes.
+### What the server publishes only because the GUI needs it
 
-**OPC writes must carry the node's declared type.** `OpcClient.write()`
-now reads the target node's data type and wraps the value in a matching
-`ua.Variant` before writing it. Writing a bare Python value instead lets
-asyncua guess the wire type from the Python type — a plain `int` becomes
-`Int64`, which the `UInt32`-declared `method`, `output_unit` and
-`reference_sensor` nodes (`opcua/actuator.py`) refuse with
-`BadTypeMismatch`. This broke every control-method change from the GUI
-silently, because every page test stubs the client and none of them
-writes through a real node. Do not revert `write()` to a bare
-`node.write_value(value)`.
+`cal_a/cal_b/cal_r2` were the only calibration data published, and the pairing
+table and CP status were not readable at all. Four additions exist purely so a
+client can *show* state it could previously only change:
 
-**The control-config write order is a safety property, not a style
-choice.** `ActuatorOpc.datachange_notification` rebuilds the entire
-`ControlConfig` on *every* write to *any* control variable, reading
-whichever parameters the currently-selected method needs — so a partial
-write is not inert, it runs the wrong controller against stale state for
-at least one notification. `gui/control.py`'s `build_write_plan` orders
-writes parameters -> `output_unit` -> `method`, and `gui/components/
-control_form.py` applies that plan sequentially, one `await` at a time,
-never concurrently. Writing `method` first would run the new controller
-against the old setpoint/gains/bounds still sitting in the server's
-variables; on a pump dosing acid or base into a live culture that is a
-real dose, not a glitch.
+- `R{n}:pairings` — JSON on the reactor node. Two browse-name parts, below
+  `match_tree`'s `NAME_PARTS = 3`, so it is never archived. Republished under
+  `_publish_lock` from both pairing methods.
+- `{id}:get_calibration` — JSON: duty limits, `fitted_at`, the fitted points,
+  the in-flight run's points and pending measurement, and
+  `installable_reason()` verbatim.
+- `{id}:read_calibration_status` — reads a Hamilton CP without writing one.
+  On demand, never published: CP status registers need administrator or
+  specialist level, so every read escalates and drops the operator level on
+  the RS485 bus the sampling loop shares.
+- `ChannelIndex` — a **Property** (so `match_tree` skips it) on each channel
+  variable, because `set_pairing` takes the index and browsing only gives
+  names.
 
-**Two things exist only so a client can see server state it otherwise
-could not, and both are placed where they are on purpose:**
+### GUI invariants that cost real debugging
 
-- `R{n}:pairings`, a read-only JSON String variable on the reactor node
-  (`ReactorOpc.publish_pairings`), republished after every pair/unpair.
-  It sits *above* `R{n}:sensors`/`R{n}:actuators`: `OpcClient.match_tree`
-  only descends from those two, so a three-part-browse-name String
-  variable placed underneath either of them would be subscribed and
-  inserted straight into the FLOAT `value` column of the `data` table.
-  `gui/components/pairing.py` therefore cannot reach it through
-  `AddressBook` and instead browses for it once per reactor and caches
-  the node id (`_PAIRINGS_NODES`) — cleared on `AppState.disconnect()`,
-  since node ids are only stable for the life of one server process.
-- A `ChannelIndex` property on each sensor channel variable
-  (`opcua/sensor.py`). `set_pairing` takes a channel *index*, but
-  browsing only gives *names*, and asyncua does not guarantee
-  `get_children()` preserves insertion order. It is a property so its
-  one-part browse name is skipped by `match_tree` for the same reason as
-  above. It is a plain `int` (hence `Int64` on the wire) — nothing
-  should assert a specific variant type on it.
-
-**`@ui.refreshable` tears down and rebuilds its entire subtree on every
-`ui.timer` tick.** Anything interactive built inside a refreshable panel
-is destroyed under the operator's hands mid-edit the next time the timer
-fires — `ui.timer` defaults to `immediate=True`, so this can happen
-before the operator has done anything at all. The two places this
-matters escape it by two different mechanisms, not one, and neither is
-the obvious "just don't put it in a refreshable":
-
-- The actuator configuration dialog (`gui/components/control_form.py`)
-  is built under `context.client.layout` (the stable page root) rather
-  than under `actuator_panel`'s own slot, even though the Configure
-  button that opens it lives inside that refreshable panel. Opening it
-  there instead would tie the dialog's lifetime to the panel that
-  spawned it, and the very next refresh tick deletes it out from under
-  the operator.
-- The pairing panel (`gui/components/pairing.py`) is itself
-  `@ui.refreshable`, but `gui/pages/dashboard.py`'s `ui.timer` callback
-  only calls `sensor_panel.refresh()` and `actuator_panel.refresh()` —
-  `pairing_panel.refresh()` is deliberately never wired to it. It
-  escapes by never being on the timer's rebuild path in the first
-  place, not by reparenting; do not "fix" this by adding
-  `pairing_panel.refresh()` to that callback, or every in-progress pair
-  gets torn down every second.
-
-See the docstrings on `gui/components/control_form.open_control_dialog`
-and `gui/components/pairing.pairing_panel` before adding another dialog
-or another timer-driven panel.
-
-`sql/operations.py` now imports without `psycopg` installed — the
-import is guarded and every public function checks a module-level
-`PSYCOPG_AVAILABLE` first — so the GUI starts and runs on a machine with
-no database at all; `AppState.database_available` reflects that flag and
-the dashboard shows a "no database" badge and disables recording,
-experiments and plot history rather than failing to import. Recording
-is gated in `OpcClient.datachange_notification`: a reading always
-updates the in-memory live value the GUI reads, but nothing is enqueued
-for the archiver unless `recording` is true, so stopping the archiver
-does not silently fill and then overflow the queue. The schema grew an
-`experiment_name` column on `data` and a reshaped `experiments` table
-(`reactors_czlab/sql/Bioreactor.sql`); an existing database is brought
-up to date with `reactors_czlab/sql/migrations/2026-07-30-experiments.sql`
-rather than by re-running the full schema file.
+- **A long OPC method call kills the session when `auto_reconnect` is on.**
+  asyncua's supervisor probes every `watchdog_intervall` (1 s) with a probe
+  timeout of the same length; a call outlasting it reads as a dead link and
+  the session is torn down, subscription and all. Measured: 4 s or more fails,
+  whatever `timeout` says. `calibrate_point` runs a pump for up to
+  `MAX_RUN_SECONDS` (600), so it goes through `OpcClient.call_slow_method`,
+  which opens a throwaway session. **Any future long-running method must do
+  the same.**
+- **Control configuration is one atomic method call.** Individual control
+  variables are read-only. `{id}:apply_control_config` constructs and
+  validates the complete candidate under `_config_lock`, applies it once, and
+  publishes the read-back variables before releasing the lock. It returns
+  `(accepted, message)`; the GUI always reloads `{id}:get_control_config`
+  afterward, so a rejected unit or invalid band is visible instead of looking
+  accepted. A generic OPC client must use the method, never try to make the
+  fields writable again or restore the old per-variable subscription.
+- **Subscribe what is archived.** `OpcClient.init_subscriptions()` monitors
+  sensor channels plus actuator `curr_value` and `total_volume`; configuration,
+  calibration and pairing state are read on demand. The old `ActuatorOpc`
+  internal subscription was removed with per-variable configuration writes.
+  asyncua 2.0.1 recreates its existing live subscriptions after reconnect, so
+  `AppState` rebrowses node ids and rebuilds the address book but must not call
+  `init_subscriptions()` a second time — doing so duplicates notifications.
+- **Elements built inside a `ui.timer` callback render but their event
+  handlers never fire.** This made the control dialog's Apply and Cancel dead.
+  Pass async handlers to `on_click` directly, and let a page `await` its own
+  initial load rather than deferring it — a `once=True` timer can also fire
+  after the client is gone and raise against a page nobody is looking at.
+- **`on_value_change` handlers take an argument:** `lambda _: f()`.
+- **Do not put controls inside a refreshable a timer drives.** The dashboard
+  rebuilt every Configure button once a second, destroying it under the
+  operator's pointer. Only the readings refresh; the cards are built once.
+- **Quasar's `outline` button takes the primary colour**, which on the header
+  is the header's own background — the Record button was invisible. Header
+  buttons need `color=white`.
+- Every sensor node carries the calibration methods, so nothing in the address
+  space distinguishes a Hamilton probe from a spectral one. The sensor
+  calibration screen asks each sensor and hides the ones that answer
+  `unsupported`.
 
 ## Conventions
 
@@ -300,7 +274,29 @@ dependency, always installed).
 Several tests carry a `Regression:` note naming the bug they pin. Do not delete
 those without reading them.
 
+<<<<<<< HEAD
 Run the server simulated, with no hardware attached:
+=======
+GUI tests are in three layers, matching the package: `test_gui_address.py`,
+`test_gui_format.py`, `test_gui_control.py`, `test_gui_plots.py`,
+`test_gui_pump_calibration.py` and `test_gui_pairing.py` are pure functions
+over fixture dicts; `test_gui_state.py` drives `AppState` against a fake
+`OpcClient`; `test_gui_pages.py` opens every route through NiceGUI's `user`
+fixture, which builds the real element tree. `tests/gui_main.py` is the module
+that fixture imports — it must call `ui.run()`, which the plugin intercepts,
+or the fixture cannot find the routes. The pytest config loads
+`nicegui.testing.user_plugin` only, **not** `nicegui.testing.plugin`, which
+would drag in the Selenium-backed `screen` fixture and make the suite need a
+browser and a webdriver.
+
+`test_sensor_calibration.py` covers the Modbus orchestration around a Hamilton
+calibration and is behind a `pytest.importorskip("pymodbus")`, so it runs
+where the server extra is installed and stays out of the way of the
+client-only install. What the registers *mean* is in `core/hamilton.py` and is
+tested without pymodbus at all.
+
+Run the server with no hardware at all:
+>>>>>>> da9da893eae3d9808e98b18c6a00cab3c72b57fc
 
 ```bash
 uv run reactors-server --simulated --endpoint opc.tcp://localhost:4840/

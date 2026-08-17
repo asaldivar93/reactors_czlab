@@ -6,10 +6,12 @@ import asyncio
 import contextlib
 import logging
 import re
-from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from collections import deque
+from datetime import datetime, timedelta
+from typing import TYPE_CHECKING, Any, Self
 
 from asyncua import Client, ua
+from asyncua.client.ua_client import UaClientState
 
 from reactors_czlab.core.data import ERROR_VALUE
 from reactors_czlab.sql.operations import (
@@ -34,21 +36,28 @@ QUEUE_MAXSIZE = 1000
 NAME_PARTS = 3
 
 #: Actuator channels archived to the ``data`` table. Every actuator
-#: variable is published by the server and readable by any OPC client;
-#: only the ones named here are subscribed to and stored.
+#: variable is published by the server and remains readable, but only
+#: archival series are subscribed to; configuration and calibration are
+#: read on demand.
 #: ``curr_value`` is the duty last written to the pin, ``total_volume``
 #: the mL a pump has delivered since the server started - both are time
-#: series ``run_plots.py`` filters on. The ``cal_*`` variables are
-#: deliberately absent: they change only when a pump is refitted, so at
-#: the 500 ms publishing interval below, across every actuator on every
-#: reactor, they would fill the table with constants.
+#: series ``run_plots.py`` filters on. The ``cal_*`` and control-config
+#: variables are deliberately absent: they change only when a pump is
+#: refitted or an operator retunes a controller, so at the 500 ms
+#: publishing interval below, across every actuator on every reactor,
+#: they would fill the table with constants.
 ARCHIVED_ACTUATOR_CHANNELS = frozenset({"curr_value", "total_volume"})
 
 
 class OpcClient:
     """Browse an OPC-UA server, subscribe to it and archive the data."""
 
-    def __init__(self, endpoint: str, timeout: float = 5.0) -> None:
+    def __init__(
+        self,
+        endpoint: str,
+        timeout: float = 5.0,
+        history_seconds: float = 0.0,
+    ) -> None:
         """Initialize the client.
 
         Parameters
@@ -57,20 +66,63 @@ class OpcClient:
             opc.tcp://host:port/...
         timeout:
             Seconds before a request to the server is abandoned
+        history_seconds:
+            Seconds of recent archivable notifications to retain in memory.
+            Zero disables the buffer, as it does for the headless archiver.
+
+        Raises
+        ------
+        ValueError
+            If ``history_seconds`` is negative.
 
         """
+        if history_seconds < 0:
+            error_message = "history_seconds must not be negative"
+            raise ValueError(error_message)
         self.endpoint = endpoint
         self.timeout = timeout
+        self.history_seconds = history_seconds
         self._connected = False
         self._queue: asyncio.Queue = asyncio.Queue(maxsize=QUEUE_MAXSIZE)
         self._db_task: asyncio.Task | None = None
+        self.recording_reactors: set[str] = set()
         self.client: Client | None = None
         self.variables: dict[str, dict] = {}
         self.sensor_vars: dict[str, dict] = {}
         self.actuator_vars: dict[str, dict] = {}
         self.methods: dict[str, dict] = {}
+        self._history: dict[str, deque[tuple]] = {}
+        #: Reactor id -> the name of the experiment currently running on
+        #: it. Stamped onto every archived row so a run's data can be
+        #: pulled back out later. A reactor absent from this map records
+        #: with no experiment name, which is what plain recording does.
+        self.experiment_tags: dict[str, str] = {}
 
-    async def __aenter__(self) -> OpcClient:
+    @property
+    def state(self) -> UaClientState:
+        """The live connection state, as asyncua sees it.
+
+        A plain attribute read rather than a round trip, so a user
+        interface can poll it on a timer. Distinguishing CONNECTED from
+        RECONNECTING is what lets a page say "the link dropped and is
+        recovering on its own" instead of a flat "disconnected" that an
+        operator would answer by hitting Retry - which is the one thing
+        that must not happen while asyncua is already recovering.
+        """
+        if self.client is None:
+            return UaClientState.DISCONNECTED
+        return self.client.uaclient.state
+
+    @property
+    def recording(self) -> bool:
+        """Whether at least one reactor is being archived."""
+        return bool(self.recording_reactors)
+
+    def is_recording(self, reactor: str) -> bool:
+        """Whether readings from ``reactor`` are being archived."""
+        return reactor in self.recording_reactors
+
+    async def __aenter__(self) -> Self:
         """Connect on entry."""
         await self.connect()
         return self
@@ -92,28 +144,45 @@ class OpcClient:
         if self._connected:
             return
 
-        self.client = Client(url=self.endpoint, timeout=self.timeout)
+        # auto_reconnect: the server runs on a Pi that gets rebooted and
+        # restarted independently of whatever is watching it. Without
+        # this, a dropped link stays dropped until the client process is
+        # restarted too.
+        self.client = Client(
+            url=self.endpoint,
+            timeout=self.timeout,
+            auto_reconnect=True,
+        )
         await self.client.connect()
         self._connected = True
         _logger.info("Connected to %s", self.endpoint)
 
         try:
-            self.sensor_vars = await self.get_sensor_vars()
-            self.actuator_vars = await self.get_actuator_vars()
-            self.variables = {**self.sensor_vars, **self.actuator_vars}
-            self.methods = await self.get_methods()
-            self.mappings = {
-                "sensor_vars": self.sensor_vars,
-                "actuator_vars": self.actuator_vars,
-                "methods": self.methods,
-            }
+            await self.refresh_browse()
         except Exception:
             _logger.exception("Failed to browse %s", self.endpoint)
             await self.disconnect()
             raise
 
+    async def refresh_browse(self) -> None:
+        """Rebuild every address-space mapping from the connected server."""
+        self.sensor_vars = await self.get_sensor_vars()
+        await self._read_sensor_descriptions()
+        self.actuator_vars = await self.get_actuator_vars()
+        self.variables = {**self.sensor_vars, **self.actuator_vars}
+        self.methods = await self.get_methods()
+        self.mappings = {
+            "sensor_vars": self.sensor_vars,
+            "actuator_vars": self.actuator_vars,
+            "methods": self.methods,
+        }
+
     async def disconnect(self) -> None:
         """Stop the archiver task and close the connection."""
+        # Lower the flag with the task, or `recording` keeps reporting
+        # True after the session is gone and a user interface shows a
+        # recording badge over a dead connection.
+        self.recording_reactors.clear()
         await self.stop_psql()
         if not self._connected or self.client is None:
             return
@@ -131,6 +200,29 @@ class OpcClient:
         """Get a dict of {nodeid: info} for actuators."""
         objects = self.client.nodes.objects
         return await self.match_tree(objects, ACTUATORS_NODE_RE)
+
+    async def _read_sensor_descriptions(self) -> None:
+        """Batch the Description attribute into the sensor browse model."""
+        if not self.sensor_vars:
+            return
+        nodes = [self.client.get_node(nodeid) for nodeid in self.sensor_vars]
+        values = await self.client.read_attributes(
+            nodes,
+            ua.AttributeIds.Description,
+        )
+        for info, data_value in zip(
+            self.sensor_vars.values(),
+            values,
+            strict=True,
+        ):
+            localized = (
+                data_value.Value.Value
+                if data_value.Value is not None
+                else None
+            )
+            info["description"] = (
+                localized.Text if localized is not None else ""
+            )
 
     async def match_tree(
         self,
@@ -198,7 +290,7 @@ class OpcClient:
         return methods
 
     async def init_subscriptions(self) -> None:
-        """Create a subscription to the sensor and actuator variables."""
+        """Subscribe to exactly the variables archived to the database."""
         params = ua.CreateSubscriptionParameters()
         params.RequestedPublishingInterval = 500
         params.RequestedMaxKeepAliveCount = 60
@@ -206,18 +298,44 @@ class OpcClient:
         params.MaxNotificationsPerPublish = 0
         sub = await self.client.create_subscription(params, self)
 
+        # Subscribe what is archived; read every other published value on
+        # demand. This keeps the Pi's monitored-item state aligned with the
+        # only stream this client consumes continuously.
         vars_to_sub = [
-            self.client.get_node(nodeid) for nodeid in self.sensor_vars
-        ]
-        vars_to_sub.extend(
             self.client.get_node(nodeid)
-            for nodeid, info in self.actuator_vars.items()
-            if info["channel"] in ARCHIVED_ACTUATOR_CHANNELS
-        )
+            for nodeid, info in self.variables.items()
+            if self.archives(nodeid, info)
+        ]
         await sub.subscribe_data_change(vars_to_sub)
 
-        names = [(await node.read_browse_name()).Name for node in vars_to_sub]
-        _logger.info("Subscribed to variables %s", names)
+        _logger.info(
+            "Subscribed to %s variables, %s of them archived",
+            len(vars_to_sub),
+            len(vars_to_sub),
+        )
+        if _logger.isEnabledFor(logging.DEBUG):
+            names = [
+                (await node.read_browse_name()).Name for node in vars_to_sub
+            ]
+            _logger.debug("Subscribed to variables %s", names)
+
+    async def read_many(self, nodeids: list[str]) -> list[object]:
+        """Read many variable values in one OPC Read service call."""
+        nodes = [self.client.get_node(nodeid) for nodeid in nodeids]
+        return await self.client.read_values(nodes)
+
+    def archives(self, nodeid: str, info: dict) -> bool:
+        """Whether a notification for this variable belongs in the table.
+
+        Sensor channels are archived wholesale. Actuator variables are
+        filtered to the two that are genuine time series; the rest are
+        subscribed for display only.
+        """
+        if nodeid in self.sensor_vars:
+            return True
+        if nodeid in self.actuator_vars:
+            return info["channel"] in ARCHIVED_ACTUATOR_CHANNELS
+        return False
 
     async def datachange_notification(
         self,
@@ -225,20 +343,58 @@ class OpcClient:
         val: float,
         data: object,
     ) -> None:
-        """Queue new values for the sql database on data change."""
+        """Record a new value, and queue it for the database if archiving.
+
+        ``self.variables`` doubles as the live read model a user
+        interface polls, so the value is recorded first and the
+        decisions about archiving come after.
+        """
         nodeid = node.nodeid.to_string()
         info = self.variables.get(nodeid)
         if info is None:
             return
+
+        # Recorded even when it is the error sentinel, so a display can
+        # show that a probe is failing right now. It is still never
+        # archived - a -0.111 in the data table would be indistinguishable
+        # from a reading.
+        stamp = datetime.now()  # noqa: DTZ005 - database timestamps are naive
+        # store_data writes millisecond precision. Keep the memory copy on
+        # the same timestamp so merge_history can identify their overlap.
+        stamp = stamp.replace(microsecond=stamp.microsecond // 1000 * 1000)
+        info["value"] = val
+        info["timestamp"] = stamp
+
         if val == ERROR_VALUE:
-            # The server could not read the device; do not archive it.
             _logger.debug("Skipping error value from %s", nodeid)
             return
 
-        info["value"] = val
-        info["timestamp"] = datetime.now()
+        if self.history_seconds and self.archives(nodeid, info):
+            row = (
+                nodeid,
+                stamp,
+                info["reactor"],
+                info["name"],
+                info["channel"],
+                val,
+                self.experiment_tags.get(info["reactor"]),
+            )
+            history = self._history.setdefault(nodeid, deque())
+            history.append(row)
+            self._trim_history(history, stamp)
+
+        # Without this the queue fills whenever the archiver is stopped,
+        # and then logs a dropped-row error on every sample forever.
+        if info["reactor"] not in self.recording_reactors:
+            return
+
+        if not self.archives(nodeid, info):
+            return
+
+        row = dict(info)
+        row["experiment_name"] = self.experiment_tags.get(info["reactor"])
         try:
-            self._queue.put_nowait((nodeid, dict(info)))
+            self._queue.put_nowait((nodeid, row))
         except asyncio.QueueFull:
             _logger.error(
                 "Database queue is full (%s items), dropping %s",
@@ -246,7 +402,54 @@ class OpcClient:
                 nodeid,
             )
         else:
-            _logger.debug("Data change in %s: %s", nodeid, info)
+            _logger.debug("Data change in %s: %s", nodeid, row)
+
+    def history_points(
+        self,
+        *,
+        reactor: str | None = None,
+        since: datetime | None = None,
+        now: datetime | None = None,
+    ) -> list[tuple]:
+        """Return a chronological snapshot of recent OPC notifications.
+
+        Parameters
+        ----------
+        reactor:
+            Optional reactor id to select.
+        since:
+            Optional inclusive timestamp cutoff.
+        now:
+            Clock override used by tests. Defaults to wall-clock time.
+
+        """
+        if not self.history_seconds:
+            return []
+
+        # PostgreSQL and the existing read model use naive local timestamps.
+        current = now or datetime.now()  # noqa: DTZ005
+        points: list[tuple] = []
+        empty: list[str] = []
+        for nodeid, history in self._history.items():
+            self._trim_history(history, current)
+            if not history:
+                empty.append(nodeid)
+                continue
+            points.extend(
+                row
+                for row in history
+                if (reactor is None or row[2] == reactor)
+                and (since is None or row[1] >= since)
+            )
+        for nodeid in empty:
+            del self._history[nodeid]
+        return sorted(points, key=lambda row: (row[1], row[0]))
+
+    def _trim_history(self, history: deque[tuple], now: datetime) -> None:
+        """Drop entries older than the configured in-memory window."""
+        cutoff = now - timedelta(seconds=self.history_seconds)
+        while history and history[0][1] < cutoff:
+            history.popleft()
 
     async def start_psql(self) -> None:
         """Start the task that archives queued readings."""
@@ -255,9 +458,36 @@ class OpcClient:
         self._db_task = asyncio.create_task(self.commit_to_db())
         _logger.info("Database task created")
 
+    async def start_recording(self, reactor: str) -> None:
+        """Begin archiving readings from one reactor.
+
+        Idempotent, so a user interface can call it whenever an
+        experiment starts without first checking whether plain recording
+        was already running.
+        """
+        await self.start_psql()
+        self.recording_reactors.add(reactor)
+        _logger.info("Recording started for %s", reactor)
+
+    async def stop_recording(self, reactor: str) -> None:
+        """Stop archiving one reactor. Readings stay readable.
+
+        The flag is lowered before the task is cancelled so nothing can
+        be enqueued in between and sit in the queue until the next
+        start.
+        """
+        self.recording_reactors.discard(reactor)
+        if not self.recording_reactors:
+            await self.stop_psql()
+        _logger.info("Recording stopped for %s", reactor)
+
     async def run_archiver(self) -> None:
         """Start archiving and block until the task finishes."""
-        await self.start_psql()
+        reactors = {
+            info["reactor"] for info in self.variables.values()
+        }
+        for reactor in reactors:
+            await self.start_recording(reactor)
         if self._db_task is not None:
             await self._db_task
 
@@ -305,13 +535,21 @@ class OpcClient:
         return await asyncio.to_thread(connect_to_db)
 
     async def write(self, nodeid: str, value: object) -> bool:
-        """Write a Python value to a node.
+        """Write a Python value to a node, in the node's own type.
+
+        The type is read from the server rather than inferred from the
+        Python value: asyncua encodes a bare ``int`` as ``Int64``, and
+        the control-config nodes that matter most here - ``method`` and
+        ``output_unit`` - are ``UInt32``, which rejects it with
+        ``BadTypeMismatch``. Every enum on an actuator would otherwise be
+        unwritable from a client.
 
         Returns True on success so the caller can react to a failure.
         """
         try:
             node = self.client.get_node(nodeid)
-            await node.write_value(value)
+            variant_type = await node.read_data_type_as_variant_type()
+            await node.write_value(ua.Variant(value, variant_type))
         except (ua.UaError, OSError):
             _logger.exception("Write failed for %s <- %r", nodeid, value)
             return False
@@ -329,3 +567,61 @@ class OpcClient:
         node = self.client.get_node(nodeid)
         parent = await node.get_parent()
         return await parent.call_method(node, *args)
+
+    async def call_slow_method(
+        self,
+        nodeid: str,
+        *args: object,
+        timeout: float,
+    ) -> object:
+        """Call a method that takes seconds to minutes to answer.
+
+        Opens a second, short-lived session for the call instead of
+        using this client's own.
+
+        This is not an optimisation, it is a correctness requirement.
+        asyncua's reconnect supervisor probes the connection every
+        ``watchdog_intervall`` (1 s) with a timeout of the same length,
+        and a method call that outlasts the probe makes the supervisor
+        conclude the link is dead and tear the session down - taking the
+        subscription, and so the whole live display, with it. Measured:
+        with ``auto_reconnect=True`` a call of 4 s or more kills the
+        session regardless of ``timeout``.
+
+        ``calibrate_point`` runs a pump for up to MAX_RUN_SECONDS (600),
+        so it can never go through the shared connection. A separate
+        session is unaffected - and the run's state lives server-side,
+        on the one CalibrationRun the actuator node owns, so a call made
+        from another session drives the same run.
+
+        Parameters
+        ----------
+        nodeid:
+            The method's node id. Node ids are stable for the life of
+            the server process, so one resolved on this client's browse
+            is valid on the temporary session.
+        args:
+            The method arguments.
+        timeout:
+            Seconds to allow. Should exceed however long the operator
+            asked the method to take.
+
+        Raises
+        ------
+        ua.UaError
+            If the server rejected the call.
+        OSError
+            If the temporary session could not be opened.
+
+        """
+        # No auto_reconnect: this session exists for one call, and the
+        # supervisor is exactly what must not run during it.
+        client = Client(url=self.endpoint, timeout=timeout)
+        await client.connect()
+        try:
+            node = client.get_node(nodeid)
+            parent = await node.get_parent()
+            return await parent.call_method(node, *args)
+        finally:
+            with contextlib.suppress(Exception):
+                await client.disconnect()
