@@ -55,6 +55,9 @@ class Actuator(ABC):
         #: Assigned directly (not through the property) - nothing has run
         #: yet, so there is nothing for the property's reset() to bank.
         self._calibrating = False
+        # Identity token for the one autotune run allowed to use the
+        # dispenser while the ordinary control paths are interlocked.
+        self._autotune_owner: object | None = None
         self._control_period = DEFAULT_CONTROL_PERIOD
         self.dispenser = Dispenser(
             OutputUnit.duty,
@@ -102,17 +105,101 @@ class Actuator(ABC):
 
         That ``reset()`` also throws away any bolus deadline, and this
         setter deliberately does not write 0 afterwards - the caller
-        owns the pin across the whole interlock. ``CalibrationRun.
-        calibrate_point()`` is the only caller, and it writes its own
-        duty immediately after raising the flag and 0 in its ``finally``
-        before lowering it. A future caller that raises the flag without
-        taking the pin over would strand the pump at whatever duty was
-        running, exactly as the unit swap in ``set_control_config()``
-        used to.
+        owns the pin across the whole interlock. ``CalibrationRun`` writes
+        its requested duty immediately and zeroes it in ``finally``;
+        ``claim_autotune()`` zeroes the pin as part of taking ownership and
+        then permits only owner-authenticated dispenser demands and ticks.
         """
+        if not calibrating and self._autotune_owner is not None:
+            error_message = (
+                f"{self.id} interlock may only be cleared by its autotune owner"
+            )
+            raise RuntimeError(error_message)
         if calibrating != self._calibrating:
             self.dispenser.reset()
         self._calibrating = calibrating
+
+    @property
+    def autotune_owner(self) -> object | None:
+        """Identity token of the active autotune run, if any."""
+        return self._autotune_owner
+
+    def claim_autotune(self, owner: object) -> None:
+        """Give ``owner`` exclusive autotune access to this actuator.
+
+        Raises
+        ------
+        RuntimeError
+            If a pump calibration or another autotune already owns the
+            actuator.
+        """
+        if owner is None:
+            error_message = "an autotune owner token may not be None"
+            raise ValueError(error_message)
+        if self._autotune_owner is not None:
+            error_message = f"{self.id} is already owned by an autotune"
+            raise RuntimeError(error_message)
+        if self.calibrating:
+            error_message = f"{self.id} is already calibrating"
+            raise RuntimeError(error_message)
+        self._autotune_owner = owner
+        try:
+            self.calibrating = True
+            # Raising the interlock cancels any dispenser deadline, so stop
+            # the physical pin here as part of taking ownership. Otherwise a
+            # pre-existing bolus would be left ON with nothing able to tick it.
+            self.write(0.0)
+            self.channel.old_value = 0.0
+        except Exception:
+            self._autotune_owner = None
+            self.calibrating = False
+            raise
+
+    def autotune_demand(self, owner: object, volume_ml: float) -> None:
+        """Issue an owned volume demand through the existing dispenser.
+
+        The ownership check is intentionally based on object identity. A
+        completed run must not be able to drive a later run merely because
+        it reused the same reactor or actuator ids.
+        """
+        self._require_autotune_owner(owner)
+        if self.dispenser.unit is not OutputUnit.volume:
+            error_message = f"{self.id} is not configured for volume output"
+            raise RuntimeError(error_message)
+        self._write_if_changed(self.dispenser.duty(volume_ml))
+
+    def autotune_tick(self, owner: object) -> None:
+        """Advance only the delivery owned by ``owner``."""
+        self._require_autotune_owner(owner)
+        value = self.dispenser.tick()
+        if value is not None:
+            self._write_if_changed(value)
+
+    def release_autotune(self, owner: object) -> None:
+        """Bank delivered volume, stop the pump, and release ``owner``.
+
+        Cleanup fields are restored even if the hardware write raises. This
+        makes an unexpected terminal path unable to leave the software
+        interlocks wedged around a stale run.
+        """
+        # Recover an orphaned interlock (owner was cleared unexpectedly), but
+        # never let a stale run stop a pump that a different, newer run owns.
+        if self._autotune_owner is not owner and self._autotune_owner is not None:
+            error_message = f"{self.id} is not owned by this autotune run"
+            raise PermissionError(error_message)
+        try:
+            self.dispenser.reset()
+            self.write(0.0)
+        finally:
+            self.channel.old_value = 0.0
+            self._autotune_owner = None
+            self.calibrating = False
+
+    def _require_autotune_owner(self, owner: object) -> None:
+        """Reject missing, wrong, stale, or externally cleared ownership."""
+        if self._autotune_owner is not owner or not self.calibrating:
+            error_message = f"{self.id} is not owned by this autotune run"
+            raise PermissionError(error_message)
 
     @property
     def control_period(self) -> float:
