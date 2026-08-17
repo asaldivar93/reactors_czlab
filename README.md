@@ -203,6 +203,98 @@ Calibrations are saved to `~/.reactors_czlab/calibrations/` as
 `<name>.json`; the `REACTORS_CALIBRATION_DIR` environment variable
 overrides that directory.
 
+## pH PID autotuning
+
+`/reactor/{r}/autotune` runs a relay-feedback experiment for one pH sensor
+and a base/acid pump pair. It tunes pH only; temperature autotuning is out of
+scope.
+
+### Before starting
+
+Select the pH sensor and two different pumps for this reactor. The sensor must
+have exactly one pH channel, and both pumps must already be paired to that
+channel. Each pump must have a fitted, usable calibration and must be
+configured for PID control with **volume** output (mL) and the same pH
+setpoint. Assign reagents deliberately:
+
+- Base pump: `backwards=False`
+- Acid pump: `backwards=True`
+
+The server refuses preflight when any of these requirements is no longer true,
+including an unsafe calibration, a lost pairing, or mismatched setpoints. It
+also checks that each requested bolus can be delivered by that pump at its
+current calibration and control period. A control period above 30 seconds is a
+warning, not by itself a refusal.
+
+### Set up and start
+
+Enter the shared setpoint, base and acid boluses (mL), hysteresis (pH), maximum
+duration (minutes), phosphate concentration (mM), and base and acid titrant
+concentrations (M). The form starts with 0.20 mL boluses, 0.02 pH hysteresis,
+30 minutes, 14 mM phosphate, and 0.5 M for each titrant. The 30-minute default
+is editable; a run with a long relay period may need a larger duration, and no
+completion time is guaranteed.
+
+Preflight calculates the effective safety band as the portion of ±1 pH around
+the setpoint that remains within pH 4.0–10.0. It also derives a combined dose
+budget from reactor volume, phosphate chemistry, the effective band, and the
+two titrant molarities. Leave the budget override empty to use that result. An
+override must be positive and has its own explicit acknowledgement. Starting
+also requires acknowledgement that the pH excursion may affect other control
+loops, then a final confirmation showing the selected pumps, limits, duration,
+and dose budget.
+
+### During the experiment
+
+The server first records a no-dose baseline, then progresses through
+`baseline`, `adapting`, `settling`, and `collecting` phases. The live view
+shows the bounded pH trace with setpoint, hysteresis and safety limits, relay
+direction, current or adapted boluses, baseline noise, cycle counts, actual
+combined dose, elapsed time, and server status. If the relay amplitude is too
+small after an initial cycle, it can increase both boluses together by up to
+2× while preserving their ratio and remaining within delivery and dose limits.
+
+Use **Abort** to end the run. On Abort and every terminal path, the server
+stops both selected pumps and releases the tuning interlock. It also aborts
+for, among other things, a sensor error or
+non-finite pH value, timeout, lost pairing/configuration, dose exhaustion, or
+two consecutive readings outside the effective safety band. A failed or
+aborted result should be reviewed together with its server message before
+making another attempt.
+
+### Review and use the result
+
+An identified run reports Ku and Pu and proposes gains for **TL-PI**,
+**ZN-PID**, **TL-PID**, and **SIMC**. TL-PI is the default selector. Rules
+with derivative action require particular care with pH-signal quality and are
+flagged in the screen.
+
+Gains are never applied automatically. Select a candidate, review its
+`kp`/`ki`/`kd`, and confirm **Apply gains** to update both selected PID
+controllers together. The page also offers two confirmed, server-validated
+actions for a previously applied tune:
+
+- **Scale to current setpoint** scales the audited gains to the pumps' current
+  shared setpoint and applies them to both pumps.
+- **Reapply last tune** reuses the audited gains after revalidating the pump
+  identities, pairings, directions, PID/volume configuration, and
+  calibrations.
+
+Started runs, terminal results, and apply, scale, and reapply attempts and
+outcomes are recorded in the versioned audit document when persistence
+succeeds. An audit I/O failure is reported to the operator and does not prevent
+pump cleanup. The document is
+`~/.reactors_czlab/calibrations/<reactor>_ph_autotune.json` (or in the
+directory selected by `REACTORS_CALIBRATION_DIR`). It records the experiment
+selection, chemistry, effective limits, deliveries, trace/cycle summaries,
+identification when available, and the applied-gain history; it is an audit
+record, not a replacement for reviewing the live process.
+
+The run is owned by the server, not the browser. Navigating away, a GUI
+disconnect, or a GUI restart does not stop an active experiment. Reopen the
+autotune page after reconnecting; it reconstructs the current view from server
+status rather than starting a second run.
+
 ## Tests
 
 ```bash
