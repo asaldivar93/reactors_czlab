@@ -1,33 +1,15 @@
-"""The dialog that reconfigures an actuator's controller.
-
-Thin: the write order lives in ``gui/control.py`` and the unit check in
-``unit_rejection_reason``, both pure and both tested. What is here is
-the form and the reporting.
-
-Two things about this dialog are not cosmetic:
-
-- The fields shown follow the selected method, because the server reads
-  only the fields that method needs.
-- A flow or volume unit is checked against the pump's calibration
-  *before* anything is written. ``check_unit`` makes the same judgement
-  server-side but only logs its refusal - ``set_control_config`` keeps
-  the running controller and tells the client nothing - so without this
-  the operator sees a configuration that appears to have been accepted
-  and has not been.
-"""
+"""The dialog that atomically reconfigures an actuator's controller."""
 
 from __future__ import annotations
 
-import json
 import logging
 
 from nicegui import ui
 
 from reactors_czlab.core.data import ControlMethod, OutputUnit
 from reactors_czlab.gui.control import (
-    build_write_plan,
+    build_config_args,
     fields_for,
-    unit_rejection_reason,
 )
 from reactors_czlab.gui.state import STATE
 
@@ -60,26 +42,6 @@ DEMAND_UNITS = {
 }
 
 
-async def read_calibration(reactor: str, actuator: str) -> dict | None:
-    """Fetch an actuator's calibration state, or None if it has none."""
-    if STATE.book is None or not STATE.book.has_method(
-        reactor,
-        actuator,
-        "get_calibration",
-    ):
-        return None
-    try:
-        payload = await STATE.call(reactor, actuator, "get_calibration")
-    except (LookupError, OSError) as err:
-        _logger.warning("Could not read %s calibration: %s", actuator, err)
-        return None
-    try:
-        return json.loads(payload)
-    except (TypeError, json.JSONDecodeError):
-        _logger.warning("Unreadable calibration payload for %s", actuator)
-        return None
-
-
 def _current(reactor: str, actuator: str, channel: str) -> float | None:
     """The running value of one config channel, for prefilling."""
     value, _ = STATE.reading(reactor, actuator, channel)
@@ -100,7 +62,6 @@ async def open_control_dialog(reactor: str, actuator: str) -> None:
 
 async def _build_dialog(reactor: str, actuator: str) -> None:
     """Build and show the dialog, prefilled from the running config."""
-    calibration = await read_calibration(reactor, actuator)
     state = await _current_selection(reactor, actuator)
 
     # Explicit height, not max-height: a percentage-height child inside
@@ -122,8 +83,6 @@ async def _build_dialog(reactor: str, actuator: str) -> None:
             value=state["output_unit"],
             label="Output unit",
         ).classes("w-full")
-
-        unit_warning = ui.label("").classes("text-sm text-orange-700")
 
         with ui.scroll_area().style("flex: 1; min-height: 0"):
             fields_container = ui.column().classes("w-full").style(
@@ -156,11 +115,6 @@ async def _build_dialog(reactor: str, actuator: str) -> None:
                             format="%.4f",
                         ).classes("w-full")
 
-        def check_unit() -> None:
-            """Report a unit the server would refuse, before writing."""
-            reason = unit_rejection_reason(unit_select.value, calibration)
-            unit_warning.set_text(reason or "")
-
         def on_method_change() -> None:
             _logger.info(
                 "Operator selected method %s for %s",
@@ -175,7 +129,6 @@ async def _build_dialog(reactor: str, actuator: str) -> None:
                 unit_select.value,
                 actuator,
             )
-            check_unit()
             # The demand field is relabelled: the same number means
             # counts, mL/min or mL depending on the unit.
             render_fields()
@@ -184,12 +137,7 @@ async def _build_dialog(reactor: str, actuator: str) -> None:
         unit_select.on_value_change(lambda _: on_unit_change())
 
         async def apply() -> None:
-            """Validate, then write the plan in order."""
-            reason = unit_rejection_reason(unit_select.value, calibration)
-            if reason is not None:
-                ui.notify(reason, type="negative")
-                return
-
+            """Validate, then make one atomic server call."""
             values = {
                 channel: _field_value(widget)
                 for channel, widget in inputs.items()
@@ -207,7 +155,7 @@ async def _build_dialog(reactor: str, actuator: str) -> None:
                 return
 
             try:
-                plan = build_write_plan(
+                args = build_config_args(
                     method_select.value,
                     unit_select.value,
                     values,
@@ -216,38 +164,53 @@ async def _build_dialog(reactor: str, actuator: str) -> None:
                 ui.notify(str(err), type="negative")
                 return
 
-            _logger.info(
-                "Writing control config for %s: %s",
-                actuator,
-                [(w.channel, w.value) for w in plan],
-            )
-            for write in plan:
-                ok = await STATE.write_variable(
+            controls = [
+                method_select,
+                unit_select,
+                cancel_button,
+                apply_button,
+                *inputs.values(),
+            ]
+            for control in controls:
+                control.disable()
+            try:
+                result = await STATE.call(
                     reactor,
                     actuator,
-                    write.channel,
-                    write.value,
+                    "apply_control_config",
+                    *args,
                 )
-                if not ok:
-                    ui.notify(
-                        f"Could not write {write.channel}; "
-                        "the rest of the change was not applied",
-                        type="negative",
-                    )
-                    return
+                accepted, message = result
+            except (LookupError, OSError) as err:
+                accepted = False
+                message = f"Could not apply configuration: {err}"
+            finally:
+                for control in controls:
+                    control.enable()
 
-            ui.notify(f"{actuator} reconfigured", type="positive")
-            dialog.close()
+            _logger.info(
+                "Control config response for %s: %s - %s",
+                actuator,
+                accepted,
+                message,
+            )
+            ui.notify(message, type="positive" if accepted else "negative")
+            if accepted:
+                dialog.close()
 
         # Docked, so Save is reachable without scrolling the form.
         with ui.row().classes("w-full justify-end").style(
             "gap: 0.5rem; padding-top: 0.5rem",
         ):
-            ui.button("Cancel", on_click=dialog.close).props("flat")
-            ui.button("Apply", on_click=apply).props("color=primary")
+            cancel_button = ui.button(
+                "Cancel",
+                on_click=dialog.close,
+            ).props("flat")
+            apply_button = ui.button("Apply", on_click=apply).props(
+                "color=primary",
+            )
 
         render_fields()
-        check_unit()
 
     dialog.open()
 

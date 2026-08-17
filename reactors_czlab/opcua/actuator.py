@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import TYPE_CHECKING
@@ -38,6 +39,14 @@ output_unit_map = {
 }
 
 
+def _argument(name: str, data_type: int) -> ua.Argument:
+    """Build one OPC method argument declaration."""
+    argument = ua.Argument()
+    argument.Name = name
+    argument.DataType = ua.NodeId(data_type)
+    return argument
+
+
 class ActuatorOpc:
     """Actuator node."""
 
@@ -46,6 +55,7 @@ class ActuatorOpc:
         self.actuator = actuator
         self.id = actuator.id
         self.run = CalibrationRun(actuator)
+        self._config_lock = asyncio.Lock()
 
     def __repr__(self) -> str:
         """Print actuator id."""
@@ -96,81 +106,145 @@ class ActuatorOpc:
 
         # Add a node with variables holding the control config
         await self.init_control_node(idx)
-        # Start a subscription to the variables in the control
-        await self.init_control_subscription(server)
+        # Configuration changes are one method call. The variables below
+        # are read-back only; subscribing to individually writable fields
+        # exposed intermediate controller configurations to the fast loop.
+        await self.init_control_methods(idx)
         # Expose the pump calibration workflow
         await self.init_calibration_methods(idx)
 
-    async def init_control_subscription(self, server: Server) -> None:
-        """Create a subscription to the control parameters."""
-        sub = await server.create_subscription(500, self)
-        on_config = await self.control_method.get_variables()
-        await sub.subscribe_data_change(on_config)
-
-    async def datachange_notification(
+    async def apply_control_config(
         self,
-        node: Node,
-        val: float,
-        data: object,
-    ) -> None:
-        """Read the control configuration, and update the actuator."""
-        _logger.debug("Config update: %s:%s:%s", self.actuator.id, node, val)
-        index = await self.method.get_value()
-        try:
-            method = control_method[index]
-        except KeyError:
-            _logger.exception(
-                "%s is not a member of %s",
-                index,
-                sorted(control_method),
-            )
-            return
+        method_index: int,
+        unit_index: int,
+        value: float,
+        time_on: float,
+        time_off: float,
+        lb: float,
+        ub: float,
+        setpoint: float,
+        kp: float,
+        ki: float,
+        kd: float,
+        min_integral: float,
+        max_integral: float,
+        auto_integral_band: bool,
+        backwards: bool,
+    ) -> tuple[bool, str]:
+        """Atomically validate, apply and publish one control config.
 
-        unit_index = await self.output_unit.get_value()
+        Returns
+        -------
+        tuple[bool, str]
+            Whether the configuration was accepted and an
+            operator-readable status message.
+
+        """
+        async with self._config_lock:
+            return await self._apply_control_config_locked(
+                method_index,
+                unit_index,
+                value,
+                time_on,
+                time_off,
+                lb,
+                ub,
+                setpoint,
+                kp,
+                ki,
+                kd,
+                min_integral,
+                max_integral,
+                auto_integral_band,
+                backwards,
+            )
+
+    async def _apply_control_config_locked(
+        self,
+        method_index: int,
+        unit_index: int,
+        value: float,
+        time_on: float,
+        time_off: float,
+        lb: float,
+        ub: float,
+        setpoint: float,
+        kp: float,
+        ki: float,
+        kd: float,
+        min_integral: float,
+        max_integral: float,
+        auto_integral_band: bool,
+        backwards: bool,
+    ) -> tuple[bool, str]:
+        """Apply a config while ``_config_lock`` is held."""
+        try:
+            method = control_method[method_index]
+        except KeyError:
+            message = (
+                f"control method index {method_index} is not one of "
+                f"{sorted(control_method)}"
+            )
+            return (False, message)
+
         try:
             unit = output_unit_map[unit_index]
         except KeyError:
-            _logger.exception(
-                "%s is not a member of %s",
-                unit_index,
-                sorted(output_unit_map),
+            message = (
+                f"output unit index {unit_index} is not one of "
+                f"{sorted(output_unit_map)}"
             )
-            return
+            return (False, message)
 
-        config = ControlConfig(
-            method,
-            value=await self.value.get_value(),
-            output_unit=unit,
-        )
-
-        # Only read the variables the selected method actually needs.
+        fields: dict[str, object]
         match method:
             case ControlMethod.manual:
-                pass
+                fields = {"value": value}
 
             case ControlMethod.timer:
-                config.time_on = await self.time_on.get_value()
-                config.time_off = await self.time_off.get_value()
+                fields = {
+                    "time_on": time_on,
+                    "time_off": time_off,
+                    "value": value,
+                }
 
             case ControlMethod.on_boundaries:
-                config.lb = await self.lb.get_value()
-                config.ub = await self.ub.get_value()
-                config.backwards = await self.backwards.get_value()
+                fields = {
+                    "lb": lb,
+                    "ub": ub,
+                    "value": value,
+                    "backwards": backwards,
+                }
 
             case ControlMethod.pid:
-                config.setpoint = await self.setpoint.get_value()
-                config.kp = await self.kp.get_value()
-                config.ki = await self.ki.get_value()
-                config.kd = await self.kd.get_value()
-                config.backwards = await self.backwards.get_value()
-                config.min_integral = await self.min_integral.get_value()
-                config.max_integral = await self.max_integral.get_value()
-                config.auto_integral_band = (
-                    await self.auto_integral_band.get_value()
-                )
+                fields = {
+                    "setpoint": setpoint,
+                    "kp": kp,
+                    "ki": ki,
+                    "kd": kd,
+                    "min_integral": min_integral,
+                    "max_integral": max_integral,
+                    "auto_integral_band": auto_integral_band,
+                    "backwards": backwards,
+                }
 
-        self.actuator.set_control_config(config)
-        _logger.debug("Control config: %s", config)
+        config = ControlConfig(method, output_unit=unit, **fields)
+        reason = self.actuator.set_control_config(config)
+        if reason is not None:
+            return (False, reason)
+
+        # Publish only after the actuator accepted the whole object. These
+        # variables are now a read-back model, never a command surface.
+        await self.method.write_value(method_index)
+        await self.output_unit.write_value(unit_index)
+        for name, field_value in fields.items():
+            await getattr(self, name).write_value(field_value)
+
+        message = (
+            f"{self.id}: {self.actuator.controller} in "
+            f"{self.actuator.dispenser.unit}"
+        )
+        return (True, message)
 
     async def init_control_node(self, idx: int) -> None:
         """Add configuration variables for the control method.
@@ -190,7 +264,6 @@ class ActuatorOpc:
             f"{self.id}:value",
             0.0,
         )
-        await self.value.set_writable()
 
         # Add variable to record the current status
         self.curr_value = await self.node.add_variable(
@@ -222,7 +295,6 @@ class ActuatorOpc:
             0,
             varianttype=ua.VariantType.UInt32,
         )
-        await self.method.set_writable()
         enum_strings_variant = ua.Variant(
             [ua.LocalizedText(control_method[k]) for k in control_method],
             ua.VariantType.LocalizedText,
@@ -240,7 +312,6 @@ class ActuatorOpc:
             0,
             varianttype=ua.VariantType.UInt32,
         )
-        await self.output_unit.set_writable()
         unit_strings_variant = ua.Variant(
             [ua.LocalizedText(output_unit_map[k]) for k in output_unit_map],
             ua.VariantType.LocalizedText,
@@ -257,13 +328,11 @@ class ActuatorOpc:
             f"{self.id}:time_on",
             0.0,
         )
-        await self.time_on.set_writable()
         self.time_off = await self.control_method.add_variable(
             idx,
             f"{self.id}:time_off",
             0.0,
         )
-        await self.time_off.set_writable()
 
         # OnBoundariesControl
         self.lb = await self.control_method.add_variable(
@@ -271,61 +340,49 @@ class ActuatorOpc:
             f"{self.id}:lb",
             0.0,
         )
-        await self.lb.set_writable()
         self.ub = await self.control_method.add_variable(
             idx,
             f"{self.id}:ub",
             0.0,
         )
-        await self.ub.set_writable()
 
-        # PidControl. Gains and the anti-windup band are live-tunable: a
-        # write reaches the running controller through adopt_config()
-        # without rebuilding it, so a PID keeps its integral. Seeded with
-        # the _PidControl / ControlConfig defaults so a read is meaningful
-        # before the operator writes anything.
+        # PidControl. Seeded with the _PidControl / ControlConfig defaults
+        # so a read is meaningful before the operator applies anything.
         self.setpoint = await self.control_method.add_variable(
             idx,
             f"{self.id}:setpoint",
             0.0,
         )
-        await self.setpoint.set_writable()
         self.kp = await self.control_method.add_variable(
             idx,
             f"{self.id}:kp",
             100.0,
         )
-        await self.kp.set_writable()
         self.ki = await self.control_method.add_variable(
             idx,
             f"{self.id}:ki",
             0.01,
         )
-        await self.ki.set_writable()
         self.kd = await self.control_method.add_variable(
             idx,
             f"{self.id}:kd",
             0.0,
         )
-        await self.kd.set_writable()
         self.min_integral = await self.control_method.add_variable(
             idx,
             f"{self.id}:min_integral",
             0.0,
         )
-        await self.min_integral.set_writable()
         self.max_integral = await self.control_method.add_variable(
             idx,
             f"{self.id}:max_integral",
             MAX_OUTPUT,
         )
-        await self.max_integral.set_writable()
         self.auto_integral_band = await self.control_method.add_variable(
             idx,
             f"{self.id}:auto_integral_band",
             True,
         )
-        await self.auto_integral_band.set_writable()
 
         # Shared by PID and on_boundaries: reverses the controller's sense
         # (an actuator runs one controller at a time, so one flag serves
@@ -335,16 +392,81 @@ class ActuatorOpc:
             f"{self.id}:backwards",
             False,
         )
-        await self.backwards.set_writable()
 
-        # Sensor used as control variable
-        self.curr_sensor = await self.control_method.add_variable(
+    async def init_control_methods(self, idx: int) -> None:
+        """Expose the single atomic control-configuration command."""
+
+        @uamethod
+        async def apply_control_config(
+            parent: Node,
+            method: int,
+            output_unit: int,
+            value: float,
+            time_on: float,
+            time_off: float,
+            lb: float,
+            ub: float,
+            setpoint: float,
+            kp: float,
+            ki: float,
+            kd: float,
+            min_integral: float,
+            max_integral: float,
+            auto_integral_band: bool,
+            backwards: bool,
+        ) -> tuple[bool, str]:
+            """Apply one complete configuration."""
+            return await self.apply_control_config(
+                method,
+                output_unit,
+                value,
+                time_on,
+                time_off,
+                lb,
+                ub,
+                setpoint,
+                kp,
+                ki,
+                kd,
+                min_integral,
+                max_integral,
+                auto_integral_band,
+                backwards,
+            )
+
+        inargs = [
+            _argument("Method", ua.ObjectIds.UInt32),
+            _argument("Output_unit", ua.ObjectIds.UInt32),
+            *(
+                _argument(name, ua.ObjectIds.Double)
+                for name in (
+                    "Value",
+                    "Time_on",
+                    "Time_off",
+                    "Lb",
+                    "Ub",
+                    "Setpoint",
+                    "Kp",
+                    "Ki",
+                    "Kd",
+                    "Min_integral",
+                    "Max_integral",
+                )
+            ),
+            _argument("Auto_integral_band", ua.ObjectIds.Boolean),
+            _argument("Backwards", ua.ObjectIds.Boolean),
+        ]
+        outargs = [
+            _argument("Accepted", ua.ObjectIds.Boolean),
+            _argument("Message", ua.ObjectIds.String),
+        ]
+        await self.node.add_method(
             idx,
-            f"{self.id}:reference_sensor",
-            0,
-            varianttype=ua.VariantType.UInt32,
+            f"{self.id}:apply_control_config",
+            apply_control_config,
+            inargs,
+            outargs,
         )
-        await self.curr_sensor.set_writable()
 
     def calibration_json(self) -> str:
         """Serialise the pump's calibration and its run state.

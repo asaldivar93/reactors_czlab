@@ -1,29 +1,91 @@
-"""Tests for the actuator node's control-config plumbing.
-
-The method and variable bodies are exercised directly against stub nodes:
-asyncua is a base dependency but a running server is not needed.
-"""
+"""Tests for actuator OPC control configuration and read-back values."""
 
 from __future__ import annotations
 
-from reactors_czlab.core.control import _OnBoundariesControl, _PidControl
-from reactors_czlab.core.data import OutputUnit
+from reactors_czlab.core.control import (
+    _PidControl,
+    _TimerControl,
+)
+from reactors_czlab.core.data import ControlConfig, ControlMethod, OutputUnit
 from reactors_czlab.opcua.actuator import ActuatorOpc, output_unit_map
 
 
 class _StubVariable:
-    """An asyncua variable that just holds a value."""
+    """An asyncua variable that records writes."""
 
     def __init__(self, value: object) -> None:
         self.value = value
+        self.writes: list[object] = []
 
     async def get_value(self) -> object:
         """Read the held value."""
         return self.value
 
     async def write_value(self, value: object) -> None:
-        """Store a written value."""
+        """Store and record a written value."""
         self.value = value
+        self.writes.append(value)
+
+
+def _attach_readback(node: ActuatorOpc) -> None:
+    """Install read-back variables without a running OPC server."""
+    for name, value in {
+        "method": 0,
+        "output_unit": 0,
+        "value": 0.0,
+        "time_on": 0.0,
+        "time_off": 0.0,
+        "lb": 0.0,
+        "ub": 0.0,
+        "setpoint": 0.0,
+        "kp": 100.0,
+        "ki": 0.01,
+        "kd": 0.0,
+        "min_integral": 0.0,
+        "max_integral": 4095.0,
+        "auto_integral_band": True,
+        "backwards": False,
+    }.items():
+        setattr(node, name, _StubVariable(value))
+
+
+async def _apply(
+    node: ActuatorOpc,
+    *,
+    method: int = 0,
+    unit: int = 0,
+    value: object = 0.0,
+    time_on: object = 0.0,
+    time_off: object = 0.0,
+    lb: object = 0.0,
+    ub: object = 0.0,
+    setpoint: object = 0.0,
+    kp: object = 100.0,
+    ki: object = 0.01,
+    kd: object = 0.0,
+    min_integral: object = 0.0,
+    max_integral: object = 4095.0,
+    auto_integral_band: object = True,
+    backwards: object = False,
+) -> tuple[bool, str]:
+    """Call the atomic method with named test inputs."""
+    return await node.apply_control_config(
+        method,
+        unit,
+        value,
+        time_on,
+        time_off,
+        lb,
+        ub,
+        setpoint,
+        kp,
+        ki,
+        kd,
+        min_integral,
+        max_integral,
+        auto_integral_band,
+        backwards,
+    )
 
 
 def test_output_unit_map_covers_every_unit() -> None:
@@ -31,115 +93,209 @@ def test_output_unit_map_covers_every_unit() -> None:
     assert set(output_unit_map.values()) == set(OutputUnit)
 
 
-async def test_datachange_reads_the_output_unit(
+async def test_same_method_retune_applies_exactly_one_config(
     make_calibrated_actuator,
+    monkeypatch,
 ) -> None:
-    """Writing unit 1 puts a flow config on the actuator."""
-    actuator = make_calibrated_actuator()
-    node = ActuatorOpc(actuator)
-    node.method = _StubVariable(0)  # manual
-    node.value = _StubVariable(20.0)
-    node.output_unit = _StubVariable(1)  # flow
+    """One Apply cannot expose a half-retuned controller.
 
-    await node.datachange_notification(None, 0.0, None)
-
-    assert actuator.dispenser.unit is OutputUnit.flow
-    assert actuator.controller.value == 20.0
-
-
-async def test_datachange_defaults_to_duty_on_a_bad_unit(
-    make_calibrated_actuator,
-) -> None:
-    """An out of range index is logged and ignored, not fatal."""
-    actuator = make_calibrated_actuator()
-    node = ActuatorOpc(actuator)
-    node.method = _StubVariable(0)
-    node.value = _StubVariable(150.0)
-    node.output_unit = _StubVariable(99)
-
-    await node.datachange_notification(None, 0.0, None)
-
-    assert actuator.dispenser.unit is OutputUnit.duty
-
-
-async def test_redundant_write_preserves_identity_in_flow_mode(
-    make_calibrated_actuator,
-) -> None:
-    """A no-op OPC write in flow mode must not revert to duty.
-
-    Regression: ``datachange_notification`` used to build
-    ``ControlConfig`` with no ``output_unit``, which defaults to
-    ``OutputUnit.duty``. Any unrelated write - even one that changes
-    nothing meaningful - silently reverted a pump dosing in mL/min
-    back to raw duty and rebuilt the controller, discarding a running
-    PID's integral.
+    Regression: sequential variable writes applied a new PID setpoint with
+    the old gain before a second notification installed the intended gain.
     """
     actuator = make_calibrated_actuator()
+    actuator.set_control_config(
+        ControlConfig(ControlMethod.pid, setpoint=7.0, kp=100.0),
+    )
     node = ActuatorOpc(actuator)
-    node.method = _StubVariable(0)  # manual
-    node.value = _StubVariable(20.0)
-    node.output_unit = _StubVariable(1)  # flow
+    _attach_readback(node)
+    calls: list[ControlConfig] = []
+    original = actuator.set_control_config
 
-    await node.datachange_notification(None, 0.0, None)
-    assert actuator.dispenser.unit is OutputUnit.flow
+    def record(config: ControlConfig) -> str | None:
+        calls.append(config)
+        return original(config)
 
-    controller_before = actuator.controller
-    dispenser_before = actuator.dispenser
+    monkeypatch.setattr(actuator, "set_control_config", record)
 
-    # Redundant write: identical method, value, and unit.
-    await node.datachange_notification(None, 0.0, None)
+    accepted, _ = await _apply(node, method=3, setpoint=8.0, kp=50.0)
 
-    assert actuator.controller is controller_before
-    assert actuator.dispenser is dispenser_before
-    assert actuator.dispenser.unit is OutputUnit.flow
+    assert accepted is True
+    assert len(calls) == 1
+    assert (calls[0].setpoint, calls[0].kp) == (8.0, 50.0)
 
 
-async def test_datachange_reads_pid_gains_backwards_and_band(
+async def test_boundaries_swap_never_exposes_an_inverted_band(
+    make_calibrated_actuator,
+    monkeypatch,
+) -> None:
+    """Both boundary values reach the actuator in the same object."""
+    actuator = make_calibrated_actuator()
+    actuator.set_control_config(
+        ControlConfig(ControlMethod.on_boundaries, lb=6.0, ub=8.0),
+    )
+    node = ActuatorOpc(actuator)
+    _attach_readback(node)
+    calls: list[ControlConfig] = []
+    original = actuator.set_control_config
+
+    def record(config: ControlConfig) -> str | None:
+        calls.append(config)
+        return original(config)
+
+    monkeypatch.setattr(actuator, "set_control_config", record)
+    accepted, _ = await _apply(node, method=2, lb=9.0, ub=11.0)
+
+    assert accepted is True
+    assert [(config.lb, config.ub) for config in calls] == [(9.0, 11.0)]
+    assert all(config.lb <= config.ub for config in calls)
+
+
+async def test_invalid_enum_leaves_the_controller_unchanged(
     make_calibrated_actuator,
 ) -> None:
-    """A PID write carries gains, the backwards flag and the band."""
+    """An unknown enum is rejected before the actuator is touched."""
     actuator = make_calibrated_actuator()
     node = ActuatorOpc(actuator)
-    node.method = _StubVariable(3)  # pid
-    node.value = _StubVariable(0.0)
-    node.output_unit = _StubVariable(0)  # duty
-    node.setpoint = _StubVariable(7.0)
-    node.kp = _StubVariable(5.0)
-    node.ki = _StubVariable(2.0)
-    node.kd = _StubVariable(1.0)
-    node.backwards = _StubVariable(True)
-    node.min_integral = _StubVariable(1.0)
-    node.max_integral = _StubVariable(5.0)
-    node.auto_integral_band = _StubVariable(False)
+    _attach_readback(node)
+    before = actuator.controller
 
-    await node.datachange_notification(None, 0.0, None)
+    accepted, message = await _apply(node, method=99)
 
-    control = actuator.controller
-    assert isinstance(control, _PidControl)
-    assert (control.kp, control.ki, control.kd) == (5.0, 2.0, 1.0)
-    assert control.backwards is True
-    assert control._integral_band_is_default is False
-    assert (control.min_integral, control.max_integral) == (1.0, 5.0)
+    assert accepted is False
+    assert "99" in message
+    assert actuator.controller is before
+    assert node.method.writes == []
 
 
-async def test_datachange_reads_boundaries_backwards(
+async def test_invalid_output_unit_leaves_the_controller_unchanged(
     make_calibrated_actuator,
 ) -> None:
-    """An on_boundaries write carries the backwards flag."""
+    """Unit indices are validated independently of method indices."""
     actuator = make_calibrated_actuator()
     node = ActuatorOpc(actuator)
-    node.method = _StubVariable(2)  # on_boundaries
-    node.value = _StubVariable(150.0)
-    node.output_unit = _StubVariable(0)  # duty
-    node.lb = _StubVariable(1.0)
-    node.ub = _StubVariable(2.0)
-    node.backwards = _StubVariable(True)
+    _attach_readback(node)
+    before = actuator.controller
 
-    await node.datachange_notification(None, 0.0, None)
+    accepted, message = await _apply(node, unit=99)
 
-    control = actuator.controller
-    assert isinstance(control, _OnBoundariesControl)
-    assert control.backwards is True
+    assert accepted is False
+    assert "99" in message
+    assert actuator.controller is before
+    assert node.output_unit.writes == []
+
+
+async def test_rejected_unit_leaves_the_controller_unchanged(
+    make_actuator,
+) -> None:
+    """The server's calibration reason comes back to the caller."""
+    actuator = make_actuator()
+    node = ActuatorOpc(actuator)
+    _attach_readback(node)
+    before = actuator.controller
+
+    accepted, message = await _apply(node, unit=1, value=10.0)
+
+    assert accepted is False
+    assert "calibration" in message
+    assert actuator.controller is before
+    assert node.output_unit.writes == []
+
+
+async def test_bad_field_type_leaves_the_controller_unchanged(
+    make_calibrated_actuator,
+) -> None:
+    """A field validation failure is an ordinary method rejection."""
+    actuator = make_calibrated_actuator()
+    node = ActuatorOpc(actuator)
+    _attach_readback(node)
+    before = actuator.controller
+
+    accepted, message = await _apply(node, value=[])
+
+    assert accepted is False
+    assert "must be a number" in message
+    assert actuator.controller is before
+
+
+async def test_same_method_pid_tuning_preserves_runtime_state(
+    make_calibrated_actuator,
+) -> None:
+    """Atomic transport still uses the actuator's in-place adoption."""
+    actuator = make_calibrated_actuator()
+    actuator.set_control_config(
+        ControlConfig(ControlMethod.pid, setpoint=7.0, kp=100.0),
+    )
+    controller = actuator.controller
+    assert isinstance(controller, _PidControl)
+    controller._integral_sum = 12.0
+    node = ActuatorOpc(actuator)
+    _attach_readback(node)
+
+    accepted, _ = await _apply(node, method=3, setpoint=8.0, kp=50.0)
+
+    assert accepted is True
+    assert actuator.controller is controller
+    assert controller._integral_sum == 12.0
+
+
+async def test_accepted_config_updates_only_its_readback_fields(
+    make_calibrated_actuator,
+) -> None:
+    """Read-back changes only after the whole config was accepted."""
+    actuator = make_calibrated_actuator()
+    node = ActuatorOpc(actuator)
+    _attach_readback(node)
+
+    accepted, _ = await _apply(
+        node,
+        method=2,
+        value=500.0,
+        lb=6.0,
+        ub=8.0,
+        backwards=True,
+        kp=999.0,
+    )
+
+    assert accepted is True
+    assert node.method.writes == [2]
+    assert node.lb.writes == [6.0]
+    assert node.ub.writes == [8.0]
+    assert node.backwards.writes == [True]
+    assert node.kp.writes == []
+
+
+async def test_same_method_timer_tuning_preserves_phase(
+    make_calibrated_actuator,
+) -> None:
+    """A timer retune does not restart its current phase."""
+    actuator = make_calibrated_actuator()
+    actuator.set_control_config(
+        ControlConfig(
+            ControlMethod.timer,
+            time_on=2.0,
+            time_off=3.0,
+            value=100.0,
+        ),
+    )
+    controller = actuator.controller
+    assert isinstance(controller, _TimerControl)
+    controller._is_on = False
+    last_time = controller._last_time
+    node = ActuatorOpc(actuator)
+    _attach_readback(node)
+
+    accepted, _ = await _apply(
+        node,
+        method=1,
+        value=200.0,
+        time_on=4.0,
+        time_off=5.0,
+    )
+
+    assert accepted is True
+    assert actuator.controller is controller
+    assert controller._is_on is False
+    assert controller._last_time == last_time
 
 
 async def test_update_value_publishes_the_pump_totals(
