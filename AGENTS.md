@@ -12,7 +12,7 @@ Dependency direction: `core` never imports `opcua`. `data.py` imports
 nothing. `gui` may import `opcua` and `sql`; nothing imports `gui`, and
 `core` is untouched by it. `gui/__init__.py` stays docstring-only for the
 same reason `core/__init__.py` does — a re-export would force every
-install, including a headless Pi server, to carry `nicegui`.
+install, including a headless Pi server, to carry `nicegui` and `plotly`.
 
 ## Hard constraints — breaking these breaks a deployment
 
@@ -200,18 +200,21 @@ client can *show* state it could previously only change:
   `MAX_RUN_SECONDS` (600), so it goes through `OpcClient.call_slow_method`,
   which opens a throwaway session. **Any future long-running method must do
   the same.**
-- **Control-config writes are ordered: parameters, then `output_unit`, then
-  `method` last.** `ActuatorOpc.datachange_notification` rebuilds the whole
-  `ControlConfig` on *every* notification, reading only the fields the
-  currently selected method needs, so writing `method` first applies the new
-  controller to the previous configuration's gains for one notification —
-  on a pump, that doses. `gui/control.py` builds the plan; a test pins the
-  order with a `Regression:` note.
-- **A rejected control config is silent.** `set_control_config` catches the
-  `TypeError`, logs it and keeps the running controller. So does
-  `check_unit()` for a flow/volume unit on an unfitted pump. The form asks
-  `unit_rejection_reason()` *before* writing, or the operator sees a
-  configuration that looks accepted and is not.
+- **Control configuration is one atomic method call.** Individual control
+  variables are read-only. `{id}:apply_control_config` constructs and
+  validates the complete candidate under `_config_lock`, applies it once, and
+  publishes the read-back variables before releasing the lock. It returns
+  `(accepted, message)`; the GUI always reloads `{id}:get_control_config`
+  afterward, so a rejected unit or invalid band is visible instead of looking
+  accepted. A generic OPC client must use the method, never try to make the
+  fields writable again or restore the old per-variable subscription.
+- **Subscribe what is archived.** `OpcClient.init_subscriptions()` monitors
+  sensor channels plus actuator `curr_value` and `total_volume`; configuration,
+  calibration and pairing state are read on demand. The old `ActuatorOpc`
+  internal subscription was removed with per-variable configuration writes.
+  asyncua 2.0.1 recreates its existing live subscriptions after reconnect, so
+  `AppState` rebrowses node ids and rebuilds the address book but must not call
+  `init_subscriptions()` a second time — doing so duplicates notifications.
 - **Elements built inside a `ui.timer` callback render but their event
   handlers never fire.** This made the control dialog's Apply and Cancel dead.
   Pass async handlers to `on_click` directly, and let a page `await` its own

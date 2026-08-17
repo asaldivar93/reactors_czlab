@@ -39,10 +39,16 @@ For the web GUI, on either machine:
 uv sync --extra gui
 ```
 
+For database recording, experiments and migrations as well:
+
+```bash
+uv sync --extra gui --extra client
+```
+
 The `server` and `client` extras are independent: a client install has
 no pymodbus and a server install has no psycopg, so import the
 subpackage you need rather than the top level package. `gui` is
-independent of both — it carries only NiceGUI, and the screens that
+independent of both — it carries NiceGUI and Plotly, and the screens that
 need a database disable themselves with a reason when psycopg is
 missing.
 
@@ -84,16 +90,17 @@ can serve it to a laptop on the same network.
 
 **It replaces `reactors-client`, it does not run beside it.** The GUI
 process hosts the archiver itself, so running both against one database
-inserts every reading twice. Recording is a button in the header,
-independent of any experiment; if the GUI process dies, recording stops
-— the same exposure `reactors-client` has.
+inserts every reading twice. Recording is selected per reactor,
+independent of any experiment. The selection is persisted in PostgreSQL:
+if the GUI process dies, archiving stops while it is down and the selected
+reactors resume when it restarts.
 
 The screens are:
 
 | Route | What it does |
 |---|---|
-| `/` | The reactors, and the recording toggle |
-| `/reactor/{r}` | Live values, controller configuration, pair/unpair |
+| `/` | The reactors and recording summary |
+| `/reactor/{r}` | Live values, per-reactor recording, controller configuration, pair/unpair |
 | `/reactor/{r}/plots` | pH, dissolved oxygen, temperature, biomass |
 | `/reactor/{r}/calibration/sensors` | Hamilton CP1 and CP2 |
 | `/reactor/{r}/calibration/pumps` | A full pump calibration run |
@@ -126,13 +133,16 @@ Create the schema once:
 psql -f reactors_czlab/sql/Bioreactor.sql
 ```
 
-A database created before the experiment interface existed needs the
-migration instead — it adds `data.experiment_name`, the indexes the
-plots query on, and rebuilds `experiments`:
+A database created by an older build must be migrated explicitly. The
+runner applies every pending migration in order and is safe to run again:
 
 ```bash
-psql -d bioreactor_db -f reactors_czlab/sql/migrations/2026-08-02-experiments.sql
+uv run reactors-db-migrate
 ```
+
+The GUI checks the recorded schema version at startup. Database-dependent
+features stay disabled with the migration command shown until the schema is
+current; the server and live OPC displays continue to work.
 
 Connection settings come from the environment, defaulting to the
 `bioreactor_db` database as the current OS user:
@@ -147,6 +157,19 @@ from its own controller. Calling the `<reactor>:set_pairing` OPC method with
 a sensor id, an actuator id and a channel index moves that actuator into
 `sampling_loop`, where it is driven from the paired sensor channel once per
 sample period. `<reactor>:unpair` hands it back.
+
+## Configuring actuators over OPC UA
+
+Control configuration is one atomic OPC method call:
+`<actuator>:apply_control_config`. It returns an accepted flag and the
+server's validation message; `<actuator>:get_control_config` returns the
+configuration that is actually running plus the server's enum options.
+
+**The individual control variables (`method`, `output_unit`, gains, bounds,
+times, and related fields) are read-only.** Generic OPC clients that used to
+write those variables one at a time must call `apply_control_config()`
+instead. This prevents the 20 Hz actuator loop from observing a partially
+written configuration.
 
 ## Calibrating a pump
 
@@ -193,9 +216,10 @@ The suite under `tests/` runs without hardware and without pymodbus.
 - Mass Flow Controller Modbus
 - Restore server from power out
 - Restore client from power out
-- Run the GUI on the Pi, and against a real Hamilton probe: the
+- Run the GUI on the Pi, benchmark its four Plotly WebGL charts, and test
+  against a real Hamilton probe: the
   calibration screen's numbers depend on the Modbus word order, which
-  has never been checked against hardware (see CLAUDE.md)
+  has never been checked against hardware (see AGENTS.md)
 - Exercise the experiment interface against a real PostgreSQL
 - Authentication, before the GUI is on a routable network
 
