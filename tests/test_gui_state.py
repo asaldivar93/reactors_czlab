@@ -24,9 +24,15 @@ class FakeOpcClient:
     #: Every client built, so a test can assert how many were.
     instances: ClassVar[list[FakeOpcClient]] = []
 
-    def __init__(self, endpoint: str, timeout: float = 5.0) -> None:
+    def __init__(
+        self,
+        endpoint: str,
+        timeout: float = 5.0,
+        history_seconds: float = 0.0,
+    ) -> None:
         """Record the instance so a test can count how many were built."""
         self.endpoint = endpoint
+        self.history_seconds = history_seconds
         self.state = UaClientState.DISCONNECTED
         self.recording_reactors: set[str] = set()
         self.variables: dict[str, dict] = {}
@@ -130,6 +136,15 @@ class TestConnect:
         assert app.connected
         assert app.book is not None
         assert app.connection_error is None
+
+    async def test_gui_history_window_reaches_the_client(self) -> None:
+        """The GUI opts in while the headless OpcClient default stays zero."""
+        from reactors_czlab.run_gui import GUI_HISTORY_SECONDS
+
+        app = AppState(history_seconds=GUI_HISTORY_SECONDS)
+        await app.connect()
+
+        assert app.client.history_seconds == 8 * 60 * 60
 
     async def test_a_server_that_is_down_never_raises(
         self,

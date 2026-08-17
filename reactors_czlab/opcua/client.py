@@ -6,8 +6,9 @@ import asyncio
 import contextlib
 import logging
 import re
-from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from collections import deque
+from datetime import datetime, timedelta
+from typing import TYPE_CHECKING, Any, Self
 
 from asyncua import Client, ua
 from asyncua.client.ua_client import UaClientState
@@ -51,7 +52,12 @@ ARCHIVED_ACTUATOR_CHANNELS = frozenset({"curr_value", "total_volume"})
 class OpcClient:
     """Browse an OPC-UA server, subscribe to it and archive the data."""
 
-    def __init__(self, endpoint: str, timeout: float = 5.0) -> None:
+    def __init__(
+        self,
+        endpoint: str,
+        timeout: float = 5.0,
+        history_seconds: float = 0.0,
+    ) -> None:
         """Initialize the client.
 
         Parameters
@@ -60,10 +66,22 @@ class OpcClient:
             opc.tcp://host:port/...
         timeout:
             Seconds before a request to the server is abandoned
+        history_seconds:
+            Seconds of recent archivable notifications to retain in memory.
+            Zero disables the buffer, as it does for the headless archiver.
+
+        Raises
+        ------
+        ValueError
+            If ``history_seconds`` is negative.
 
         """
+        if history_seconds < 0:
+            error_message = "history_seconds must not be negative"
+            raise ValueError(error_message)
         self.endpoint = endpoint
         self.timeout = timeout
+        self.history_seconds = history_seconds
         self._connected = False
         self._queue: asyncio.Queue = asyncio.Queue(maxsize=QUEUE_MAXSIZE)
         self._db_task: asyncio.Task | None = None
@@ -73,6 +91,7 @@ class OpcClient:
         self.sensor_vars: dict[str, dict] = {}
         self.actuator_vars: dict[str, dict] = {}
         self.methods: dict[str, dict] = {}
+        self._history: dict[str, deque[tuple]] = {}
         #: Reactor id -> the name of the experiment currently running on
         #: it. Stamped onto every archived row so a run's data can be
         #: pulled back out later. A reactor absent from this map records
@@ -103,7 +122,7 @@ class OpcClient:
         """Whether readings from ``reactor`` are being archived."""
         return reactor in self.recording_reactors
 
-    async def __aenter__(self) -> OpcClient:
+    async def __aenter__(self) -> Self:
         """Connect on entry."""
         await self.connect()
         return self
@@ -339,12 +358,30 @@ class OpcClient:
         # show that a probe is failing right now. It is still never
         # archived - a -0.111 in the data table would be indistinguishable
         # from a reading.
+        stamp = datetime.now()  # noqa: DTZ005 - database timestamps are naive
+        # store_data writes millisecond precision. Keep the memory copy on
+        # the same timestamp so merge_history can identify their overlap.
+        stamp = stamp.replace(microsecond=stamp.microsecond // 1000 * 1000)
         info["value"] = val
-        info["timestamp"] = datetime.now()
+        info["timestamp"] = stamp
 
         if val == ERROR_VALUE:
             _logger.debug("Skipping error value from %s", nodeid)
             return
+
+        if self.history_seconds and self.archives(nodeid, info):
+            row = (
+                nodeid,
+                stamp,
+                info["reactor"],
+                info["name"],
+                info["channel"],
+                val,
+                self.experiment_tags.get(info["reactor"]),
+            )
+            history = self._history.setdefault(nodeid, deque())
+            history.append(row)
+            self._trim_history(history, stamp)
 
         # Without this the queue fills whenever the archiver is stopped,
         # and then logs a dropped-row error on every sample forever.
@@ -366,6 +403,53 @@ class OpcClient:
             )
         else:
             _logger.debug("Data change in %s: %s", nodeid, row)
+
+    def history_points(
+        self,
+        *,
+        reactor: str | None = None,
+        since: datetime | None = None,
+        now: datetime | None = None,
+    ) -> list[tuple]:
+        """Return a chronological snapshot of recent OPC notifications.
+
+        Parameters
+        ----------
+        reactor:
+            Optional reactor id to select.
+        since:
+            Optional inclusive timestamp cutoff.
+        now:
+            Clock override used by tests. Defaults to wall-clock time.
+
+        """
+        if not self.history_seconds:
+            return []
+
+        # PostgreSQL and the existing read model use naive local timestamps.
+        current = now or datetime.now()  # noqa: DTZ005
+        points: list[tuple] = []
+        empty: list[str] = []
+        for nodeid, history in self._history.items():
+            self._trim_history(history, current)
+            if not history:
+                empty.append(nodeid)
+                continue
+            points.extend(
+                row
+                for row in history
+                if (reactor is None or row[2] == reactor)
+                and (since is None or row[1] >= since)
+            )
+        for nodeid in empty:
+            del self._history[nodeid]
+        return sorted(points, key=lambda row: (row[1], row[0]))
+
+    def _trim_history(self, history: deque[tuple], now: datetime) -> None:
+        """Drop entries older than the configured in-memory window."""
+        cutoff = now - timedelta(seconds=self.history_seconds)
+        while history and history[0][1] < cutoff:
+            history.popleft()
 
     async def start_psql(self) -> None:
         """Start the task that archives queued readings."""

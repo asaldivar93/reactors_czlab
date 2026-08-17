@@ -41,10 +41,12 @@ class AppState:
         self,
         endpoint: str = DEFAULT_ENDPOINT,
         period: float = DEFAULT_PERIOD,
+        history_seconds: float = 0.0,
     ) -> None:
         """Store the connection settings; nothing connects yet."""
         self.endpoint = endpoint
         self.period = period
+        self.history_seconds = history_seconds
         self.client: OpcClient | None = None
         self.book: AddressBook | None = None
         self.connection_error: str | None = None
@@ -141,7 +143,13 @@ class AppState:
             if self.client is not None:
                 return
 
-            client = OpcClient(self.endpoint)
+            if self.history_seconds:
+                client = OpcClient(
+                    self.endpoint,
+                    history_seconds=self.history_seconds,
+                )
+            else:
+                client = OpcClient(self.endpoint)
             try:
                 await client.connect()
                 await client.init_subscriptions()

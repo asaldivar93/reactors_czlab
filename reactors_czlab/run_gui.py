@@ -23,6 +23,8 @@ _logger = logging.getLogger("gui")
 
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8080
+#: Recent subscription history kept even when PostgreSQL is unavailable.
+GUI_HISTORY_SECONDS = 8 * 60 * 60
 
 
 #: Loggers whose output belongs in gui.log. The GUI process hosts the
@@ -73,6 +75,7 @@ def cli() -> None:
 
     STATE.endpoint = args.endpoint
     STATE.period = args.period
+    STATE.history_seconds = GUI_HISTORY_SECONDS
 
     # connect() never raises: a server that is not up yet is the normal
     # state on boot, and the pages offer a Retry.

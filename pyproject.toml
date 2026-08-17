@@ -43,6 +43,7 @@ gui = [
     # Pure-Python wheel (py3-none-any), so the Pi install carries no
     # compiled GUI dependency of its own.
     "nicegui>=2.0",
+    "plotly>=6.0",
 ]
 dev = [
     "pytest>=8.0",
@@ -52,6 +53,7 @@ dev = [
     # fixture, so the dev extra needs nicegui even though the gui extra
     # is what a deployment installs.
     "nicegui>=2.0",
+    "plotly>=6.0",
 ]
 
 [project.scripts]

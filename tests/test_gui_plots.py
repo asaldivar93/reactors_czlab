@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 
 from reactors_czlab.gui.controllers.plots import (
     BIOMASS_CHANNELS,
+    MAX_TRACE_POINTS,
     PANELS,
     Series,
     append_live_point,
     build_series,
+    downsample,
+    merge_history,
     panel_filters,
     series_label,
     window_range,
@@ -222,15 +226,68 @@ class TestSeriesLabel:
         assert series_label("do", "oC") != series_label("ph", "oC")
 
 
+class TestDownsample:
+    """Bounding browser data without hiding important measurements."""
+
+    def test_never_exceeds_the_cap_and_preserves_extrema(self) -> None:
+        """Regression: a long window made every Plotly trace unbounded."""
+        points = [
+            (BASE + timedelta(seconds=index), float(index % 37))
+            for index in range(MAX_TRACE_POINTS * 2)
+        ]
+        points[1777] = (points[1777][0], -1000.0)
+        points[6333] = (points[6333][0], 2000.0)
+
+        sampled = downsample(points)
+
+        assert len(sampled) <= MAX_TRACE_POINTS
+        assert sampled[0] == points[0]
+        assert sampled[-1] == points[-1]
+        assert points[1777] in sampled
+        assert points[6333] in sampled
+
+    def test_is_deterministic(self) -> None:
+        """The same query produces the same points and visual shape."""
+        points = [
+            (BASE + timedelta(seconds=index), float(index % 11))
+            for index in range(100)
+        ]
+        assert downsample(points, 20) == downsample(points, 20)
+
+    def test_small_series_is_unchanged(self) -> None:
+        """There is no reason to alter data already below the cap."""
+        points = [(BASE, 1.0), (BASE + timedelta(seconds=1), 2.0)]
+        assert downsample(points, 4) == points
+
+
+class TestMergeHistory:
+    """Joining PostgreSQL history to the recent OPC buffer."""
+
+    def test_deduplicates_timestamp_and_nodeid(self) -> None:
+        """The overlap between the two sources is rendered once."""
+        persisted = _row("ph", "pH", 7.0)
+        recent = (*persisted[:5], 7.1, None)
+
+        merged = merge_history([persisted], [recent])
+
+        assert merged == [recent]
+
+    def test_same_timestamp_from_two_nodes_survives(self) -> None:
+        """Two probe channels can legitimately share one timestamp."""
+        first = _row("ph", "oC", 30.0)
+        second = ("ns=2;i=11", *first[1:3], "do", "oC", 29.0, None)
+        assert len(merge_history([first], [second])) == 2
+
+
 class TestChartOptions:
-    """The ECharts option dictionary the page builds."""
+    """The Plotly figure dictionary the page builds."""
 
     def test_the_x_axis_is_a_real_time_axis(self) -> None:
         """The requirement is dates and times, not elapsed minutes."""
-        from reactors_czlab.gui.pages.plots import _options
+        from reactors_czlab.gui.pages.plots import _figure
 
-        options = _options(PANELS[0], [])
-        assert options["xAxis"]["type"] == "time"
+        figure = _figure(PANELS[0], [])
+        assert figure["layout"]["xaxis"]["type"] == "date"
 
     def test_the_window_pins_the_left_edge_of_the_axis(self) -> None:
         """Regression: the window selector appeared to do nothing.
@@ -239,37 +296,131 @@ class TestChartOptions:
         exist, so a freshly opened page holding two live readings drew a
         multi-day axis while the selector said "2 h".
         """
-        from reactors_czlab.gui.pages.plots import _options
+        from reactors_czlab.gui.pages.plots import _figure
 
         cutoff = BASE - timedelta(hours=2)
-        options = _options(PANELS[0], [], cutoff)
+        figure = _figure(PANELS[0], [], cutoff)
 
-        assert options["xAxis"]["min"] == int(cutoff.timestamp() * 1000)
+        assert figure["layout"]["xaxis"]["range"][0] == cutoff.isoformat()
+        assert figure["layout"]["xaxis"]["range"][1] is None
+        assert figure["layout"]["xaxis"]["autorange"] == "max"
 
     def test_the_all_window_leaves_the_axis_free(self) -> None:
         """"All" has no cutoff, so the axis must not be pinned."""
-        from reactors_czlab.gui.pages.plots import _options
+        from reactors_czlab.gui.pages.plots import _figure
 
-        assert "min" not in _options(PANELS[0], [], None)["xAxis"]
+        assert "range" not in _figure(PANELS[0], [], None)["layout"]["xaxis"]
 
     def test_series_are_scatter_on_the_time_axis(self) -> None:
         """The requirement names scatter plots."""
-        from reactors_czlab.gui.pages.plots import _options
+        from reactors_czlab.gui.pages.plots import _figure
 
         series = build_series([_row("ph", "pH", 7.0)], (("ph", "pH"),))
-        options = _options(PANELS[0], series)
+        figure = _figure(PANELS[0], series)
 
-        assert options["series"][0]["type"] == "scatter"
-        assert options["series"][0]["data"] == [
-            [int(BASE.timestamp() * 1000), 7.0],
-        ]
+        assert figure["data"][0]["type"] == "scattergl"
+        assert figure["data"][0]["x"] == [BASE.isoformat()]
+        assert figure["data"][0]["y"] == [7.0]
 
     def test_every_series_is_in_the_legend(self) -> None:
         """Two probes on the temperature chart need two legend entries."""
-        from reactors_czlab.gui.pages.plots import _options
+        from reactors_czlab.gui.pages.plots import _figure
 
         temperature = next(p for p in PANELS if p.key == "temperature")
         series = build_series([], temperature.filters)
-        options = _options(temperature, series)
+        figure = _figure(temperature, series)
 
-        assert options["legend"]["data"] == ["ph:oC", "do:oC"]
+        assert [trace["name"] for trace in figure["data"]] == [
+            "ph:oC",
+            "do:oC",
+        ]
+
+
+class TestIncrementalRendering:
+    """Whole figures rebuild only when their query shape changes."""
+
+    async def test_idle_poll_does_not_update_the_chart(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Regression: an idle plot page redrew all four charts every poll."""
+        from reactors_czlab.gui.pages import plots
+
+        class Chart:
+            def __init__(self) -> None:
+                self.calls: list[tuple] = []
+
+            def run_plot_method(self, *args: object) -> None:
+                self.calls.append(args)
+
+        chart = Chart()
+        state = {
+            "window": "2 h",
+            "biomass": ["445"],
+            "revision": ("R0", "2 h", ("445",), 4),
+            "series": {"ph": [Series("ph:pH", [(BASE, 7.0)])]},
+            "charts": {"ph": chart},
+        }
+        fake_state = SimpleNamespace(
+            connected=True,
+            generation=4,
+            reading=lambda reactor, name, channel: (7.0, BASE),
+        )
+        monkeypatch.setattr(plots, "STATE", fake_state)
+
+        await plots._poll_tail("R0", state)
+
+        assert chart.calls == []
+
+    async def test_new_point_extends_one_trace_with_the_cap(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A sample appears within one poll without a figure rebuild."""
+        from reactors_czlab.gui.pages import plots
+
+        class Chart:
+            def __init__(self) -> None:
+                self.calls: list[tuple] = []
+
+            def run_plot_method(self, *args: object) -> None:
+                self.calls.append(args)
+
+        chart = Chart()
+        state = {
+            "window": "2 h",
+            "biomass": ["445"],
+            "revision": ("R0", "2 h", ("445",), 4),
+            "series": {"ph": [Series("ph:pH", [(BASE, 7.0)])]},
+            "charts": {"ph": chart},
+        }
+        new_stamp = BASE + timedelta(seconds=10)
+        fake_state = SimpleNamespace(
+            connected=True,
+            generation=4,
+            reading=lambda reactor, name, channel: (7.1, new_stamp),
+        )
+        monkeypatch.setattr(plots, "STATE", fake_state)
+
+        await plots._poll_tail("R0", state)
+
+        [call] = chart.calls
+        assert call[0] == "extendTraces"
+        assert call[-1] == MAX_TRACE_POINTS
+        assert state["series"]["ph"][0].points[-1] == (new_stamp, 7.1)
+
+    def test_revision_names_every_full_rebuild_trigger(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Only reactor, window, channel selection and generation matter."""
+        from reactors_czlab.gui.pages import plots
+
+        monkeypatch.setattr(plots.STATE, "generation", 8)
+        state = {"window": "2 h", "biomass": ["445"], "unrelated": 1}
+        baseline = plots._revision("R0", state)
+        state["unrelated"] = 2
+        assert plots._revision("R0", state) == baseline
+        assert plots._revision("R1", state) != baseline
+        state["window"] = "6 h"
+        assert plots._revision("R0", state) != baseline

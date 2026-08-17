@@ -5,7 +5,8 @@ the OPC subscription supplies the live tail. Re-querying on a timer
 would put a full table scan behind every refresh; the subscription is
 already delivering the new points to this process.
 
-Without a database the charts still run, live-only, and say so.
+Without a database the charts still use the GUI's bounded OPC history and
+say that persisted history is unavailable.
 """
 
 from __future__ import annotations
@@ -25,10 +26,13 @@ from reactors_czlab.gui.controllers.plots import (
     BIOMASS_CHANNELS,
     DEFAULT_BIOMASS,
     DEFAULT_WINDOW,
+    MAX_TRACE_POINTS,
     PANELS,
     WINDOWS,
     append_live_point,
     build_series,
+    downsample,
+    merge_history,
     panel_filters,
     window_range,
 )
@@ -38,7 +42,7 @@ from reactors_czlab.sql.operations import get_date_filter_range
 
 _logger = logging.getLogger("gui")
 
-#: How often the live tail is appended and the charts redrawn.
+#: How often the page checks whether the subscription has a new point.
 TAIL_SECONDS = 2.0
 
 
@@ -52,6 +56,7 @@ async def plots_page(reactor: str) -> None:
         "biomass": list(DEFAULT_BIOMASS),
         "series": {},
         "charts": {},
+        "revision": None,
     }
 
     with ui.column().classes("w-full").style("padding: 1rem; gap: 1rem"):
@@ -84,7 +89,7 @@ async def plots_page(reactor: str) -> None:
                     ui.label(panel.title).classes(
                         "text-sm font-semibold",
                     )
-                    chart = ui.echart(_options(panel, [])).style(
+                    chart = ui.plotly(_figure(panel, [])).style(
                         "height: 18rem; width: 100%",
                     )
                     state["charts"][panel.key] = chart
@@ -97,7 +102,7 @@ async def plots_page(reactor: str) -> None:
     # Awaited, not deferred onto a once-timer: that can fire after the
     # client is gone and raise against a page nobody is looking at.
     await reload()
-    ui.timer(TAIL_SECONDS, lambda: _append_tail(reactor, state))
+    ui.timer(TAIL_SECONDS, lambda: _poll_tail(reactor, state))
 
 
 def _controls(reactor: str, state: dict) -> None:
@@ -134,9 +139,19 @@ def _controls(reactor: str, state: dict) -> None:
 
 
 async def _load_history(reactor: str, state: dict) -> None:
-    """Fill every panel from the database, then redraw."""
+    """Fill every panel from persisted and recent in-memory history."""
+    revision = _revision(reactor, state)
+    if state.get("revision") == revision:
+        return
+
     time_range = window_range(state["window"])
     state["cutoff"] = get_date_filter_range(*time_range)
+    memory_points: list[tuple] = []
+    if STATE.client is not None and hasattr(STATE.client, "history_points"):
+        memory_points = STATE.client.history_points(
+            reactor=reactor,
+            since=state["cutoff"],
+        )
 
     # One failure, reported once. Every panel queries the same database,
     # so a database that is not there produced one toast per panel -
@@ -159,9 +174,11 @@ async def _load_history(reactor: str, state: dict) -> None:
                 _logger.warning("Could not load history: %s", err)
                 failure = str(err)
 
+        rows = merge_history(rows, memory_points)
         state["series"][panel.key] = build_series(rows, filters)
-        _redraw(panel, state)
+        _rebuild(panel, state)
 
+    state["revision"] = revision
     _report_history_state(state, failure)
 
 
@@ -187,13 +204,21 @@ def _report_history_state(state: dict, failure: str | None) -> None:
 
     notice.set_text(
         f"No database: {reason}. The charts show only what has arrived "
-        f"since this page was opened.",
+        f"in the GUI's recent OPC history.",
     )
     notice.set_visibility(True)
 
 
+async def _poll_tail(reactor: str, state: dict) -> None:
+    """Rebuild after a relevant state change, otherwise append new data."""
+    if state.get("revision") != _revision(reactor, state):
+        await _load_history(reactor, state)
+        return
+    _append_tail(reactor, state)
+
+
 def _append_tail(reactor: str, state: dict) -> None:
-    """Append the newest subscription readings to every chart."""
+    """Append only genuinely new subscription readings to Plotly."""
     if not STATE.connected:
         return
 
@@ -202,8 +227,9 @@ def _append_tail(reactor: str, state: dict) -> None:
         if not series:
             continue
 
-        changed = False
-        for name, channel in panel_filters(panel, state["biomass"]):
+        for trace_index, (name, channel) in enumerate(
+            panel_filters(panel, state["biomass"]),
+        ):
             value, stamp = STATE.reading(reactor, name, channel)
             if value is None or stamp is None:
                 continue
@@ -212,16 +238,24 @@ def _append_tail(reactor: str, state: dict) -> None:
             # read.
             if _is_sentinel(value):
                 continue
-            changed |= append_live_point(
+            changed = append_live_point(
                 series,
                 name,
                 channel,
                 stamp,
                 value,
             )
-
-        if changed:
-            _redraw(panel, state)
+            if not changed:
+                continue
+            if len(series[trace_index].points) > MAX_TRACE_POINTS:
+                del series[trace_index].points[:-MAX_TRACE_POINTS]
+            _extend_trace(
+                panel,
+                state,
+                trace_index,
+                stamp,
+                value,
+            )
 
 
 def _is_sentinel(value: float) -> bool:
@@ -231,65 +265,88 @@ def _is_sentinel(value: float) -> bool:
     return is_error(value)
 
 
-def _redraw(panel, state: dict) -> None:
-    """Push a panel's series into its chart."""
+def _revision(reactor: str, state: dict) -> tuple:
+    """The only state changes that require rebuilding Plotly figures."""
+    return (
+        reactor,
+        state["window"],
+        tuple(state["biomass"]),
+        STATE.generation,
+    )
+
+
+def _rebuild(panel, state: dict) -> None:
+    """Replace a whole figure after a query-shaping state change."""
     chart = state["charts"].get(panel.key)
     if chart is None:
         return
-    chart.options.update(
-        _options(
+    chart.update_figure(
+        _figure(
             panel,
             state["series"].get(panel.key, []),
             state.get("cutoff"),
         ),
     )
-    chart.update()
 
 
-def _options(panel, series: list, cutoff: datetime | None = None) -> dict:
-    """The ECharts option dictionary for one panel.
+def _extend_trace(
+    panel,
+    state: dict,
+    trace_index: int,
+    stamp: datetime,
+    value: float,
+) -> None:
+    """Append one point without serialising and replacing the figure."""
+    chart = state["charts"].get(panel.key)
+    if chart is None:
+        return
+    chart.run_plot_method(
+        "extendTraces",
+        {"x": [[stamp.isoformat()]], "y": [[value]]},
+        [trace_index],
+        MAX_TRACE_POINTS,
+    )
+
+
+def _figure(panel, series: list, cutoff: datetime | None = None) -> dict:
+    """The declarative Plotly figure for one panel.
 
     ``cutoff`` pins the left edge of the time axis to the start of the
-    selected window. Without it ECharts scales the axis to whatever
-    points exist, so a freshly opened page with two live readings drew a
-    multi-day axis while the selector said "2 h" - the window control
-    appeared to do nothing.
+    selected window. Without it the chart scales to whatever points exist,
+    so a freshly opened page can make the window selector appear inert.
     """
-    x_axis: dict = {"type": "time"}
+    x_axis: dict = {"type": "date"}
     if cutoff is not None:
-        x_axis["min"] = _millis(cutoff)
+        # A partial range fixes the lower bound while autoranging the upper,
+        # including after extendTraces appends a newer sample.
+        x_axis["range"] = [cutoff.isoformat(), None]
+        x_axis["autorange"] = "max"
 
     return {
-        "tooltip": {"trigger": "axis"},
-        "legend": {
-            "data": [line.label for line in series],
-            "type": "scroll",
-            "bottom": 0,
-        },
-        "grid": {"left": 55, "right": 20, "top": 30, "bottom": 60},
-        # A real time axis, not category labels: the requirement is that
-        # the x axis reads as dates and times rather than elapsed
-        # minutes or hours.
-        "xAxis": x_axis,
-        "yAxis": {"type": "value", "name": panel.units, "scale": True},
-        "dataZoom": [
-            {"type": "inside"},
-            {"type": "slider", "height": 16, "bottom": 26},
-        ],
-        "series": [
+        "data": [
             {
                 "name": line.label,
-                "type": "scatter",
-                "symbolSize": 5,
-                "data": [
-                    [_millis(stamp), value] for stamp, value in line.points
-                ],
+                "type": "scattergl",
+                "mode": "lines+markers",
+                "marker": {"size": 4},
+                "x": [stamp.isoformat() for stamp, _ in sampled],
+                "y": [value for _, value in sampled],
             }
             for line in series
+            for sampled in [downsample(line.points)]
         ],
+        "layout": {
+            "autosize": True,
+            "height": 288,
+            "margin": {"l": 55, "r": 20, "t": 20, "b": 55},
+            "hovermode": "x unified",
+            "legend": {"orientation": "h", "y": -0.2},
+            "xaxis": x_axis,
+            "yaxis": {"title": {"text": panel.units}, "autorange": True},
+        },
+        "config": {
+            "displaylogo": False,
+            "responsive": True,
+            "scrollZoom": True,
+        },
     }
-
-
-def _millis(stamp: datetime) -> int:
-    """ECharts wants epoch milliseconds on a time axis."""
-    return int(stamp.timestamp() * 1000)

@@ -6,8 +6,8 @@ an entry in ``PANELS``, not a rewrite. That is a stated future
 requirement, which is why the shape is this rather than four hardcoded
 charts.
 
-Pure: rows in, series out. The database call and the ECharts option
-dictionary live in the page.
+Pure: rows in, series out. Database access and the Plotly figure live in
+the page.
 """
 
 from __future__ import annotations
@@ -49,6 +49,10 @@ WINDOWS: tuple[tuple[str, float, str], ...] = (
 
 DEFAULT_WINDOW = "2 h"
 
+#: Browser-side ceiling for each Plotly trace. Four charts can otherwise
+#: retain an unbounded number of points for an "All" query.
+MAX_TRACE_POINTS = 4000
+
 
 @dataclass(frozen=True)
 class Panel:
@@ -89,6 +93,86 @@ class Series:
 
     label: str
     points: list[tuple[datetime, float]] = field(default_factory=list)
+
+
+def downsample(
+    points: list[tuple[datetime, float]],
+    limit: int = MAX_TRACE_POINTS,
+) -> list[tuple[datetime, float]]:
+    """Reduce a time series while retaining spikes and endpoints.
+
+    The time range is split into deterministic equal-width buckets. The
+    first, last, minimum and maximum point from every bucket survive, in
+    their original order. Consequently no output contains more than
+    ``limit`` points.
+
+    Parameters
+    ----------
+    points:
+        Chronological ``(timestamp, value)`` pairs.
+    limit:
+        Maximum output size. At least four points are needed to preserve
+        all four representatives when sampling is required.
+
+    Raises
+    ------
+    ValueError
+        If sampling is required and ``limit`` is smaller than four.
+
+    """
+    if len(points) <= limit:
+        return list(points)
+    if limit < 4:
+        error_message = "A downsample limit must be at least four"
+        raise ValueError(error_message)
+
+    bucket_count = max(1, limit // 4)
+    first_stamp = points[0][0]
+    duration = (points[-1][0] - first_stamp).total_seconds()
+    buckets: list[list[tuple[int, tuple[datetime, float]]]] = [
+        [] for _ in range(bucket_count)
+    ]
+
+    for index, point in enumerate(points):
+        if duration <= 0:
+            bucket_index = min(
+                index * bucket_count // len(points),
+                bucket_count - 1,
+            )
+        else:
+            elapsed = (point[0] - first_stamp).total_seconds()
+            bucket_index = min(
+                int(elapsed / duration * bucket_count),
+                bucket_count - 1,
+            )
+        buckets[bucket_index].append((index, point))
+
+    sampled: list[tuple[datetime, float]] = []
+    for bucket in buckets:
+        if not bucket:
+            continue
+        representatives = {
+            bucket[0][0],
+            bucket[-1][0],
+            min(bucket, key=lambda item: (item[1][1], item[0]))[0],
+            max(bucket, key=lambda item: (item[1][1], -item[0]))[0],
+        }
+        sampled.extend(
+            point for index, point in bucket if index in representatives
+        )
+    return sampled
+
+
+def merge_history(db_rows: list[tuple], memory_points: list[tuple]) -> list[tuple]:
+    """Merge persisted and recent rows without duplicating their overlap.
+
+    In-memory rows win when a point exists in both sources. That copy is the
+    one closest to the live OPC notification and has not passed through a
+    database timestamp conversion.
+    """
+    rows = {(row[1], row[0]): row for row in db_rows}
+    rows.update({(row[1], row[0]): row for row in memory_points})
+    return sorted(rows.values(), key=lambda row: (row[1], row[0]))
 
 
 def window_range(label: str) -> tuple[float, str]:

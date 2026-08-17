@@ -16,6 +16,7 @@ import asyncio
 import importlib
 import sys
 import types
+from datetime import datetime, timedelta
 from typing import Any
 
 import pytest
@@ -103,9 +104,17 @@ class _StubClient:
         return [self.values[node.nodeid] for node in nodes]
 
 
-def _client_with(module: Any, actuator_channels: list[str]) -> Any:
+def _client_with(
+    module: Any,
+    actuator_channels: list[str],
+    *,
+    history_seconds: float = 0.0,
+) -> Any:
     """An OpcClient whose browse has already found these variables."""
-    opc = module.OpcClient("opc.tcp://localhost:4840/")
+    opc = module.OpcClient(
+        "opc.tcp://localhost:4840/",
+        history_seconds=history_seconds,
+    )
     opc.client = _StubClient()
     opc.sensor_vars = {
         "R0:ph:pH": {"reactor": "R0", "name": "ph", "channel": "pH"},
@@ -292,6 +301,7 @@ class TestRecording:
         assert opc.variables["R0:ph:pH"]["value"] == 7.25
         assert opc.variables["R0:ph:pH"]["timestamp"] is not None
 
+
     async def test_queues_once_recording(self, client_module: Any) -> None:
         """With recording on, an archivable reading is queued."""
         opc = _client_with(client_module, ["curr_value"])
@@ -358,6 +368,66 @@ class TestRecording:
 
         await opc.stop_recording("R1")
         assert opc._db_task is None
+
+
+class TestMemoryHistory:
+    """The GUI's optional recent-notification buffer."""
+
+    async def test_grows_only_when_a_notification_arrives(
+        self,
+        client_module: Any,
+    ) -> None:
+        """A timer must never invent points between samples."""
+        opc = _client_with(
+            client_module,
+            ["curr_value"],
+            history_seconds=60.0,
+        )
+        assert opc.history_points() == []
+
+        await _notify(opc, "R0:ph:pH", 7.0)
+
+        [point] = opc.history_points()
+        assert point[0] == "R0:ph:pH"
+        assert point[5] == 7.0
+        assert point[1].microsecond % 1000 == 0
+
+    async def test_is_bounded_by_age(
+        self,
+        client_module: Any,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Old readings leave each variable deque as new ones arrive."""
+        opc = _client_with(
+            client_module,
+            ["curr_value"],
+            history_seconds=10.0,
+        )
+        clock = type(
+            "Clock",
+            (),
+            {"now": classmethod(lambda cls: cls.current)},
+        )
+        clock.current = datetime(2026, 8, 2, 12, 0)  # noqa: DTZ001
+        monkeypatch.setattr(client_module, "datetime", clock)
+
+        await _notify(opc, "R0:ph:pH", 7.0)
+        clock.current += timedelta(seconds=5)
+        await _notify(opc, "R0:ph:pH", 7.1)
+        clock.current += timedelta(seconds=6)
+        await _notify(opc, "R0:ph:pH", 7.2)
+
+        points = opc.history_points(now=clock.current)
+        assert [point[5] for point in points] == [7.1, 7.2]
+
+    async def test_disabled_buffer_keeps_headless_footprint(
+        self,
+        client_module: Any,
+    ) -> None:
+        """The reactors-client default remains zero history."""
+        opc = _client_with(client_module, ["curr_value"])
+        await _notify(opc, "R0:ph:pH", 7.0)
+        assert opc.history_points() == []
 
 
 class TestErrorSentinel:
