@@ -13,7 +13,10 @@ from reactors_czlab.sql import operations
 def test_migration_files_are_ordered_and_well_named() -> None:
     """Lexical filename order is the order applied to production."""
     files = run_migrate.migration_files()
-    assert [path.name for path in files] == ["0001-experiments.sql"]
+    assert [path.name for path in files] == [
+        "0001-experiments.sql",
+        "0002-recording-state.sql",
+    ]
 
 
 def test_every_migration_owns_a_transaction_and_stamp() -> None:

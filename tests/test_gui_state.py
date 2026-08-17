@@ -28,7 +28,7 @@ class FakeOpcClient:
         """Record the instance so a test can count how many were built."""
         self.endpoint = endpoint
         self.state = UaClientState.DISCONNECTED
-        self.recording = False
+        self.recording_reactors: set[str] = set()
         self.variables: dict[str, dict] = {}
         self.sensor_vars: dict[str, dict] = {}
         self.actuator_vars: dict[str, dict] = {}
@@ -82,13 +82,22 @@ class FakeOpcClient:
         self.slow_calls.append((nodeid, args, timeout))
         return "ok"
 
-    async def start_recording(self) -> None:
-        """Flip the flag the header reads."""
-        self.recording = True
+    @property
+    def recording(self) -> bool:
+        """Whether any fake reactor records."""
+        return bool(self.recording_reactors)
 
-    async def stop_recording(self) -> None:
-        """Flip it back."""
-        self.recording = False
+    def is_recording(self, reactor: str) -> bool:
+        """Whether one fake reactor records."""
+        return reactor in self.recording_reactors
+
+    async def start_recording(self, reactor: str) -> None:
+        """Add one reactor to the recording set."""
+        self.recording_reactors.add(reactor)
+
+    async def stop_recording(self, reactor: str) -> None:
+        """Remove one reactor from the recording set."""
+        self.recording_reactors.discard(reactor)
 
 
 @pytest.fixture(autouse=True)
@@ -97,6 +106,12 @@ def _fake_client(monkeypatch: pytest.MonkeyPatch) -> None:
     FakeOpcClient.instances.clear()
     monkeypatch.setattr(state_module, "OpcClient", FakeOpcClient)
     monkeypatch.setattr(state_module.operations, "check_schema", lambda: None)
+    monkeypatch.setattr(state_module.operations, "recording_state", dict)
+    monkeypatch.setattr(
+        state_module.operations,
+        "set_recording_state",
+        lambda reactor, recording: None,
+    )
 
 
 @pytest.fixture
@@ -377,7 +392,7 @@ class TestRecording:
         )
 
         with pytest.raises(state_module.operations.SqlError):
-            await app.start_recording()
+            await app.start_recording("R0")
 
     async def test_starts_and_stops(
         self,
@@ -392,11 +407,38 @@ class TestRecording:
             True,
         )
 
-        await app.start_recording()
-        assert app.recording
+        saved: list[tuple[str, bool]] = []
+        monkeypatch.setattr(
+            state_module.operations,
+            "set_recording_state",
+            lambda reactor, recording: saved.append((reactor, recording)),
+        )
 
-        await app.stop_recording()
-        assert not app.recording
+        await app.start_recording("R0")
+        assert app.any_recording
+        assert app.is_recording("R0")
+
+        await app.stop_recording("R0")
+        assert not app.any_recording
+        assert saved == [("R0", True), ("R0", False)]
+
+    async def test_saved_state_is_restored_on_connect(
+        self,
+        app: AppState,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A GUI restart resumes only reactors persisted as recording."""
+        await app.connect()
+        app.book.sensor_refs = {"R0": {}, "R1": {}}
+        monkeypatch.setattr(
+            state_module.operations,
+            "recording_state",
+            lambda: {"R0": True, "R1": False},
+        )
+
+        await app.restore_recording_state()
+
+        assert app.client.recording_reactors == {"R0"}
 
 
 class TestAdoptRunningExperiments:

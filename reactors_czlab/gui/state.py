@@ -116,9 +116,13 @@ class AppState:
         return self._database_reason or ""
 
     @property
-    def recording(self) -> bool:
-        """Whether the archiver is running."""
+    def any_recording(self) -> bool:
+        """Whether at least one reactor is being archived."""
         return self.client is not None and self.client.recording
+
+    def is_recording(self, reactor: str) -> bool:
+        """Whether one reactor is being archived."""
+        return self.client is not None and self.client.is_recording(reactor)
 
     async def connect(self) -> None:
         """Connect, browse and subscribe. Never raises.
@@ -158,6 +162,7 @@ class AppState:
             _logger.info("Connected to %s", self.endpoint)
 
             await self.adopt_running_experiments()
+            await self.restore_recording_state()
             self._supervisor_task = asyncio.create_task(
                 self._supervise_connection(client),
             )
@@ -235,6 +240,25 @@ class AppState:
         self.client.experiment_tags = dict(tags)
         if tags:
             _logger.info("Adopted running experiments: %s", tags)
+
+    async def restore_recording_state(self) -> None:
+        """Resume the per-reactor recording flags persisted by the GUI."""
+        if (
+            self.client is None
+            or self.book is None
+            or not self.database_available
+        ):
+            return
+        try:
+            saved = await asyncio.to_thread(operations.recording_state)
+        except operations.SqlError as err:
+            _logger.warning("Could not restore recording state: %s", err)
+            return
+        for reactor in self.book.reactors:
+            if saved.get(reactor, False):
+                await self.client.start_recording(reactor)
+        if saved:
+            _logger.info("Restored recording state: %s", saved)
 
     async def disconnect(self) -> None:
         """Drop the connection, the address book and the cached ids."""
@@ -353,8 +377,8 @@ class AppState:
             timeout=timeout,
         )
 
-    async def start_recording(self) -> None:
-        """Begin archiving readings.
+    async def start_recording(self, reactor: str) -> None:
+        """Begin archiving readings from one reactor and persist it.
 
         Raises
         ------
@@ -367,13 +391,25 @@ class AppState:
             return
         if not self.database_available:
             raise operations.SqlError(self.database_reason)
-        await self.client.start_recording()
+        await asyncio.to_thread(
+            operations.set_recording_state,
+            reactor,
+            True,
+        )
+        await self.client.start_recording(reactor)
 
-    async def stop_recording(self) -> None:
-        """Stop archiving. Readings stay live on screen."""
+    async def stop_recording(self, reactor: str) -> None:
+        """Stop archiving one reactor and persist it."""
         if self.client is None:
             return
-        await self.client.stop_recording()
+        if not self.database_available:
+            raise operations.SqlError(self.database_reason)
+        await asyncio.to_thread(
+            operations.set_recording_state,
+            reactor,
+            False,
+        )
+        await self.client.stop_recording(reactor)
 
 
 #: The process-wide state. Pages import this.

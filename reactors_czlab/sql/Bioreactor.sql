@@ -40,5 +40,13 @@ CREATE TABLE experiments (
     end_date TIMESTAMP(3)
 );
 
+CREATE TABLE reactor_recording_state (
+    reactor TEXT PRIMARY KEY,
+    recording BOOLEAN NOT NULL,
+    updated_at TIMESTAMP(3) NOT NULL
+);
+
 INSERT INTO schema_migrations (version, applied_at)
-VALUES ('0001', CURRENT_TIMESTAMP);
+VALUES
+    ('0001', CURRENT_TIMESTAMP),
+    ('0002', CURRENT_TIMESTAMP);

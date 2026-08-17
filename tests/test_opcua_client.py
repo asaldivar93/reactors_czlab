@@ -12,6 +12,7 @@ this file, so the stub is in place before the import runs.
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import sys
 import types
@@ -294,7 +295,7 @@ class TestRecording:
     async def test_queues_once_recording(self, client_module: Any) -> None:
         """With recording on, an archivable reading is queued."""
         opc = _client_with(client_module, ["curr_value"])
-        opc._recording = True
+        opc.recording_reactors.add("R0")
 
         await _notify(opc, "R0:ph:pH", 7.0)
 
@@ -308,12 +309,55 @@ class TestRecording:
     ) -> None:
         """Subscribed for the UI, but they must not reach the table."""
         opc = _client_with(client_module, ["curr_value", "kp"])
-        opc._recording = True
+        opc.recording_reactors.add("R0")
 
         await _notify(opc, "R0:pwm0:kp", 120.0)
 
         assert _drain(opc) == []
         assert opc.variables["R0:pwm0:kp"]["value"] == 120.0
+
+    async def test_another_reactor_is_not_queued_while_r0_records(
+        self,
+        client_module: Any,
+    ) -> None:
+        """Recording is selected before a row can enter the shared queue."""
+        opc = _client_with(client_module, ["curr_value"])
+        opc.sensor_vars["R1:ph:pH"] = {
+            "reactor": "R1",
+            "name": "ph",
+            "channel": "pH",
+        }
+        opc.variables = {**opc.sensor_vars, **opc.actuator_vars}
+        opc.recording_reactors.add("R0")
+
+        await _notify(opc, "R1:ph:pH", 7.0)
+
+        assert _drain(opc) == []
+        assert opc.variables["R1:ph:pH"]["value"] == 7.0
+
+    async def test_archiver_lives_while_any_reactor_records(
+        self,
+        client_module: Any,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """One reactor pausing cannot stop another reactor's writer task."""
+        opc = _client_with(client_module, [])
+        parked = asyncio.Event()
+
+        async def wait_forever() -> None:
+            await parked.wait()
+
+        monkeypatch.setattr(opc, "commit_to_db", wait_forever)
+        await opc.start_recording("R0")
+        task = opc._db_task
+        await opc.start_recording("R1")
+
+        await opc.stop_recording("R0")
+        assert opc._db_task is task
+        assert opc.recording_reactors == {"R1"}
+
+        await opc.stop_recording("R1")
+        assert opc._db_task is None
 
 
 class TestErrorSentinel:
@@ -345,7 +389,7 @@ class TestErrorSentinel:
         from reactors_czlab.core.data import ERROR_VALUE
 
         opc = _client_with(client_module, ["curr_value"])
-        opc._recording = True
+        opc.recording_reactors.add("R0")
 
         await _notify(opc, "R0:ph:pH", ERROR_VALUE)
 
@@ -361,7 +405,7 @@ class TestExperimentTags:
     ) -> None:
         """Plain recording outside any experiment is still recording."""
         opc = _client_with(client_module, ["curr_value"])
-        opc._recording = True
+        opc.recording_reactors.add("R0")
 
         await _notify(opc, "R0:ph:pH", 7.0)
 
@@ -374,7 +418,7 @@ class TestExperimentTags:
     ) -> None:
         """The tag is per reactor, so concurrent runs stay separable."""
         opc = _client_with(client_module, ["curr_value"])
-        opc._recording = True
+        opc.recording_reactors.add("R0")
         opc.experiment_tags = {"R0": "fed-batch-3"}
 
         await _notify(opc, "R0:ph:pH", 7.0)
@@ -388,7 +432,7 @@ class TestExperimentTags:
     ) -> None:
         """A reactor not in an experiment records without a name."""
         opc = _client_with(client_module, ["curr_value"])
-        opc._recording = True
+        opc.recording_reactors.add("R0")
         opc.experiment_tags = {"R1": "fed-batch-3"}
 
         await _notify(opc, "R0:ph:pH", 7.0)

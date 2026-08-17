@@ -194,12 +194,14 @@ async def _start(row: dict, reload) -> None:
         for reactor in reactors:
             STATE.client.experiment_tags[reactor] = row["name"]
 
-    if not STATE.recording:
+    for reactor in reactors:
+        if STATE.is_recording(reactor):
+            continue
         try:
-            await STATE.start_recording()
+            await STATE.start_recording(reactor)
         except operations.SqlError as err:
             ui.notify(
-                f"Experiment started but recording did not: {err}",
+                f"Experiment started but {reactor} did not record: {err}",
                 type="warning",
             )
             await reload()

@@ -45,38 +45,42 @@ def status_badges() -> None:
 
     if not STATE.database_available:
         ui.badge("no database", color="orange").tooltip(STATE.database_reason)
-    elif STATE.recording:
-        ui.badge("recording", color="blue")
     else:
-        ui.badge("not recording", color="grey")
+        reactors = STATE.book.reactors if STATE.book is not None else []
+        recording = sum(STATE.is_recording(reactor) for reactor in reactors)
+        ui.badge(
+            f"{recording} of {len(reactors)} recording",
+            color="blue" if recording else "grey",
+        )
 
 
 @ui.refreshable
-def recording_toggle() -> None:
-    """Start and stop archiving, independently of any experiment."""
+def reactor_recording_toggle(reactor: str) -> None:
+    """Start or pause archiving for one reactor."""
 
     async def start() -> None:
-        _logger.info("Operator started recording")
+        _logger.info("Operator started recording %s", reactor)
         try:
-            await STATE.start_recording()
+            await STATE.start_recording(reactor)
         except SqlError as err:
             ui.notify(str(err), type="negative")
             return
-        ui.notify("Recording started", type="positive")
-        recording_toggle.refresh()
+        ui.notify(f"Recording started for {reactor}", type="positive")
+        reactor_recording_toggle.refresh()
         status_badges.refresh()
 
     async def stop() -> None:
-        _logger.info("Operator stopped recording")
-        await STATE.stop_recording()
-        ui.notify("Recording stopped", type="warning")
-        recording_toggle.refresh()
+        _logger.info("Operator stopped recording %s", reactor)
+        try:
+            await STATE.stop_recording(reactor)
+        except SqlError as err:
+            ui.notify(str(err), type="negative")
+            return
+        ui.notify(f"Recording stopped for {reactor}", type="warning")
+        reactor_recording_toggle.refresh()
         status_badges.refresh()
 
-    # color=white, not a bare outline: Quasar's default outline button
-    # takes the primary colour for its text and border, which is the
-    # same colour as the header it sits on - the control was invisible.
-    if STATE.recording:
+    if STATE.is_recording(reactor):
         disable_when_read_only(
             ui.button(
                 "Stop recording",
@@ -86,7 +90,7 @@ def recording_toggle() -> None:
         )
     else:
         button = ui.button("Record", on_click=start).props(
-            "outline size=sm color=white",
+            "outline size=sm",
         )
         if not STATE.writable:
             disable_when_read_only(button)
@@ -112,7 +116,6 @@ def header(reactor: str | None = None) -> None:
 
         with ui.row().classes("items-center").style("gap: 0.75rem"):
             status_badges()
-            recording_toggle()
 
     ui.timer(STATUS_SECONDS, _refresh_status)
 
@@ -120,7 +123,6 @@ def header(reactor: str | None = None) -> None:
 def _refresh_status() -> None:
     """Re-read the state the header shows."""
     status_badges.refresh()
-    recording_toggle.refresh()
 
 
 def reactor_tabs(reactor: str, active: str) -> None:

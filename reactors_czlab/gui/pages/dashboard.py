@@ -13,6 +13,7 @@ from reactors_czlab.gui.components.pairing import pairing_panel
 from reactors_czlab.gui.components.shell import (
     header,
     not_connected_notice,
+    reactor_recording_toggle,
     reactor_tabs,
 )
 from reactors_czlab.gui.components.values import (
@@ -74,6 +75,10 @@ async def reactor_page(reactor: str) -> None:
         if not STATE.connected:
             not_connected_notice()
             return
+
+        with ui.row().classes("items-center").style("gap: 0.75rem"):
+            ui.label("Recording").classes("text-sm font-semibold")
+            reactor_recording_toggle(reactor)
 
         ui.label("Sensors").classes("text-lg font-semibold")
         sensor_panel(reactor)

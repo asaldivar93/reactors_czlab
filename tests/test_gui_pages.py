@@ -63,7 +63,7 @@ class FakeClient:
 
     def __init__(self) -> None:
         """Start connected, with a value on every published variable."""
-        self.recording = False
+        self.recording_reactors: set[str] = set()
         self.experiment_tags: dict[str, str] = {}
         self.sensor_vars = SENSOR_VARS
         self.actuator_vars = ACTUATOR_VARS
@@ -82,6 +82,15 @@ class FakeClient:
         from asyncua.client.ua_client import UaClientState
 
         return UaClientState.CONNECTED
+
+    @property
+    def recording(self) -> bool:
+        """Whether any reactor is recording."""
+        return bool(self.recording_reactors)
+
+    def is_recording(self, reactor: str) -> bool:
+        """Whether one reactor is recording."""
+        return reactor in self.recording_reactors
 
     async def call_method(self, nodeid: str, *args: object) -> object:
         """Answer the calls a page makes while it renders.
@@ -390,5 +399,5 @@ class TestHeader:
             "PSYCOPG_AVAILABLE",
             True,
         )
-        await user.open("/")
+        await user.open("/reactor/R0")
         await user.should_see("Record")

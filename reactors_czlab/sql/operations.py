@@ -52,7 +52,7 @@ DB_PASSWORD = os.environ.get("BIOREACTOR_DB_PASSWORD")
 
 #: Latest migration required by this build. Versions are zero-padded so their
 #: filename and lexical order are the same.
-SCHEMA_VERSION = "0001"
+SCHEMA_VERSION = "0002"
 
 COLUMNS = (
     "node_id",
@@ -542,6 +542,28 @@ def active_experiments() -> dict[str, str]:
     return {
         reactor: name for name, reactors in rows for reactor in reactors
     }
+
+
+def set_recording_state(reactor: str, recording: bool) -> None:
+    """Persist whether one reactor should be archived."""
+    require_psycopg()
+    _execute(
+        "INSERT INTO reactor_recording_state "
+        "(reactor, recording, updated_at) VALUES (%s, %s, %s) "
+        "ON CONFLICT (reactor) DO UPDATE SET recording = EXCLUDED.recording, "
+        "updated_at = EXCLUDED.updated_at",
+        # The schema deliberately uses a naive TIMESTAMP(3), matching data.
+        (reactor, recording, datetime.now()),  # noqa: DTZ005
+    )
+
+
+def recording_state() -> dict[str, bool]:
+    """Return the persisted recording flag for every known reactor."""
+    require_psycopg()
+    rows = _fetch(
+        "SELECT reactor, recording FROM reactor_recording_state",
+    )
+    return {reactor: recording for reactor, recording in rows}
 
 
 def _experiment_state(start_date: object, end_date: object) -> str:

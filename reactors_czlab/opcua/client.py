@@ -67,7 +67,7 @@ class OpcClient:
         self._connected = False
         self._queue: asyncio.Queue = asyncio.Queue(maxsize=QUEUE_MAXSIZE)
         self._db_task: asyncio.Task | None = None
-        self._recording = False
+        self.recording_reactors: set[str] = set()
         self.client: Client | None = None
         self.variables: dict[str, dict] = {}
         self.sensor_vars: dict[str, dict] = {}
@@ -96,8 +96,12 @@ class OpcClient:
 
     @property
     def recording(self) -> bool:
-        """Whether readings are being archived to the database."""
-        return self._recording
+        """Whether at least one reactor is being archived."""
+        return bool(self.recording_reactors)
+
+    def is_recording(self, reactor: str) -> bool:
+        """Whether readings from ``reactor`` are being archived."""
+        return reactor in self.recording_reactors
 
     async def __aenter__(self) -> OpcClient:
         """Connect on entry."""
@@ -159,7 +163,7 @@ class OpcClient:
         # Lower the flag with the task, or `recording` keeps reporting
         # True after the session is gone and a user interface shows a
         # recording badge over a dead connection.
-        self._recording = False
+        self.recording_reactors.clear()
         await self.stop_psql()
         if not self._connected or self.client is None:
             return
@@ -344,7 +348,7 @@ class OpcClient:
 
         # Without this the queue fills whenever the archiver is stopped,
         # and then logs a dropped-row error on every sample forever.
-        if not self._recording:
+        if info["reactor"] not in self.recording_reactors:
             return
 
         if not self.archives(nodeid, info):
@@ -370,31 +374,36 @@ class OpcClient:
         self._db_task = asyncio.create_task(self.commit_to_db())
         _logger.info("Database task created")
 
-    async def start_recording(self) -> None:
-        """Begin archiving readings to the database.
+    async def start_recording(self, reactor: str) -> None:
+        """Begin archiving readings from one reactor.
 
         Idempotent, so a user interface can call it whenever an
         experiment starts without first checking whether plain recording
         was already running.
         """
         await self.start_psql()
-        self._recording = True
-        _logger.info("Recording started")
+        self.recording_reactors.add(reactor)
+        _logger.info("Recording started for %s", reactor)
 
-    async def stop_recording(self) -> None:
-        """Stop archiving. Readings keep arriving and stay readable.
+    async def stop_recording(self, reactor: str) -> None:
+        """Stop archiving one reactor. Readings stay readable.
 
         The flag is lowered before the task is cancelled so nothing can
         be enqueued in between and sit in the queue until the next
         start.
         """
-        self._recording = False
-        await self.stop_psql()
-        _logger.info("Recording stopped")
+        self.recording_reactors.discard(reactor)
+        if not self.recording_reactors:
+            await self.stop_psql()
+        _logger.info("Recording stopped for %s", reactor)
 
     async def run_archiver(self) -> None:
         """Start archiving and block until the task finishes."""
-        await self.start_recording()
+        reactors = {
+            info["reactor"] for info in self.variables.values()
+        }
+        for reactor in reactors:
+            await self.start_recording(reactor)
         if self._db_task is not None:
             await self._db_task
 

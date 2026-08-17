@@ -65,6 +65,8 @@ class TestImportGuard:
             ("list_experiments", ()),
             ("active_experiments", ()),
             ("check_schema", ()),
+            ("set_recording_state", ("R0", True)),
+            ("recording_state", ()),
         ],
     )
     def test_every_entry_point_refuses_without_psycopg(
@@ -149,6 +151,42 @@ class TestSchemaCompatibility:
             lambda: [operations.SCHEMA_VERSION],
         )
         assert operations.check_schema() is None
+
+
+class TestRecordingState:
+    """Durable per-reactor recording flags."""
+
+    def test_set_uses_an_upsert(
+        self,
+        with_psycopg: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Every toggle updates one stable row for the reactor."""
+        captured: list[tuple[str, tuple]] = []
+        monkeypatch.setattr(
+            operations,
+            "_execute",
+            lambda query, params: captured.append((query, params)),
+        )
+
+        operations.set_recording_state("R0", True)
+
+        [(query, params)] = captured
+        assert "ON CONFLICT (reactor) DO UPDATE" in query
+        assert params[:2] == ("R0", True)
+
+    def test_read_returns_a_reactor_mapping(
+        self,
+        with_psycopg: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The GUI can restore every toggle in one query."""
+        monkeypatch.setattr(
+            operations,
+            "_fetch",
+            lambda query: [("R0", True), ("R1", False)],
+        )
+        assert operations.recording_state() == {"R0": True, "R1": False}
 
 
 class TestStoreData:
