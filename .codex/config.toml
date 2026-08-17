@@ -1,0 +1,5 @@
+[shell_environment_policy]
+inherit = "core"
+
+[shell_environment_policy.set]
+PATH = "/home/alexis/miniforge3/bin:/home/alexis/miniforge3/condabin:/home/alexis/.nvm/versions/node/v26.5.0/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin"

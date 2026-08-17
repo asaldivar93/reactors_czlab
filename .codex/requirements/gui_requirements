@@ -1,0 +1,30 @@
+I want to start working on a gui for this codebase. The goal is to have a gui that runs as a web-application in both the pc and the raspberrypy. The gui will connect to the server using the opc-ua interface and must expose all the read/write variables and methods implemented so far. My suggestion is to use nicegui framework, but suggest other frameworks that could be adequate for this goal. 
+
+Note: determine if psycopg3 can be installed in a raspberry pi 4 and if we can use the same sql module already written in the raspberry. Implement a way to disable the features that depend on it on the server side when its not available. If it can't be installed, suggest other data recording features, but leave it as future work. Implementing a dedicated server side sql interface is out of the scope of these requirements.
+
+The minimal requirements are as follow:
+	- A dashboard for each reactor showing current actuator and sensor values
+	- Able to modify actuator/controller configuration from the dashboard
+	- Able to pair/unpair actuators to sensors from the dashboard
+	- A calibration interface for hamilton sensors:
+		- Hamilton requires 2 point calibration cp1 and cp2. 
+		- I want the interface to show the current status of both calibration points.
+		- I want the interface to show the current value of both calibration points. The values are stored in registers 5 and 6 of the CP#Status holding registers.
+		- I want the interface to show the quality of the sensor.
+		- I want the interface to allow the operator to set a new calibration for cp1 and cp2 independently.
+		- Suggestion: split the write_calibration function in HamiltonSensors so that the calibration logic is separate from the get status, value and quality logic
+	- A calibration interface for the analog actuators. This interface must allow the operator to execute a full CalibrationRun from calibration.py and see the current calibration points.
+	- An experiment interface that must:
+		- let the operator create new experiments
+		- let the operator start and assign reactors to an experiment.
+		- let the operator start, re-start or stop recording data.
+		- let the operator stop the experiment.
+		- let the operator export all data associated with the experiment.
+		- Suggestion: modify the data table in the sql module to add an experiment_name column and update the necessary logic in client.py from the opcua module
+	- Let the user start, resume, stop recording data outside of the experiment interface
+	- A live plot interface (scatter plots) for each reactor that must:
+		- have a separate plots for ph, dissolved oxygen, temperature and biomass values
+		- let the user choose which biomass sensor channels to plot (single or multiple channels)
+		- Use datetime format for the x axis instead of mins/hours/days.
+		- let the user choose the time frame to plot (ie. plot the last 24h or the last 2h)
+		- Plots for actuator values are out of the scope at this moment, but during the design phase consider that this might be a future requirement

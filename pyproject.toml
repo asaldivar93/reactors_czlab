@@ -3,8 +3,11 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-# asyncio.TaskGroup and enum.StrEnum are both 3.11+.
-requires-python = ">=3.13"
+# asyncio.TaskGroup and enum.StrEnum are both 3.11+. The floor has to
+# stay at 3.11: the server runs on a Raspberry Pi and Raspberry Pi OS
+# Bookworm ships 3.11, so a higher pin makes the package uninstallable
+# on the one machine that must run it.
+requires-python = ">=3.11"
 name = "reactors_czlab"
 version = "2025.0.0"
 description = "Bioreactor control module"
@@ -36,21 +39,40 @@ client = [
     "polars>=1.29.0",
     "matplotlib",
 ]
+gui = [
+    # Pure-Python wheel (py3-none-any), so the Pi install carries no
+    # compiled GUI dependency of its own.
+    "nicegui>=2.0",
+    "plotly>=6.0",
+]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "ruff>=0.6",
+    # The GUI tests drive real element trees through NiceGUI's `user`
+    # fixture, so the dev extra needs nicegui even though the gui extra
+    # is what a deployment installs.
+    "nicegui>=2.0",
+    "plotly>=6.0",
 ]
 
 [project.scripts]
 reactors-server = "reactors_czlab.run_server:cli"
 reactors-client = "reactors_czlab.run_client:cli"
+reactors-gui = "reactors_czlab.run_gui:cli"
 reactors-plots = "reactors_czlab.run_plots:cli"
 reactors-export = "reactors_czlab.export_data:cli"
+reactors-db-migrate = "reactors_czlab.run_migrate:cli"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# nicegui.testing.user_plugin only - NOT nicegui.testing.plugin, which
+# also pulls in the Selenium-backed `screen` fixture and would make the
+# suite depend on a browser and a webdriver.
+addopts = "-p nicegui.testing.user_plugin"
+# The module NiceGUI reloads to find the pages under test.
+main_file = "tests/gui_main.py"
 
 [tool.ruff]
 line-length = 79

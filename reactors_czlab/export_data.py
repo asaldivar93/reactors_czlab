@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import argparse
 
-from reactors_czlab.sql.operations import query_data, row_to_csv
+from reactors_czlab.sql.operations import (
+    query_data,
+    query_experiment_data,
+    row_to_csv,
+)
 
 
 def cli() -> None:
@@ -22,9 +26,16 @@ def cli() -> None:
         default="h",
         choices=["m", "h", "d", "all"],
     )
+    parser.add_argument(
+        "--experiment",
+        help="Export one experiment's readings instead of a time range",
+    )
     args = parser.parse_args()
 
-    rows = query_data((args.range, args.units))
+    if args.experiment:
+        rows = query_experiment_data(args.experiment)
+    else:
+        rows = query_data((args.range, args.units))
     row_to_csv(args.out, rows)
     print(f"Wrote {len(rows)} rows to {args.out}")
 
