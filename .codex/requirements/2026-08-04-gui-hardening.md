@@ -8,8 +8,7 @@ and verified.
 You are implementing this plan. Before writing any code:
 
 Paths in this document are relative to the repository root, not to this file.
-
-1. **Read [CLAUDE.md](CLAUDE.md) in full**, especially "Hard constraints"
+1. **Read [AGENT.md](AGENT.md) in full**, especially "Hard constraints"
    and "GUI invariants that cost real debugging". It records things that were
    expensive to learn — the asyncua watchdog killing long calls, the
    `ui.timer` handler-wiring trap, the short-name/full-id boundary. Every one
