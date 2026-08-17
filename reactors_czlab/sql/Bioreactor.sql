@@ -1,6 +1,11 @@
 CREATE DATABASE bioreactor_db;
 \c bioreactor_db
 
+CREATE TABLE schema_migrations (
+    version TEXT PRIMARY KEY,
+    applied_at TIMESTAMP NOT NULL
+);
+
 -- One row per channel reading. reactor/name/channel are the three parts
 -- of the OPC browse name <reactor>:<name>:<channel>, split by
 -- OpcClient.match_tree.
@@ -34,3 +39,6 @@ CREATE TABLE experiments (
     start_date TIMESTAMP(3),
     end_date TIMESTAMP(3)
 );
+
+INSERT INTO schema_migrations (version, applied_at)
+VALUES ('0001', CURRENT_TIMESTAMP);

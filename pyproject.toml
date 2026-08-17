@@ -60,6 +60,7 @@ reactors-client = "reactors_czlab.run_client:cli"
 reactors-gui = "reactors_czlab.run_gui:cli"
 reactors-plots = "reactors_czlab.run_plots:cli"
 reactors-export = "reactors_czlab.export_data:cli"
+reactors-db-migrate = "reactors_czlab.run_migrate:cli"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

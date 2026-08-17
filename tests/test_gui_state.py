@@ -96,6 +96,7 @@ def _fake_client(monkeypatch: pytest.MonkeyPatch) -> None:
     """Build FakeOpcClient wherever AppState builds an OpcClient."""
     FakeOpcClient.instances.clear()
     monkeypatch.setattr(state_module, "OpcClient", FakeOpcClient)
+    monkeypatch.setattr(state_module.operations, "check_schema", lambda: None)
 
 
 @pytest.fixture
@@ -243,6 +244,35 @@ class TestConnectionState:
         """Before the first connect there is nothing to report."""
         assert not app.connected
         assert not app.reconnecting
+
+
+class TestDatabaseState:
+    """Database availability includes schema compatibility."""
+
+    async def test_an_old_schema_is_reported_on_connect(
+        self,
+        app: AppState,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A migration instruction replaces a raw missing-column error."""
+        monkeypatch.setattr(
+            state_module.operations,
+            "PSYCOPG_AVAILABLE",
+            True,
+        )
+        monkeypatch.setattr(
+            state_module.operations,
+            "check_schema",
+            lambda: (
+                "database is at 0001, this build needs 0002; "
+                "run reactors-db-migrate"
+            ),
+        )
+
+        await app.connect()
+
+        assert app.database_available is False
+        assert "reactors-db-migrate" in app.database_reason
 
 
 class TestReadThrough:

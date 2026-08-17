@@ -50,6 +50,10 @@ DB_HOST = os.environ.get("BIOREACTOR_DB_HOST")
 DB_PORT = os.environ.get("BIOREACTOR_DB_PORT")
 DB_PASSWORD = os.environ.get("BIOREACTOR_DB_PASSWORD")
 
+#: Latest migration required by this build. Versions are zero-padded so their
+#: filename and lexical order are the same.
+SCHEMA_VERSION = "0001"
+
 COLUMNS = (
     "node_id",
     "date",
@@ -152,6 +156,55 @@ def connect_to_db() -> Connection:
     except psycopg.Error as err:
         error_message = f"Error connecting to database {DB_NAME} as {DB_USER}"
         raise SqlError(error_message) from err
+
+
+def check_schema() -> str | None:
+    """Return why the database schema is incompatible, if it is.
+
+    Returns
+    -------
+    str or None
+        ``None`` when the migration table records the version required by
+        this build, otherwise an actionable operator-facing reason.
+
+    Raises
+    ------
+    SqlError
+        If psycopg is unavailable or the compatibility query fails.
+
+    """
+    require_psycopg()
+    versions = _applied_schema_versions()
+    if versions is None:
+        return (
+            f"database has no schema_migrations table; this build needs "
+            f"{SCHEMA_VERSION}; run reactors-db-migrate"
+        )
+    current = max(versions, default="none")
+    if current != SCHEMA_VERSION:
+        return (
+            f"database is at {current}, this build needs {SCHEMA_VERSION}; "
+            "run reactors-db-migrate"
+        )
+    return None
+
+
+def _applied_schema_versions() -> list[str] | None:
+    """Read applied versions, or None when the version table is absent."""
+    connection = connect_to_db()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT to_regclass('public.schema_migrations')")
+            row = cursor.fetchone()
+            if row is None or row[0] is None:
+                return None
+            cursor.execute("SELECT version FROM schema_migrations")
+            return [row[0] for row in cursor.fetchall()]
+    except psycopg.Error as err:
+        error_message = "Could not check the database schema version"
+        raise SqlError(error_message) from err
+    finally:
+        connection.close()
 
 
 def store_data(

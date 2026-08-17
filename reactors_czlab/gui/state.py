@@ -48,6 +48,11 @@ class AppState:
         self.client: OpcClient | None = None
         self.book: AddressBook | None = None
         self.connection_error: str | None = None
+        self._database_reason: str | None = (
+            None
+            if operations.PSYCOPG_AVAILABLE
+            else operations.NO_PSYCOPG_REASON
+        )
         self.generation = 0
         self._supervisor_task: asyncio.Task | None = None
         #: Serialises connect() so an operator double-clicking Retry, or
@@ -97,17 +102,18 @@ class AppState:
 
     @property
     def database_available(self) -> bool:
-        """Whether recording, experiments and plot history can work.
-
-        Import-level, not connection-level: a missing psycopg disables
-        those screens, and the reason is shown rather than raised.
-        """
-        return operations.PSYCOPG_AVAILABLE
+        """Whether the driver, database and required schema are usable."""
+        return (
+            operations.PSYCOPG_AVAILABLE
+            and self._database_reason is None
+        )
 
     @property
     def database_reason(self) -> str:
         """Why the database features are unavailable, for display."""
-        return operations.NO_PSYCOPG_REASON
+        if not operations.PSYCOPG_AVAILABLE:
+            return operations.NO_PSYCOPG_REASON
+        return self._database_reason or ""
 
     @property
     def recording(self) -> bool:
@@ -126,6 +132,7 @@ class AppState:
         that is alive but mid-reconnect - ``connected`` is False there,
         and Retry must not tear down a session asyncua is recovering.
         """
+        await self.check_database()
         async with self._connect_lock:
             if self.client is not None:
                 return
@@ -154,6 +161,20 @@ class AppState:
             self._supervisor_task = asyncio.create_task(
                 self._supervise_connection(client),
             )
+
+    async def check_database(self) -> None:
+        """Refresh database reachability and schema compatibility."""
+        if not operations.PSYCOPG_AVAILABLE:
+            self._database_reason = operations.NO_PSYCOPG_REASON
+            return
+        try:
+            self._database_reason = await asyncio.to_thread(
+                operations.check_schema,
+            )
+        except operations.SqlError as err:
+            self._database_reason = str(err)
+        if self._database_reason is not None:
+            _logger.warning("Database unavailable: %s", self._database_reason)
 
     async def _supervise_connection(self, client: OpcClient) -> None:
         """Rebrowse after asyncua recovers from a server restart.

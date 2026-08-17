@@ -64,6 +64,7 @@ class TestImportGuard:
             ("stop_experiment", ("run-1",)),
             ("list_experiments", ()),
             ("active_experiments", ()),
+            ("check_schema", ()),
         ],
     )
     def test_every_entry_point_refuses_without_psycopg(
@@ -101,6 +102,53 @@ class TestDataStatements:
         """A query feeding rows_to_polars must match its schema width."""
         for column in operations.COLUMNS:
             assert column in operations.SELECT_DATA
+
+
+class TestSchemaCompatibility:
+    """Turning migration state into an operator-facing compatibility check."""
+
+    def test_missing_migration_table_is_reported(
+        self,
+        with_psycopg: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An old unversioned database says exactly how to fix itself."""
+        monkeypatch.setattr(operations, "_applied_schema_versions", lambda: None)
+        reason = operations.check_schema()
+        assert reason is not None
+        assert "schema_migrations" in reason
+        assert "reactors-db-migrate" in reason
+
+    def test_older_version_is_reported(
+        self,
+        with_psycopg: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Both the installed and required versions are visible."""
+        monkeypatch.setattr(operations, "SCHEMA_VERSION", "0002")
+        monkeypatch.setattr(
+            operations,
+            "_applied_schema_versions",
+            lambda: ["0001"],
+        )
+        reason = operations.check_schema()
+        assert reason == (
+            "database is at 0001, this build needs 0002; "
+            "run reactors-db-migrate"
+        )
+
+    def test_required_version_is_usable(
+        self,
+        with_psycopg: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A matching migration stamp enables database features."""
+        monkeypatch.setattr(
+            operations,
+            "_applied_schema_versions",
+            lambda: [operations.SCHEMA_VERSION],
+        )
+        assert operations.check_schema() is None
 
 
 class TestStoreData:
