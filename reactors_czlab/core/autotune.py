@@ -664,6 +664,7 @@ class AutotuneRun:
         config: RelayTuneConfig | None = None,
         *,
         clock: Callable[[], float] = perf_counter,
+        terminal_callback: Callable[[AutotuneRun], str | None] | None = None,
     ) -> None:
         """Create an idle run; :meth:`start` performs preflight and claims pumps."""
         self.context = context
@@ -672,6 +673,8 @@ class AutotuneRun:
         self.acid_id = acid_id
         self.config = config or RelayTuneConfig()
         self.clock = clock
+        self._terminal_callback = terminal_callback
+        self.audit_id: str | None = None
         self.phase = AutotunePhase.idle
         self.message = "idle"
         self.result: AutotuneResult | None = None
@@ -909,65 +912,13 @@ class AutotuneRun:
         )
 
     def _validate_selection(self) -> None:
-        if self.context.reactor_id.count(":"):
-            prefix = self.context.reactor_id.split(":", 1)[0]
-        else:
-            prefix = self.context.reactor_id
-        for identifier in (self.sensor_id, self.base_id, self.acid_id):
-            if identifier.split(":", 1)[0] != prefix:
-                error_message = f"{identifier} does not belong to {self.context.reactor_id}"
-                raise ValueError(error_message)
-        if self.base_id == self.acid_id:
-            error_message = "base and acid pumps must be different actuators"
-            raise ValueError(error_message)
-        if self.sensor_id not in self.context.sensors:
-            error_message = f"unknown pH sensor {self.sensor_id}"
-            raise ValueError(error_message)
-        if self.base_id not in self.context.actuators or self.acid_id not in self.context.actuators:
-            error_message = "unknown base or acid actuator"
-            raise ValueError(error_message)
-        sensor = self.context.sensors[self.sensor_id]
-        ph_channels = [
-            index
-            for index, channel in enumerate(sensor.channels)
-            if str(getattr(channel, "units", "")).lower() == "ph"
-        ]
-        if len(ph_channels) != 1:
-            error_message = f"{self.sensor_id} must have exactly one pH channel"
-            raise ValueError(error_message)
-        channel_index = ph_channels[0]
-        paired = set(self.context.pairings().get(self.sensor_id, ()))
-        for label, actuator, backwards in (
-            ("base", self.base, False),
-            ("acid", self.acid, True),
-        ):
-            if (actuator.id, channel_index) not in paired:
-                error_message = f"{label} pump {actuator.id} is not paired to the pH channel"
-                raise ValueError(error_message)
-            controller = actuator.controller
-            if getattr(controller, "method", None) is not ControlMethod.pid:
-                error_message = f"{label} pump must use PID control"
-                raise ValueError(error_message)
-            if actuator.dispenser.unit is not OutputUnit.volume:
-                error_message = f"{label} pump must use volume output"
-                raise ValueError(error_message)
-            if getattr(controller, "setpoint", None) != self.config.setpoint:
-                error_message = f"{label} pump setpoint does not match the autotune setpoint"
-                raise ValueError(error_message)
-            if getattr(controller, "backwards", None) is not backwards:
-                error_message = f"{label} pump backwards must be {backwards}"
-                raise ValueError(error_message)
-            calibration = actuator.channel.calibration
-            if calibration is None or not calibration.is_fitted:
-                error_message = f"{label} pump needs a fitted calibration"
-                raise ValueError(error_message)
-            reason = calibration.installable_reason()
-            if reason is not None:
-                error_message = f"{label} pump calibration is unusable: {reason}"
-                raise ValueError(error_message)
-        if self.base.controller.setpoint != self.acid.controller.setpoint:
-            error_message = "base and acid pumps must share one setpoint"
-            raise ValueError(error_message)
+        validate_autotune_selection(
+            self.context,
+            self.sensor_id,
+            self.base_id,
+            self.acid_id,
+            self.config.setpoint,
+        )
 
     def _validate_live(self, now: float, ph: float | None) -> None:
         if not math.isfinite(now):
@@ -1005,6 +956,7 @@ class AutotuneRun:
         )
         if outside and previous_outside:
             self._terminate(AutotunePhase.aborted, "pH was outside the safety band twice", now)
+
 
     def _advance_baseline(self, now: float, ph: float) -> None:
         self.base.autotune_demand(self, 0.0)
@@ -1196,7 +1148,7 @@ class AutotuneRun:
             self._terminate(AutotunePhase.failed, "relay identification is non-finite", now)
             return
         # Bank the last delivery before freezing result accounting.
-        self._terminate(AutotunePhase.identified, "relay identification completed", now)
+        self._terminate(AutotunePhase.identified, "relay identification completed", now, notify=False)
         self.result = AutotuneResult(
             identification,
             self.noise_sigma or 0.0,
@@ -1205,12 +1157,13 @@ class AutotuneRun:
             self.actual_dose_ml,
             tuple(self.cycles),
         )
+        self._notify_terminal()
 
     def _abort_if_dose_exhausted(self, now: float) -> None:
         if self.actual_dose_ml >= self.dose_budget_ml:
             self._terminate(AutotunePhase.aborted, "actual combined dose budget exhausted", now)
 
-    def _terminate(self, phase: AutotunePhase, message: str, now: float) -> None:
+    def _terminate(self, phase: AutotunePhase, message: str, now: float, *, notify: bool = True) -> None:
         if self.phase in TERMINAL_PHASES:
             return
         cleanup_errors = self._cleanup_claimed()
@@ -1219,6 +1172,19 @@ class AutotuneRun:
         if cleanup_errors:
             self.message += "; cleanup errors: " + "; ".join(cleanup_errors)
         self.ended_at = now
+        if notify:
+            self._notify_terminal()
+
+    def _notify_terminal(self) -> None:
+        """Persist a terminal update without allowing audit I/O to break cleanup."""
+        if self._terminal_callback is None:
+            return
+        try:
+            reason = self._terminal_callback(self)
+        except Exception as exc:  # noqa: BLE001 - audit failure is operator-visible, never fatal
+            reason = f"autotune audit callback failed: {exc}"
+        if reason:
+            self.message += f"; {reason}"
 
     def _cleanup_claimed(self) -> list[str]:
         errors: list[str] = []
@@ -1234,10 +1200,11 @@ class AutotuneRun:
 class AutotuneCoordinator:
     """Own the single active non-blocking autotune run for one reactor."""
 
-    def __init__(self, context: AutotuneContext, *, clock: Callable[[], float] = perf_counter) -> None:
+    def __init__(self, context: AutotuneContext, *, clock: Callable[[], float] = perf_counter, audit: object | None = None) -> None:
         """Attach the coordinator to one injected reactor context."""
         self.context = context
         self.clock = clock
+        self.audit = audit
         self.run: AutotuneRun | None = None
 
     def start(
@@ -1258,10 +1225,92 @@ class AutotuneCoordinator:
             acid_id,
             config,
             clock=self.clock,
+            terminal_callback=self._record_terminal,
         )
         run.start()
+        if self.audit is not None:
+            try:
+                outcome = self.audit.record_started(run)
+                if outcome.ok and outcome.data is not None:
+                    run.audit_id = outcome.data["run_id"]
+                else:
+                    run.message += f"; {outcome.message}"
+            except Exception as exc:  # noqa: BLE001 - started run remains safe if disk is unavailable
+                run.message += f"; autotune audit was not saved: {exc}"
         self.run = run
         return run
+
+    def _record_terminal(self, run: AutotuneRun) -> str | None:
+        """Persist a terminal lifecycle update, returning an operator message on failure."""
+        if self.audit is None:
+            return None
+        outcome = self.audit.record_terminal(run)
+        return None if outcome.ok else outcome.message
+
+
+def validate_autotune_selection(
+    context: AutotuneContext,
+    sensor_id: str,
+    base_id: str,
+    acid_id: str,
+    setpoint: float,
+) -> int:
+    """Validate one pH split-range selection and return its channel index.
+
+    The live run and audit candidate preparation deliberately share this
+    one check, so stale stored selections cannot bypass Stage 2 safeguards.
+    """
+    prefix = context.reactor_id.split(":", 1)[0]
+    for identifier in (sensor_id, base_id, acid_id):
+        if identifier.split(":", 1)[0] != prefix:
+            error_message = f"{identifier} does not belong to {context.reactor_id}"
+            raise ValueError(error_message)
+    if base_id == acid_id:
+        error_message = "base and acid pumps must be different actuators"
+        raise ValueError(error_message)
+    if sensor_id not in context.sensors:
+        error_message = f"unknown pH sensor {sensor_id}"
+        raise ValueError(error_message)
+    if base_id not in context.actuators or acid_id not in context.actuators:
+        error_message = "unknown base or acid actuator"
+        raise ValueError(error_message)
+    sensor = context.sensors[sensor_id]
+    ph_channels = [index for index, channel in enumerate(sensor.channels) if str(getattr(channel, "units", "")).lower() == "ph"]
+    if len(ph_channels) != 1:
+        error_message = f"{sensor_id} must have exactly one pH channel"
+        raise ValueError(error_message)
+    channel_index = ph_channels[0]
+    paired = set(context.pairings().get(sensor_id, ()))
+    for label, actuator_id, backwards in (("base", base_id, False), ("acid", acid_id, True)):
+        actuator = context.actuators[actuator_id]
+        if (actuator.id, channel_index) not in paired:
+            error_message = f"{label} pump {actuator.id} is not paired to the pH channel"
+            raise ValueError(error_message)
+        controller = actuator.controller
+        if getattr(controller, "method", None) is not ControlMethod.pid:
+            error_message = f"{label} pump must use PID control"
+            raise ValueError(error_message)
+        if actuator.dispenser.unit is not OutputUnit.volume:
+            error_message = f"{label} pump must use volume output"
+            raise ValueError(error_message)
+        if getattr(controller, "setpoint", None) != setpoint:
+            error_message = f"{label} pump setpoint does not match the autotune setpoint"
+            raise ValueError(error_message)
+        if getattr(controller, "backwards", None) is not backwards:
+            error_message = f"{label} pump backwards must be {backwards}"
+            raise ValueError(error_message)
+        calibration = actuator.channel.calibration
+        if calibration is None or not calibration.is_fitted:
+            error_message = f"{label} pump needs a fitted calibration"
+            raise ValueError(error_message)
+        reason = calibration.installable_reason()
+        if reason is not None:
+            error_message = f"{label} pump calibration is unusable: {reason}"
+            raise ValueError(error_message)
+    if context.actuators[base_id].controller.setpoint != context.actuators[acid_id].controller.setpoint:
+        error_message = "base and acid pumps must share one setpoint"
+        raise ValueError(error_message)
+    return channel_index
 
 
 def static_gain_from_asymmetry(
