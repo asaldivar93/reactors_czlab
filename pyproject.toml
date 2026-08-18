@@ -3,10 +3,6 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-# asyncio.TaskGroup and enum.StrEnum are both 3.11+. The floor has to
-# stay at 3.11: the server runs on a Raspberry Pi and Raspberry Pi OS
-# Bookworm ships 3.11, so a higher pin makes the package uninstallable
-# on the one machine that must run it.
 requires-python = ">=3.11"
 name = "reactors_czlab"
 version = "2025.0.0"
@@ -17,43 +13,34 @@ authors = [
     { name = "Alexis Saldivar", email = "asaldivarg93@gmail.com" },
     { name = "Bhavana Palapati", email = "bpalapati0099@sdsu.edu" },
 ]
-dependencies = ["asyncua>=1.1.5"]
+dependencies = ["asyncua==2.0.1"]
 
 [project.optional-dependencies]
 server = [
-    # >=3.9: pymodbus.payload (BinaryPayloadBuilder/Decoder) was removed in
-    # 3.9, and ModbusHandler uses convert_to_registers/convert_from_registers
-    # instead, whose word_order kwarg landed in 3.9. (There is no pymodbus
-    # 4.0; the latest release is 3.x.)
-    "pymodbus>=3.9",
-    "pyserial>=3.5",
+    "pymodbus==3.15",
+    "pyserial==3.5",
     "adafruit-circuitpython-busdevice",
     "adafruit-circuitpython-tca9548a",
     "adafruit-circuitpython-as7341",
     "adafruit-circuitpython-tlc59711",
 ]
 client = [
-    "opcua-client>=0.8.4",
-    "psycopg>=3.2.7",
-    "ipykernel>=6.29.5",
-    "polars>=1.29.0",
+    "opcua-client==0.8.4",
+    "psycopg==3.3.4",
+    "ipykernel==7.3.0",
+    "polars==1.43.2",
     "matplotlib",
 ]
 gui = [
-    # Pure-Python wheel (py3-none-any), so the Pi install carries no
-    # compiled GUI dependency of its own.
-    "nicegui>=2.0",
-    "plotly>=6.0",
+    "nicegui==3.15.0",
+    "plotly==6.9.0",
 ]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "ruff>=0.6",
-    # The GUI tests drive real element trees through NiceGUI's `user`
-    # fixture, so the dev extra needs nicegui even though the gui extra
-    # is what a deployment installs.
-    "nicegui>=2.0",
-    "plotly>=6.0",
+    "nicegui==3.15.0",
+    "plotly==6.9.0",
 ]
 
 [project.scripts]

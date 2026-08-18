@@ -267,7 +267,7 @@ class HamiltonSensor(Sensor):
 
         request = ModbusRequest(
             operation="read_holding",
-            address=self.address,
+            unit=self.address,
             register=register.address,
             count=register.num,
         )
@@ -299,7 +299,7 @@ class HamiltonSensor(Sensor):
 
         request = ModbusRequest(
             operation="write",
-            address=self.address,
+            unit=self.address,
             register=register.address,
             values=values,
         )
@@ -341,7 +341,7 @@ class HamiltonSensor(Sensor):
             await self.set_operator_level("user")
             _logger.info("Updated address of unit %s: %s", self.id, new_address)
         except ModbusError:
-            _logger.exception("Failed to update address of unit %s", self.id)
+            _logger.warning("Failed to update address of unit %s", self.id)
             raise
 
     async def set_baudrate(self, baudrate: int) -> None:
@@ -374,7 +374,7 @@ class HamiltonSensor(Sensor):
                 baudrate,
             )
         except ModbusError:
-            _logger.exception("Failed to set baudrate of unit %s", self.id)
+            _logger.warning("Failed to set baudrate of unit %s", self.id)
             raise
 
     async def _read_calibration_point(self, cp: str) -> CalibrationStatus:
@@ -449,14 +449,14 @@ class HamiltonSensor(Sensor):
         try:
             cp = calibration_point_name(cal_point)
         except ValueError:
-            _logger.exception("Cannot read calibration status of %s", self.id)
+            _logger.warning("Cannot read calibration status of %s", self.id)
             return None
 
         try:
             await self.set_operator_level("specialist")
             status = await self._read_calibration_point(cp)
         except ModbusError:
-            _logger.exception(
+            _logger.warning(
                 "Failed to read %s status of unit %s",
                 cp,
                 self.id,
@@ -501,7 +501,7 @@ class HamiltonSensor(Sensor):
         try:
             cp = calibration_point_name(cal_point)
         except ValueError:
-            _logger.exception("Cannot calibrate %s", self.id)
+            _logger.warning("Cannot calibrate %s", self.id)
             return ("failed", 0.0, 0.0)
 
         try:
@@ -524,7 +524,7 @@ class HamiltonSensor(Sensor):
                 status.process_value,
             )
         except ModbusError:
-            _logger.exception("Error during calibration of unit %s", self.id)
+            _logger.warning("Error during calibration of unit %s", self.id)
             return ("failed", 0.0, 0.0)
         else:
             return (status.text, status.quality, status.value)
@@ -540,7 +540,7 @@ class HamiltonSensor(Sensor):
         try:
             await self.set_operator_level("user")
         except ModbusError:
-            _logger.exception(
+            _logger.warning(
                 "Failed to drop %s back to user level",
                 self.id,
             )

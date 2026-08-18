@@ -4,14 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import ClassVar
+from functools import partial
+from typing import TYPE_CHECKING, ClassVar
 
 from pymodbus import FramerType
 from pymodbus.client import ModbusSerialClient
-from pymodbus.exceptions import ModbusException
+from pymodbus.exceptions import ModbusException, ModbusIOException
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from pymodbus.pdu.pdu import ModbusPDU
 
 _logger = logging.getLogger("server.modbus_handler")
 
@@ -52,7 +57,7 @@ class ModbusRequest:
     """
 
     operation: str
-    address: int
+    unit: int
     register: int
     count: int = 2
     values: list[int | float] | None = None
@@ -62,7 +67,7 @@ class ModbusRequest:
 class ModbusConfig:
     """Settings for modbus connection.
 
-    Parameters:
+    Parameters
     ----------
     port: str
         The serial port of the connection
@@ -154,93 +159,100 @@ class ModbusHandler:
 
         """
         try:
-            match request:
-                case ModbusRequest(
-                    operation="read_holding",
-                    address=slave,
-                    register=address,
-                    count=count,
-                ):
-                    async with self.lock:
-                        loop = asyncio.get_running_loop()
-                        result = await loop.run_in_executor(
-                            self._executor,
-                            lambda: self.client.read_holding_registers(
-                                address=address,
-                                count=count,
-                                slave=slave,
-                            ),
-                        )
-
-                case ModbusRequest(
-                    operation="read_input",
-                    address=slave,
-                    register=address,
-                    count=count,
-                ):
-                    async with self.lock:
-                        loop = asyncio.get_running_loop()
-                        result = await loop.run_in_executor(
-                            self._executor,
-                            lambda: self.client.read_input_registers(
-                                address=address,
-                                count=count,
-                                slave=slave,
-                            ),
-                        )
-
-                case ModbusRequest(
-                    operation="write",
-                    address=slave,
-                    register=address,
-                    values=values,
-                ):
-                    if values is None:
-                        error_message = (
-                            "Write operation requires a list of values "
-                            f"in: {request}"
-                        )
-                        raise ModbusError(error_message)
-                    payload = self._build_payload(values)
-                    async with self.lock:
-                        loop = asyncio.get_running_loop()
-                        result = await loop.run_in_executor(
-                            self._executor,
-                            lambda: self.client.write_registers(
-                                address=address,
-                                values=payload,
-                                slave=slave,
-                            ),
-                        )
-
-                case _:
-                    error_message = f"Invalid operation in: {request}"
-                    raise ModbusError(error_message)
-
+            operation = self._build_request(request)
+            async with self.lock:
+                loop = asyncio.get_running_loop()
+                result = await loop.run_in_executor(self._executor, operation)
+        except ModbusIOException as err:
+            error_message = (
+                f"Modbus error during {request.operation} "
+                f"on unit {request.unit}: {err}"
+            )
+            raise ModbusError(error_message) from err
+        except ModbusException as err:
+            error_message = (
+                f"Modbus error during {request.operation} "
+                f"on unit {request.unit}: {err}"
+            )
+            raise ModbusError(error_message) from err
+        else:
             if result.isError():
                 error_message = (
                     f"Error during {request.operation} on register "
-                    f"{request.register} of unit {request.address} "
+                    f"{request.register} of unit {request.unit} "
                     f"with code {result.exception_code}"
                 )
                 raise ModbusError(error_message)
 
-            _logger.debug(
-                "Modbus success - unit: %s, operation: %s, value: %s,"
-                " result: %s",
-                request.address,
-                request.operation,
-                request.values,
-                result.registers,
-            )
-        except ModbusException as err:
-            error_message = (
-                f"Modbus error during {request.operation} "
-                f"on unit {request.address}: {err}"
-            )
-            raise ModbusError(error_message) from err
-        else:
-            return result.registers
+        _logger.debug(
+            "Modbus success - unit: %s, operation: %s, value: %s,"
+            " result: %s",
+            request.unit,
+            request.operation,
+            request.values,
+            result.registers,
+        )
+        return result.registers
+
+    def _build_request(self, request: ModbusRequest) -> partial[ModbusPDU]:
+        match request:
+            case ModbusRequest(
+                operation="read_holding",
+                unit=device_id,
+                register=address,
+                count=count,
+            ):
+                return partial(
+                    self.client.read_holding_registers,
+                    address=address,
+                    count=count,
+                    device_id=device_id,
+                )
+
+            case ModbusRequest(
+                operation="read_input",
+                unit=device_id,
+                register=address,
+                count=count,
+            ):
+                return partial(
+                    self.client.read_input_registers,
+                    address=address,
+                    count=count,
+                    device_id=device_id,
+                )
+
+            case ModbusRequest(
+                operation="write",
+                unit=device_id,
+                register=address,
+                values=values,
+            ):
+                if values is None:
+                    error_message = (
+                        "Write operation requires a list of values "
+                        f"in: {request}"
+                    )
+                    raise ModbusError(error_message)
+
+                if not all(type(val) in (int, float) for val in values):
+                    error_message = "Only write of floats and ints are implemented"
+                    raise ModbusError(error_message)
+
+                payload = self._build_payload(values)
+                return partial(
+                    self.client.write_registers,
+                    address=address,
+                    values=payload,
+                    device_id=device_id,
+                )
+
+            case _:
+                error_message = (
+                    f"Modbus error during {request.operation} "
+                    f"on unit {request.unit}"
+                )
+                raise ModbusError(error_message)
 
     def _build_payload(self, values: list) -> list:
         """Encode values into 16 bit registers.
@@ -259,9 +271,7 @@ class ModbusHandler:
                     )
                 case float():
                     data_type = DATATYPE.FLOAT32
-                case _:
-                    error_message = "Only float and ints are implemented"
-                    raise ModbusError(error_message)
+
             registers += ModbusSerialClient.convert_to_registers(
                 val,
                 data_type,
@@ -302,13 +312,13 @@ class ModbusHandler:
         # value; "int" stays unsigned, matching the old decode_32bit_uint.
         match cast_type:
             case "float":
-                return ModbusSerialClient.convert_from_registers(
+                return self.client.convert_from_registers(
                     registers,
                     DATATYPE.FLOAT32,
                     word_order=WORD_ORDER,
                 )
             case "int":
-                return ModbusSerialClient.convert_from_registers(
+                return self.client.convert_from_registers(
                     registers,
                     DATATYPE.UINT32,
                     word_order=WORD_ORDER,
