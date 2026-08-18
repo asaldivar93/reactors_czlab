@@ -1,0 +1,4 @@
+interface:
+  display_name: "Prefer Match/Case"
+  short_description: "Choose clear structural matching in Python"
+  default_prompt: "Use $prefer-match-case to refactor this Python branching logic where structural pattern matching improves clarity."
