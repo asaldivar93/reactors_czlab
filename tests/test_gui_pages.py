@@ -506,6 +506,19 @@ class TestHeader:
         assert connected.server_period == 12.0
         assert state_module.STATE.period == 12.0
 
+    async def test_settings_button_has_explicit_contrast(
+        self,
+        user: User,
+        connected: FakeClient,
+    ) -> None:
+        """The white header button uses readable primary-colored content."""
+        await user.open("/")
+        settings = next(iter(user.find("Settings").elements))
+
+        assert settings.background_color == "white"
+        assert settings.props["text-color"] == "primary"
+        assert settings.props["unelevated"] is True
+
     async def test_settings_rejection_keeps_the_readback(
         self,
         user: User,

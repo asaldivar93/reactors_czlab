@@ -216,7 +216,7 @@ def sampling_settings() -> None:
         icon="settings",
         color="white",
         on_click=open_dialog,
-    ).props("flat size=sm")
+    ).props("unelevated text-color=primary size=sm")
     disable_when_read_only(settings_button)
 
 
