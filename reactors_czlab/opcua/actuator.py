@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections.abc import Callable
+from dataclasses import fields
 from typing import TYPE_CHECKING
 
 from asyncua import ua, uamethod
@@ -56,6 +58,7 @@ class ActuatorOpc:
         self.id = actuator.id
         self.run = CalibrationRun(actuator)
         self._config_lock = asyncio.Lock()
+        self.on_control_config_changed: Callable[[str], None] | None = None
 
     def __repr__(self) -> str:
         """Print actuator id."""
@@ -182,6 +185,7 @@ class ActuatorOpc:
         backwards: bool,
     ) -> tuple[bool, str]:
         """Apply a config while ``_config_lock`` is held."""
+        before = self._control_configuration_signature()
         try:
             method = control_method[method_index]
         except KeyError:
@@ -237,6 +241,22 @@ class ActuatorOpc:
         if reason is not None:
             return (False, reason)
 
+        # A selected-pump change can replace/reset the dispenser that owns a
+        # live bolus. Abort synchronously before the first awaited readback
+        # write so cleanup cannot be delayed behind OPC I/O. An identical
+        # complete config remains the historical no-op.
+        if (
+            before != self._control_configuration_signature()
+            and self.on_control_config_changed is not None
+        ):
+            try:
+                self.on_control_config_changed(self.id)
+            except Exception:
+                _logger.exception(
+                    "Control-change callback failed for %s",
+                    self.id,
+                )
+
         # Publish only after the actuator accepted the whole object. These
         # variables are now a read-back model, never a command surface.
         # Python ints infer Int64, but these MultiStateDiscrete variables are
@@ -255,6 +275,23 @@ class ActuatorOpc:
             f"{self.actuator.dispenser.unit}"
         )
         return (True, message)
+
+    def _control_configuration_signature(self) -> tuple[object, ...]:
+        """Return only configuration fields, excluding live controller state."""
+        controller = self.actuator.controller
+        configured = tuple(
+            (spec.name, getattr(controller, spec.name))
+            for spec in fields(controller)
+            if spec.compare
+        )
+        return (type(controller), self.actuator.dispenser.unit, configured)
+
+    async def publish_pid_gains(self) -> None:
+        """Publish the three PID gain readbacks from the live controller."""
+        controller = self.actuator.controller
+        await self.kp.write_value(controller.kp)
+        await self.ki.write_value(controller.ki)
+        await self.kd.write_value(controller.kd)
 
     async def init_control_node(self, idx: int) -> None:
         """Add configuration variables for the control method.

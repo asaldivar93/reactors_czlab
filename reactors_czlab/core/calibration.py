@@ -322,6 +322,8 @@ class CalibrationRun:
         """
         if self._running:
             return f"{self.actuator.id} is already calibrating"
+        if self.actuator.autotune_owner is not None:
+            return f"{self.actuator.id} is owned by an active autotune"
         if not 0 <= duty <= MAX_OUTPUT:
             return f"duty must be within 0 - {MAX_OUTPUT}, got {duty}"
         if not MIN_RUN_SECONDS <= seconds <= MAX_RUN_SECONDS:

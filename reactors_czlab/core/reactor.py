@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from reactors_czlab.core.actuator import Actuator
+    from reactors_czlab.core.autotune import AutotuneCoordinator, AutotuneRun
     from reactors_czlab.core.sensor import Sensor
 
 _logger = logging.getLogger("server.reactor")
@@ -91,6 +92,10 @@ class Reactor:
         self.actuators = actuators
         self.sampling = SamplingState()
         self.unpaired = UnpairedState()
+        # Installed by ReactorOpc after every actuator OPC node exists. Core
+        # reactors used by tests or non-OPC callers remain perfectly valid
+        # without an autotune coordinator.
+        self.autotune: AutotuneCoordinator | None = None
 
         self.sampling.sensors = [s.id for s in self.sensors.values()]
         self.sampling.actuators = [a.id for a in self.actuators.values()]
@@ -149,6 +154,54 @@ class Reactor:
                 else:
                     actuator.write_output(value)
 
+    def active_autotune_run(self) -> AutotuneRun | None:
+        """Return the run that currently owns a pump pair, if any."""
+        if self.autotune is None or self.autotune.run is None:
+            return None
+        run = self.autotune.run
+        return run if run.is_active else None
+
+    def autotune_involves_actuator(self, actuator_id: str) -> bool:
+        """Whether an active run owns ``actuator_id`` as base or acid."""
+        run = self.active_autotune_run()
+        return run is not None and actuator_id in {run.base_id, run.acid_id}
+
+    def abort_autotune_for_config_change(self, actuator_id: str) -> None:
+        """Abort when another OPC client changes a selected controller."""
+        run = self.active_autotune_run()
+        if run is None or actuator_id not in {run.base_id, run.acid_id}:
+            return
+        run.abort(f"configuration changed for selected actuator {actuator_id}")
+
+    def update_autotune(self) -> None:
+        """Feed the selected pH reading to the active run.
+
+        This is called immediately after all sensor reads and before ordinary
+        paired controller decisions. The selected pumps are interlocked, so
+        their normal decisions are inert; unrelated pairings still see the
+        same fresh sample in :meth:`update_paired_actuators`.
+        """
+        run = self.active_autotune_run()
+        if run is None:
+            return
+        try:
+            sensor = self.sensors[run.sensor_id]
+            channels = [
+                channel
+                for channel in sensor.channels
+                if str(getattr(channel, "units", "")).lower() == "ph"
+            ]
+            if len(channels) != 1:
+                error_message = (
+                    f"{run.sensor_id} no longer has exactly one pH channel"
+                )
+                raise ValueError(error_message)
+            ph = channels[0].value
+        except (KeyError, ValueError) as exc:
+            run.abort(f"configuration loss: {exc}")
+            return
+        run.sample(ph)
+
     async def sampling_loop(self, sample_ready: asyncio.Event) -> None:
         """Read all sensors, then update the actuators paired to them."""
         loop = asyncio.get_running_loop()
@@ -157,6 +210,8 @@ class Reactor:
             async with asyncio.TaskGroup() as tg:
                 for sensor in self.sensors.values():
                     tg.create_task(sensor.read())
+
+            self.update_autotune()
 
             async with self.sampling.lock:
                 self.update_paired_actuators()
@@ -194,13 +249,23 @@ class Reactor:
                 for aid in self.unpaired.actuators:
                     self.actuators[aid].write_output(UNPAIRED_INPUT)
 
-            for actuator in self.actuators.values():
-                actuator.tick()
+            run = self.active_autotune_run()
+            owned_ids: set[str] = set()
+            if run is not None:
+                owned_ids = {run.base_id, run.acid_id}
+                run.tick()
+
+            for aid, actuator in self.actuators.items():
+                if aid not in owned_ids:
+                    actuator.tick()
 
             await asyncio.sleep(UNPAIRED_PERIOD)
 
     def stop(self) -> None:
         """Drive every actuator to zero and cancel deliveries in flight."""
+        run = self.active_autotune_run()
+        if run is not None:
+            run.abort("reactor stopped")
         for actuator in self.actuators.values():
             actuator.dispenser.reset()
             actuator.write(0)
