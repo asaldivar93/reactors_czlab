@@ -15,7 +15,7 @@ pip install -e ".[server,gui,client]"
 On the PC:
 
 ```bash
-uv sync --extra client --extra gui --extra server
+uv sync --extra client --extra gui --extra server --no-build-package scipy
 ```
 
 psycopg installs on a Raspberry Pi. What it needs at runtime is libpq:
@@ -43,7 +43,7 @@ uv run reactors-server --simulated --endpoint opc.tcp://localhost:4840/
 ```
 
 ```bash
-uv run reactors-gui --endpoint opc.tcp://10.10.10.20:55488/ --port 8080 --period 10
+uv run reactors-gui --endpoint opc.tcp://localhost:4840/ --port 8080 --period 10
 ```
 
 Then open `http://<host>:8080`. It listens on all interfaces, so the Pi
