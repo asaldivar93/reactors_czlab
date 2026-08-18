@@ -5,8 +5,6 @@
 Implement relay-feedback PID autotuning as a server-owned, non-blocking workflow operated from a new NiceGUI page. Operators select the pH
 sensor and acid/base pumps, enter chemistry and safety parameters, monitor the live experiment, review candidate gains, and explicitly apply atuning rule.
 
-Target plan path: .codex/docs/plans/2026-08-16-ph-pid-autotuning.md.
-
 ## Public Interfaces
 
 - Add reactors_czlab.core.ph_model as the production source for Chemistry, PlantParams, PhPlant, buffering intensity, and related model
