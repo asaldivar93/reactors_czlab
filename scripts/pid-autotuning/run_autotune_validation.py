@@ -16,34 +16,30 @@ from __future__ import annotations
 import argparse
 import csv
 import os
-import sys
-
-import numpy as np
-
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import matplotlib
+import numpy as np
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from ph_process_model import Chemistry, PhPlant, PlantParams
-from relay_autotune import (
-    RelayConfig,
-    run_relay_experiment,
-    scale_gains_to_setpoint,
-    simc_pid,
-    to_code_gains,
-    tuning_rules,
-)
-from simulate_ph_loop import (
+from reactors_czlab.core.autotune import (
     Pump,
     SplitRangeConfig,
     SplitRangeController,
     metrics,
+    run_relay_experiment,
+    scale_gains_to_setpoint,
     settling_time,
+    simc_pid,
     simulate,
+    to_code_gains,
+    tuning_rules,
 )
+from reactors_czlab.core.autotune import (
+    RelayTuneConfig as RelayConfig,
+)
+from reactors_czlab.core.ph_model import Chemistry, PhPlant, PlantParams
 
 SETPOINT = 7.0
 DT = 10.0
@@ -92,7 +88,7 @@ def stage1_autotune(outdir: str, seed: int = 0):
         t0 = st[len(st)//2]
         ax1.annotate("", xy=((t0 + res.Pu) / 60.0, SETPOINT + res.a_amp),
                      xytext=(t0 / 60.0, SETPOINT + res.a_amp),
-                     arrowprops=dict(arrowstyle="<->", color="#c00000"))
+                     arrowprops={"arrowstyle": "<->", "color": "#c00000"})
         ax1.text((t0 + res.Pu/2)/60.0, SETPOINT + res.a_amp*1.15,
                  f"Pu = {res.Pu:.0f} s", color="#c00000", ha="center", fontsize=9)
     ax1.set_ylabel("pH")

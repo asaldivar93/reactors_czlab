@@ -6,6 +6,7 @@ on its own.
 """
 
 from reactors_czlab.gui.pages import (  # noqa: F401 - registers the routes
+    autotune,
     calibration,
     dashboard,
     experiments,

@@ -7,7 +7,9 @@ stub node that captures the callables instead of registering them.
 
 from __future__ import annotations
 
+import asyncio
 import json
+from types import SimpleNamespace
 
 import pytest
 from asyncua import ua
@@ -85,6 +87,26 @@ async def test_set_pairing_rejects_double_pairing(paired) -> None:
     _, set_pairing, _ = paired
     assert await _call(set_pairing, "R0:ph", "R0:pwm0", 0) is True
     assert await _call(set_pairing, "R0:ph", "R0:pwm0", 1) is False
+
+
+async def test_pairing_changes_for_an_active_autotune_pair_are_rejected(
+    paired,
+) -> None:
+    """Neither selected pump can be moved while its run owns the pair."""
+    reactor_opc, set_pairing, unpair = paired
+    assert await _call(set_pairing, "R0:ph", "R0:pwm0", 0) is True
+    run = SimpleNamespace(
+        is_active=True,
+        base_id="R0:pwm0",
+        acid_id="R0:pwm1",
+    )
+    reactor_opc.reactor.autotune = SimpleNamespace(run=run)
+
+    assert await _call(unpair, "R0:ph", "R0:pwm0", 0) is False
+    assert await _call(set_pairing, "R0:ph", "R0:pwm1", 0) is False
+    assert reactor_opc.reactor.sampling.pairings["R0:ph"] == [
+        ("R0:pwm0", 0),
+    ]
 
 
 async def test_unpair_returns_the_actuator(paired) -> None:
@@ -199,3 +221,42 @@ async def test_published_pairings_are_sorted(published) -> None:
 
     actuators = [row["actuator"] for row in json.loads(node.values[-1])]
     assert actuators == sorted(actuators)
+
+
+async def test_update_clears_sample_ready_before_waiting_again(
+    make_sensor,
+    make_actuator,
+    monkeypatch,
+) -> None:
+    """One sample event causes one publish pass, not a free-running loop."""
+    reactor_opc = ReactorOpc(
+        "R0",
+        volume=5,
+        sensors=[make_sensor("R0:ph")],
+        actuators=[make_actuator("R0:pwm0")],
+        period=10,
+    )
+    counts = {"sensor": 0, "actuator": 0}
+
+    async def sensor_update() -> None:
+        counts["sensor"] += 1
+
+    async def actuator_update() -> None:
+        counts["actuator"] += 1
+
+    monkeypatch.setattr(reactor_opc.sensor_nodes[0], "update_value", sensor_update)
+    monkeypatch.setattr(
+        reactor_opc.actuator_nodes[0],
+        "update_value",
+        actuator_update,
+    )
+    task = asyncio.create_task(reactor_opc.update())
+    try:
+        reactor_opc.sample_ready.set()
+        await asyncio.sleep(0.05)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    assert counts == {"sensor": 1, "actuator": 1}
+    assert reactor_opc.sample_ready.is_set() is False

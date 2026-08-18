@@ -11,6 +11,7 @@ from asyncua import ua, uamethod
 
 from reactors_czlab.core.reactor import Reactor
 from reactors_czlab.opcua.actuator import ActuatorOpc
+from reactors_czlab.opcua.autotune import ReactorAutotuneOpc
 from reactors_czlab.opcua.sensor import SensorOpc
 
 if TYPE_CHECKING:
@@ -18,6 +19,7 @@ if TYPE_CHECKING:
     from asyncua.common import Node
 
     from reactors_czlab.core.actuator import Actuator
+    from reactors_czlab.core.autotune_audit import AutotuneAudit
     from reactors_czlab.core.sensor import Sensor
 
 _logger = logging.getLogger("server.opcreactor")
@@ -33,6 +35,8 @@ class ReactorOpc:
         sensors: list[Sensor],
         actuators: list[Actuator],
         period: float,
+        *,
+        autotune_audit: AutotuneAudit | None = None,
     ) -> None:
         """Initialize the OPC Reactor node."""
         self.id: str = identifier
@@ -48,6 +52,8 @@ class ReactorOpc:
         self.sensor_nodes: list[SensorOpc] = []
         self.actuator_nodes: list[ActuatorOpc] = []
         self.create_child_nodes()
+        self.autotune_audit = autotune_audit
+        self.autotune_api: ReactorAutotuneOpc | None = None
         # Flag for sensing loop completed
         self.sample_ready = asyncio.Event()
 
@@ -94,6 +100,10 @@ class ReactorOpc:
         for actuator in self.actuator_nodes:
             await actuator.init_node(server, self.anode, self.idx)
 
+        # One base-owned method may update both actuator nodes, so this must
+        # happen only after every node and its readback variables exist.
+        await self.init_autotune_methods(idx)
+
         # Deliberately on the reactor node, not under :sensors or
         # :actuators. Its browse name splits into two parts, below the
         # three OpcClient.match_tree requires, so it is never collected
@@ -107,6 +117,16 @@ class ReactorOpc:
         )
         await self.init_pairing_methods(idx)
         await self.publish_pairings()
+
+    async def init_autotune_methods(self, idx: int) -> None:
+        """Attach the reactor coordinator and expose eligible pump methods."""
+        mapping = {node.id: node for node in self.actuator_nodes}
+        self.autotune_api = ReactorAutotuneOpc(
+            self.reactor,
+            mapping,
+            audit=self.autotune_audit,
+        )
+        await self.autotune_api.init_methods(idx)
 
     async def pairings_json(self) -> str:
         """Snapshot the pairing table as JSON.
@@ -163,7 +183,22 @@ class ReactorOpc:
             if not self._validate_pair(sid, aid):
                 return False
 
+            if self.reactor.autotune_involves_actuator(aid):
+                _logger.error(
+                    "Cannot change pairing for %s during its active autotune",
+                    aid,
+                )
+                return False
+
             async with sampling.lock:
+                # Recheck after the await: an autotune can start while this
+                # call is queued for the pairing lock.
+                if self.reactor.autotune_involves_actuator(aid):
+                    _logger.error(
+                        "Cannot change pairing for %s during its active autotune",
+                        aid,
+                    )
+                    return False
                 already_paired = any(
                     aid == paired_aid
                     for paired in sampling.pairings.values()
@@ -198,7 +233,20 @@ class ReactorOpc:
             if not self._validate_pair(sid, aid):
                 return False
 
+            if self.reactor.autotune_involves_actuator(aid):
+                _logger.error(
+                    "Cannot change pairing for %s during its active autotune",
+                    aid,
+                )
+                return False
+
             async with sampling.lock:
+                if self.reactor.autotune_involves_actuator(aid):
+                    _logger.error(
+                        "Cannot change pairing for %s during its active autotune",
+                        aid,
+                    )
+                    return False
                 try:
                     sampling.pairings[sid].remove((aid, channel))
                 except ValueError:
