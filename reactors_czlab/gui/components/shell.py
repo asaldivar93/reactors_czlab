@@ -159,6 +159,67 @@ def reactor_recording_toggle(reactor: str) -> None:
             button.tooltip(STATE.database_reason)
 
 
+def sampling_settings() -> None:
+    """Build the stable server-wide sampling-period dialog and its button."""
+    with ui.dialog() as dialog, ui.card().style("min-width: 22rem"):
+        ui.label("Sampling settings").classes("text-lg font-semibold")
+        period_input = ui.number(
+            "Sampling period (seconds)",
+            value=STATE.period,
+            min=1,
+            max=30,
+            step=1,
+        ).classes("w-full")
+        disable_when_read_only(period_input)
+
+        async def apply() -> None:
+            """Ask the server to validate, then display its read-back."""
+            _logger.info(
+                "Operator requested sampling period %s",
+                period_input.value,
+            )
+            if period_input.value is None:
+                ui.notify("Enter a sampling period", type="negative")
+                return
+            try:
+                accepted, message = await STATE.set_sampling_period(
+                    float(period_input.value),
+                )
+            except Exception as err:  # noqa: BLE001 - operator feedback
+                _logger.warning("Sampling-period update failed: %s", err)
+                period_input.set_value(STATE.period)
+                ui.notify(str(err), type="negative")
+                return
+
+            # Whether accepted or rejected, the read-back is authoritative.
+            period_input.set_value(STATE.period)
+            ui.notify(
+                message,
+                type="positive" if accepted else "negative",
+            )
+            if accepted:
+                dialog.close()
+
+        with ui.row().classes("w-full justify-end").style("gap: 0.5rem"):
+            ui.button("Cancel", on_click=dialog.close).props("flat")
+            apply_button = ui.button("Apply", on_click=apply)
+            disable_when_read_only(apply_button)
+
+    def open_dialog() -> None:
+        """Refresh the shown value each time the operator opens settings."""
+        _logger.info("Operator opened sampling settings")
+        period_input.set_value(STATE.period)
+        dialog.open()
+
+    settings_button = ui.button(
+        "Settings",
+        icon="settings",
+        color="white",
+        on_click=open_dialog,
+    ).props("flat size=sm")
+    disable_when_read_only(settings_button)
+
+
 def header(reactor: str | None = None) -> None:
     """The bar every page carries."""
     with ui.header().classes("items-center justify-between").style(
@@ -175,6 +236,7 @@ def header(reactor: str | None = None) -> None:
             )
 
         with ui.row().classes("items-center").style("gap: 0.75rem"):
+            sampling_settings()
             badges = status_badges()
 
     ui.timer(STATUS_SECONDS, badges.refresh)

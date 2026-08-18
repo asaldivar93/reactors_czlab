@@ -17,7 +17,7 @@ import logging
 from nicegui import app, ui
 
 from reactors_czlab.gui import pages  # noqa: F401 - registers the routes
-from reactors_czlab.gui.state import DEFAULT_ENDPOINT, DEFAULT_PERIOD, STATE
+from reactors_czlab.gui.state import DEFAULT_ENDPOINT, STATE
 
 _logger = logging.getLogger("gui")
 
@@ -62,19 +62,12 @@ def cli() -> None:
     parser.add_argument("--endpoint", default=DEFAULT_ENDPOINT)
     parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
-    parser.add_argument(
-        "--period",
-        type=float,
-        default=DEFAULT_PERIOD,
-        help="The server's sampling period, for judging stale readings",
-    )
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args()
 
     setup_logging(verbose=not args.quiet)
 
     STATE.endpoint = args.endpoint
-    STATE.period = args.period
     STATE.history_seconds = GUI_HISTORY_SECONDS
 
     # connect() never raises: a server that is not up yet is the normal

@@ -17,6 +17,9 @@ from asyncua.client.ua_client import UaClientState
 from reactors_czlab.gui import state as state_module
 from reactors_czlab.gui.state import AppState
 
+SERVER_PERIOD_NODE = "ns=2;i=40"
+SET_PERIOD_METHOD = "ns=2;i=41"
+
 
 class FakeOpcClient:
     """The slice of OpcClient that AppState touches."""
@@ -39,6 +42,17 @@ class FakeOpcClient:
         self.sensor_vars: dict[str, dict] = {}
         self.actuator_vars: dict[str, dict] = {}
         self.methods: dict[str, dict] = {}
+        self.server_config_vars = {
+            SERVER_PERIOD_NODE: {"name": "sampling_period"},
+        }
+        self.server_config_methods = {
+            SET_PERIOD_METHOD: {"name": "set_sampling_period"},
+        }
+        self.values: dict[str, object] = {SERVER_PERIOD_NODE: 10.0}
+        self.sampling_result: tuple[bool, str] = (
+            True,
+            "sampling period accepted",
+        )
         self.experiment_tags: dict[str, str] = {}
         self.disconnected = False
         self.writes: list[tuple[str, object]] = []
@@ -73,9 +87,18 @@ class FakeOpcClient:
         self.writes.append((nodeid, value))
         return True
 
+    async def read_many(self, nodeids: list[str]) -> list[object]:
+        """Return server read-backs in one batch."""
+        return [self.values[nodeid] for nodeid in nodeids]
+
     async def call_method(self, nodeid: str, *args: object) -> object:
         """Record a call."""
         self.calls.append((nodeid, args))
+        if nodeid == SET_PERIOD_METHOD:
+            accepted, message = self.sampling_result
+            if accepted:
+                self.values[SERVER_PERIOD_NODE] = args[0]
+            return [accepted, message]
         return "ok"
 
     async def call_slow_method(
@@ -109,10 +132,15 @@ class FakeOpcClient:
 @pytest.fixture(autouse=True)
 def _fake_client(monkeypatch: pytest.MonkeyPatch) -> None:
     """Build FakeOpcClient wherever AppState builds an OpcClient."""
+    async def immediately(function, *args, **kwargs):
+        return function(*args, **kwargs)
+
     FakeOpcClient.instances.clear()
     monkeypatch.setattr(state_module, "OpcClient", FakeOpcClient)
+    monkeypatch.setattr(state_module.asyncio, "to_thread", immediately)
     monkeypatch.setattr(state_module.operations, "check_schema", lambda: None)
     monkeypatch.setattr(state_module.operations, "recording_state", dict)
+    monkeypatch.setattr(state_module.operations, "active_experiments", dict)
     monkeypatch.setattr(
         state_module.operations,
         "set_recording_state",
@@ -121,9 +149,11 @@ def _fake_client(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture
-def app() -> AppState:
+async def app() -> AppState:
     """A disconnected AppState."""
-    return AppState("opc.tcp://localhost:4840/", period=10.0)
+    state = AppState("opc.tcp://localhost:4840/", period=10.0)
+    yield state
+    await state.disconnect()
 
 
 class TestConnect:
@@ -136,6 +166,28 @@ class TestConnect:
         assert app.connected
         assert app.book is not None
         assert app.connection_error is None
+        assert app.period == 10.0
+
+    async def test_connect_loads_the_published_period(self, app: AppState) -> None:
+        """Staleness uses server state, not a GUI command-line guess."""
+        original = state_module.OpcClient
+
+        def with_period(
+            endpoint: str,
+            timeout: float = 5.0,
+            history_seconds: float = 0.0,
+        ) -> FakeOpcClient:
+            client = original(endpoint, timeout, history_seconds)
+            client.values[SERVER_PERIOD_NODE] = 17.5
+            return client
+
+        state_module.OpcClient = with_period
+        try:
+            await app.connect()
+        finally:
+            state_module.OpcClient = original
+
+        assert app.period == 17.5
 
     async def test_gui_history_window_reaches_the_client(self) -> None:
         """The GUI opts in while the headless OpcClient default stays zero."""
@@ -235,6 +287,7 @@ class TestConnect:
 
         app.client.state = UaClientState.RECONNECTING
         await asyncio.sleep(state_module.SUPERVISOR_SECONDS * 2)
+        app.client.values[SERVER_PERIOD_NODE] = 6.0
         app.client.state = UaClientState.CONNECTED
         for _ in range(10):
             if app.generation > first_generation:
@@ -246,6 +299,7 @@ class TestConnect:
         assert app.client.subscription_count == 1
         assert pairing._PAIRINGS_NODES == {}
         assert pairing._CHANNEL_INDICES == {}
+        assert app.period == 6.0
         await app.disconnect()
 
 
@@ -388,6 +442,35 @@ class TestWriteAndCall:
         assert app.writable is False
         assert not await app.write_variable("R0", "pwm0", "value", 10.0)
         assert app.client.writes == []
+
+    async def test_sampling_update_adopts_accepted_readback(
+        self,
+        app: AppState,
+    ) -> None:
+        """A global call updates state only from the published value."""
+        await app.connect()
+
+        accepted, message = await app.set_sampling_period(12.5)
+
+        assert accepted is True
+        assert message == "sampling period accepted"
+        assert app.period == 12.5
+        assert app.client.calls[-1] == (SET_PERIOD_METHOD, (12.5,))
+
+    async def test_sampling_rejection_still_reloads_readback(
+        self,
+        app: AppState,
+    ) -> None:
+        """A rejected candidate cannot linger in the GUI state."""
+        await app.connect()
+        app.client.values[SERVER_PERIOD_NODE] = 9.0
+        app.client.sampling_result = (False, "autotuning is active")
+
+        accepted, message = await app.set_sampling_period(20.0)
+
+        assert accepted is False
+        assert message == "autotuning is active"
+        assert app.period == 9.0
 
 
 class TestRecording:

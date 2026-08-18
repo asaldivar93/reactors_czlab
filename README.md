@@ -33,7 +33,7 @@ reactors-server --endpoint opc.tcp://10.10.10.20:55488/
 ```
 
 ```bash
-reactors-gui --endpoint opc.tcp://10.10.10.20:55488/ --port 8080 --period 10
+reactors-gui --endpoint opc.tcp://10.10.10.20:55488/ --port 8080
 ```
 
 Run it on a laptop with no hardware attached:
@@ -43,7 +43,7 @@ uv run reactors-server --simulated --endpoint opc.tcp://localhost:4840/
 ```
 
 ```bash
-uv run reactors-gui --endpoint opc.tcp://localhost:4840/ --port 8080 --period 10
+uv run reactors-gui --endpoint opc.tcp://localhost:4840/ --port 8080
 ```
 
 Then open `http://<host>:8080`. It listens on all interfaces, so the Pi
@@ -59,9 +59,12 @@ effective dose cap and estimated duration before Apply.
 process hosts the archiver itself, so running both against one database
 inserts every reading twice.
 
-`--period` tells the GUI the server's sampling period so it can grey
-out a reading that has stopped arriving; it defaults to 10 s and must
-match `SAMPLE_PERIOD` in `run_server.py` to be useful.
+The server publishes one sampling period for every reactor. It starts at
+10 seconds after each server restart and can be changed to 1--30 seconds
+from **Settings** in the GUI header. The server applies an accepted change
+to every reactor and actuator control guard; changes are not persisted and
+are rejected while PID autotuning is active. The GUI reads the published
+value to decide when a reading has gone stale.
 
 There is **no authentication**. Pump control is reachable from a
 browser URL by anyone who can route to the port. That is acceptable on

@@ -42,11 +42,25 @@ METHODS = {
     "ns=2;i=34": {"reactor": "R0", "name": ["pwm0", "get_calibration"]},
 }
 
+SERVER_CONFIG_VARS = {
+    "ns=2;i=40": {"name": "sampling_period"},
+}
+
+SERVER_CONFIG_METHODS = {
+    "ns=2;i=41": {"name": "set_sampling_period"},
+}
+
 
 @pytest.fixture
 def book() -> AddressBook:
     """An address book over a small but representative browse."""
-    return AddressBook.from_mappings(SENSOR_VARS, ACTUATOR_VARS, METHODS)
+    return AddressBook.from_mappings(
+        SENSOR_VARS,
+        ACTUATOR_VARS,
+        METHODS,
+        SERVER_CONFIG_VARS,
+        SERVER_CONFIG_METHODS,
+    )
 
 
 class TestVariables:
@@ -192,8 +206,29 @@ class TestFromClient:
             sensor_vars = SENSOR_VARS
             actuator_vars = ACTUATOR_VARS
             methods = METHODS
+            server_config_vars = SERVER_CONFIG_VARS
+            server_config_methods = SERVER_CONFIG_METHODS
 
         book = AddressBook.from_client(FakeClient())
 
         assert book.variable("R0", "ph", "pH") == "ns=2;i=10"
         assert book.method("R0", None, "unpair") == "ns=2;i=31"
+        assert book.server_variable("sampling_period") == "ns=2;i=40"
+        assert book.server_method("set_sampling_period") == "ns=2;i=41"
+
+
+class TestServerConfiguration:
+    """Global names stay outside the reactor/device namespace."""
+
+    def test_global_lookups_are_explicit(self, book: AddressBook) -> None:
+        """Settings resolve without inventing a pseudo-reactor id."""
+        assert book.server_variable("sampling_period") == "ns=2;i=40"
+        assert book.server_method("set_sampling_period") == "ns=2;i=41"
+        assert book.variable("ServerConfig", "sampling_period", "") is None
+
+    def test_global_values_do_not_create_reactors(
+        self,
+        book: AddressBook,
+    ) -> None:
+        """The settings object must not appear on the dashboard."""
+        assert book.reactors == ["R0", "R1"]

@@ -49,6 +49,33 @@ class _StubNode:
         return types.SimpleNamespace(Name=self.nodeid)
 
 
+class _TreeNode:
+    """A browsable node used to exercise explicit global discovery."""
+
+    def __init__(
+        self,
+        name: str,
+        node_class: str,
+        *children: _TreeNode,
+    ) -> None:
+        self.name = name
+        self.node_class = node_class
+        self.children = list(children)
+        self.nodeid = types.SimpleNamespace(to_string=lambda: f"id:{name}")
+
+    async def read_browse_name(self) -> object:
+        """Return the browse name."""
+        return types.SimpleNamespace(Name=self.name)
+
+    async def read_node_class(self) -> object:
+        """Return a node-class-shaped object."""
+        return types.SimpleNamespace(name=self.node_class)
+
+    async def get_children(self) -> list[_TreeNode]:
+        """Return this node's direct children."""
+        return self.children
+
+
 class _StubSubscription:
     """Records the nodes a subscription was asked to watch."""
 
@@ -233,6 +260,42 @@ async def test_read_many_uses_one_client_batch(client_module: Any) -> None:
     opc.client.values = {"n1": 1.0, "n2": 2.0}
 
     assert await opc.read_many(["n1", "n2"]) == [1.0, 2.0]
+
+
+async def test_server_configuration_is_discovered_explicitly_and_separately(
+    client_module: Any,
+) -> None:
+    """The global value can never enter device subscriptions or archives."""
+    config = _TreeNode(
+        "ServerConfig",
+        "Object",
+        _TreeNode("ServerConfig:sampling_period", "Variable"),
+        _TreeNode("ServerConfig:set_sampling_period", "Method"),
+    )
+    objects = _TreeNode("Objects", "Object", config)
+    opc = client_module.OpcClient("opc.tcp://localhost:4840/")
+    opc.client = types.SimpleNamespace(
+        nodes=types.SimpleNamespace(objects=objects),
+    )
+
+    variables = await opc.get_server_config_vars()
+    methods = await opc.get_server_config_methods()
+
+    assert variables == {
+        "id:ServerConfig:sampling_period": {"name": "sampling_period"},
+    }
+    assert methods == {
+        "id:ServerConfig:set_sampling_period": {
+            "name": "set_sampling_period",
+        },
+    }
+    opc.server_config_vars = variables
+    opc.server_config_methods = methods
+    assert "id:ServerConfig:sampling_period" not in opc.variables
+    assert not opc.archives(
+        "id:ServerConfig:sampling_period",
+        variables["id:ServerConfig:sampling_period"],
+    )
 
 
 async def test_sensor_descriptions_are_batch_read(client_module: Any) -> None:

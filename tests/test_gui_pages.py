@@ -11,6 +11,7 @@ A page that raises while rendering shows an operator a blank screen, so
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 import pytest
@@ -44,6 +45,8 @@ PH_STATUS_METHOD = "ns=2;i=33"
 DO_STATUS_METHOD = "ns=2;i=35"
 PWM0_CALIBRATION_METHOD = "ns=2;i=34"
 PWM0_CONTROL_METHOD = "ns=2;i=36"
+SERVER_PERIOD_NODE = "ns=2;i=40"
+SET_PERIOD_METHOD = "ns=2;i=41"
 
 METHODS = {
     "ns=2;i=30": {"reactor": "R0", "name": ["set_pairing"]},
@@ -67,6 +70,23 @@ METHODS = {
     },
 }
 
+SERVER_CONFIG_VARS = {
+    SERVER_PERIOD_NODE: {"name": "sampling_period"},
+}
+
+SERVER_CONFIG_METHODS = {
+    SET_PERIOD_METHOD: {"name": "set_sampling_period"},
+}
+
+
+@pytest.fixture(autouse=True)
+def _inline_to_thread(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep route tests independent of executor shutdown timing."""
+    async def immediately(function, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", immediately)
+
 
 class FakeClient:
     """Enough of an OpcClient for a page to render against."""
@@ -78,6 +98,10 @@ class FakeClient:
         self.sensor_vars = SENSOR_VARS
         self.actuator_vars = ACTUATOR_VARS
         self.methods = METHODS
+        self.server_config_vars = SERVER_CONFIG_VARS
+        self.server_config_methods = SERVER_CONFIG_METHODS
+        self.server_period = 10.0
+        self.sampling_result = (True, "sampling period set")
         self.variables = {
             nodeid: {**info, "value": 1.0, "timestamp": None}
             for nodeid, info in {**SENSOR_VARS, **ACTUATOR_VARS}.items()
@@ -157,19 +181,36 @@ class FakeClient:
                     "output_units": ["duty", "flow", "volume"],
                 },
             )
+        if nodeid == SET_PERIOD_METHOD:
+            accepted, message = self.sampling_result
+            if accepted:
+                self.server_period = float(args[0])
+            return [accepted, message]
         return None
+
+    async def read_many(self, nodeids: list[str]) -> list[object]:
+        """Return the global configuration read-back."""
+        return [self.server_period for nodeid in nodeids]
 
 
 @pytest.fixture
-def connected(monkeypatch: pytest.MonkeyPatch) -> None:
+def connected(monkeypatch: pytest.MonkeyPatch) -> FakeClient:
     """Put STATE into a connected state without a server."""
     client = FakeClient()
     monkeypatch.setattr(state_module.STATE, "client", client)
     monkeypatch.setattr(
         state_module.STATE,
         "book",
-        AddressBook.from_mappings(SENSOR_VARS, ACTUATOR_VARS, METHODS),
+        AddressBook.from_mappings(
+            SENSOR_VARS,
+            ACTUATOR_VARS,
+            METHODS,
+            SERVER_CONFIG_VARS,
+            SERVER_CONFIG_METHODS,
+        ),
     )
+    monkeypatch.setattr(state_module.STATE, "period", 10.0)
+    return client
 
 
 @pytest.fixture
@@ -445,3 +486,55 @@ class TestHeader:
         )
         await user.open("/reactor/R0")
         await user.should_see("Record")
+
+    async def test_settings_dialog_applies_and_reads_back(
+        self,
+        user: User,
+        connected: FakeClient,
+    ) -> None:
+        """The stable header dialog updates the shared sampling period."""
+        await user.open("/")
+        user.find("Settings").click()
+        await user.should_see("Sampling settings")
+        period_input = next(
+            iter(user.find("Sampling period (seconds)").elements),
+        )
+        period_input.set_value(12.0)
+        user.find("Apply").click()
+
+        await user.should_see("sampling period set")
+        assert connected.server_period == 12.0
+        assert state_module.STATE.period == 12.0
+
+    async def test_settings_rejection_keeps_the_readback(
+        self,
+        user: User,
+        connected: FakeClient,
+    ) -> None:
+        """A rejected candidate is replaced by the server-owned value."""
+        connected.sampling_result = (False, "PID autotuning is active")
+        await user.open("/")
+        user.find("Settings").click()
+        period_input = next(
+            iter(user.find("Sampling period (seconds)").elements),
+        )
+        period_input.set_value(20.0)
+        user.find("Apply").click()
+
+        await user.should_see("PID autotuning is active")
+        assert connected.server_period == 10.0
+        assert state_module.STATE.period == 10.0
+        assert period_input.value == 10.0
+
+    async def test_settings_controls_disable_without_a_writable_connection(
+        self,
+        user: User,
+        disconnected: None,
+    ) -> None:
+        """No global command is offered over a dead OPC session."""
+        await user.open("/")
+
+        settings = next(iter(user.find("Settings").elements))
+        apply = next(iter(user.find("Apply").elements))
+        assert settings.enabled is False
+        assert apply.enabled is False

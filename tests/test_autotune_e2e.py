@@ -669,6 +669,9 @@ class _ArchiveClient:
     def get_node(self, nodeid: str) -> _Node:
         return _Node(nodeid)
 
+    async def read_values(self, nodes: list[_Node]) -> list[float]:
+        return [10.0 for _node in nodes]
+
 
 @pytest.mark.asyncio
 async def test_autotune_and_reconnect_do_not_expand_or_duplicate_subscriptions(
@@ -694,6 +697,12 @@ async def test_autotune_and_reconnect_do_not_expand_or_duplicate_subscriptions(
             "reactor": "R0",
             "name": ["base", "autotune_status"],
         },
+    }
+    opc.server_config_vars = {
+        "old-period": {"name": "sampling_period"},
+    }
+    opc.server_config_methods = {
+        "old-set-period": {"name": "set_sampling_period"},
     }
     await opc.init_subscriptions()
 
@@ -721,6 +730,12 @@ async def test_autotune_and_reconnect_do_not_expand_or_duplicate_subscriptions(
                 "name": ["base", "autotune_status"],
             },
         }
+        opc.server_config_vars = {
+            "new-period": {"name": "sampling_period"},
+        }
+        opc.server_config_methods = {
+            "new-set-period": {"name": "set_sampling_period"},
+        }
 
     monkeypatch.setattr(opc, "refresh_browse", refresh_browse)
     app = AppState("opc.tcp://localhost:4840/")
@@ -744,3 +759,4 @@ async def test_autotune_and_reconnect_do_not_expand_or_duplicate_subscriptions(
         for nodeid, info in opc.variables.items()
         if opc.archives(nodeid, info)
     } == {"new-ph", "new-curr_value", "new-total_volume"}
+    assert app.book.server_variable("sampling_period") == "new-period"

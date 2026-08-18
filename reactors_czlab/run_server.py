@@ -15,7 +15,7 @@ from reactors_czlab.core.sensor import (
     RandomSensor,
     SpectralSensor,
 )
-from reactors_czlab.opcua import ReactorOpc
+from reactors_czlab.opcua import ReactorOpc, ServerConfigOpc
 from reactors_czlab.server_info import (
     ANALOG_ACTUATORS,
     BIOMASS_SENSORS,
@@ -178,6 +178,12 @@ async def main(endpoint: str, *, simulated: bool = False) -> None:
                 asyncio.create_task(r_i.update()),
             ],
         )
+
+    server_config = ServerConfigOpc(
+        [reactor_opc.reactor for reactor_opc in reactors],
+        SAMPLE_PERIOD,
+    )
+    await server_config.init_node(server, idx)
 
     await server.start()
     _logger.info("Server started on %s", endpoint)

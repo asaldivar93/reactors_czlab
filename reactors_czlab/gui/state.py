@@ -27,9 +27,7 @@ _logger = logging.getLogger("gui")
 
 DEFAULT_ENDPOINT = "opc.tcp://10.10.10.20:55488/"
 
-#: Assumed sampling period, for judging whether a reading is stale. The
-#: server's SAMPLE_PERIOD is not published, so this is a setting rather
-#: than something that can be discovered.
+#: Startup placeholder until the connected server's published value is read.
 DEFAULT_PERIOD = 10.0
 SUPERVISOR_SECONDS = 0.1
 
@@ -153,6 +151,8 @@ class AppState:
             try:
                 await client.connect()
                 await client.init_subscriptions()
+                book = AddressBook.from_client(client)
+                period = await self._read_server_period(client, book)
             except Exception as err:  # noqa: BLE001 - reported, not raised
                 self.connection_error = f"{type(err).__name__}: {err}"
                 _logger.warning(
@@ -164,7 +164,8 @@ class AppState:
                 return
 
             self.client = client
-            self.book = AddressBook.from_client(client)
+            self.book = book
+            self.period = period
             self.generation += 1
             self.connection_error = None
             _logger.info("Connected to %s", self.endpoint)
@@ -220,7 +221,10 @@ class AppState:
     async def _rebrowse(self, client: OpcClient) -> None:
         """Replace address-derived state after one successful reconnect."""
         await client.refresh_browse()
-        self.book = AddressBook.from_client(client)
+        book = AddressBook.from_client(client)
+        period = await self._read_server_period(client, book)
+        self.book = book
+        self.period = period
         from reactors_czlab.gui.components import pairing
 
         pairing.forget_cached_nodes()
@@ -230,6 +234,75 @@ class AppState:
             "Rebuilt address book after reconnect (generation %s)",
             self.generation,
         )
+
+    @staticmethod
+    async def _read_server_period(
+        client: OpcClient,
+        book: AddressBook,
+    ) -> float:
+        """Read the authoritative sampling period from one browsed server."""
+        nodeid = book.server_variable("sampling_period")
+        if nodeid is None:
+            error_message = "ServerConfig:sampling_period is not published"
+            raise LookupError(error_message)
+        [value] = await client.read_many([nodeid])
+        return float(value)
+
+    async def read_server_variable(self, name: str) -> object:
+        """Read one server-wide configuration variable by browse name."""
+        if not self.writable or self.client is None or self.book is None:
+            error_message = "connection is not writable"
+            raise LookupError(error_message)
+        nodeid = self.book.server_variable(name)
+        if nodeid is None:
+            error_message = f"No server configuration variable {name}"
+            raise LookupError(error_message)
+        [value] = await self.client.read_many([nodeid])
+        return value
+
+    async def call_server_method(
+        self,
+        method: str,
+        *args: object,
+    ) -> object:
+        """Call one server-wide configuration method by browse name."""
+        if not self.writable or self.client is None or self.book is None:
+            error_message = "connection is not writable"
+            raise LookupError(error_message)
+        nodeid = self.book.server_method(method)
+        if nodeid is None:
+            error_message = f"No server configuration method {method}"
+            raise LookupError(error_message)
+        return await self.client.call_method(nodeid, *args)
+
+    async def refresh_period(self) -> float:
+        """Reload the server's authoritative sampling period."""
+        self.period = float(
+            await self.read_server_variable("sampling_period"),
+        )
+        return self.period
+
+    async def set_sampling_period(self, period: float) -> tuple[bool, str]:
+        """Request a period change and always adopt the server read-back."""
+        try:
+            result = await self.call_server_method(
+                "set_sampling_period",
+                period,
+            )
+        except Exception:
+            # A method can fail after the server has applied it but before the
+            # response reaches this client. Make a best effort to reconcile
+            # the displayed value before preserving the original exception.
+            with contextlib.suppress(Exception):
+                await self.refresh_period()
+            raise
+
+        await self.refresh_period()
+        if not isinstance(result, (list, tuple)) or len(result) != 2:
+            error_message = "set_sampling_period returned an invalid response"
+            raise ValueError(error_message)
+        accepted, message = result
+        return (bool(accepted), str(message))
 
     async def adopt_running_experiments(self) -> None:
         """Pick up experiment tags for reactors already running one.

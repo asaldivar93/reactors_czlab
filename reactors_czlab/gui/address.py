@@ -1,6 +1,6 @@
 """An index over what the OPC client browsed.
 
-``OpcClient`` hands back three flat ``{nodeid: info}`` dicts. Pages ask
+``OpcClient`` hands back flat ``{nodeid: info}`` dicts. Pages ask
 questions those dicts cannot answer directly - "which sensors does R0
 have", "what is the node id of R0's pwm0 setpoint", "where is this
 reactor's set_pairing method". This turns the flat dicts into those
@@ -48,6 +48,9 @@ class AddressBook:
         on the reactor itself such as ``set_pairing``.
     sensor_refs, actuator_refs:
         ``reactor`` -> ``name`` -> the variables that device publishes.
+    server_variables, server_methods:
+        Global configuration browse name -> node id. Kept outside the
+        reactor/device keys so it cannot appear as a dashboard reactor.
 
     """
 
@@ -61,6 +64,8 @@ class AddressBook:
     actuator_refs: dict[str, dict[str, list[VariableRef]]] = field(
         default_factory=dict,
     )
+    server_variables: dict[str, str] = field(default_factory=dict)
+    server_methods: dict[str, str] = field(default_factory=dict)
 
     def __repr__(self) -> str:
         """Print how much was indexed."""
@@ -76,6 +81,8 @@ class AddressBook:
             client.sensor_vars,
             client.actuator_vars,
             client.methods,
+            getattr(client, "server_config_vars", {}),
+            getattr(client, "server_config_methods", {}),
         )
 
     @classmethod
@@ -84,8 +91,10 @@ class AddressBook:
         sensor_vars: dict[str, dict],
         actuator_vars: dict[str, dict],
         methods: dict[str, dict],
+        server_config_vars: dict[str, dict] | None = None,
+        server_config_methods: dict[str, dict] | None = None,
     ) -> AddressBook:
-        """Index the three browse dicts.
+        """Index the device and server-configuration browse dicts.
 
         Parameters
         ----------
@@ -97,6 +106,9 @@ class AddressBook:
             ``OpcClient.get_methods`` builds them. A one-element name is
             a method on the reactor; two elements are a method on a
             sensor or actuator.
+        server_config_vars, server_config_methods:
+            Explicit global mappings from ``OpcClient``. These never enter
+            the device variable or reactor method indexes.
 
         """
         book = cls()
@@ -124,6 +136,11 @@ class AddressBook:
                 continue
             owner = parts[0] if len(parts) > 1 else None
             book.methods[(info["reactor"], owner, parts[-1])] = nodeid
+
+        for nodeid, info in (server_config_vars or {}).items():
+            book.server_variables[info["name"]] = nodeid
+        for nodeid, info in (server_config_methods or {}).items():
+            book.server_methods[info["name"]] = nodeid
 
         for refs in (book.sensor_refs, book.actuator_refs):
             for devices in refs.values():
@@ -170,6 +187,14 @@ class AddressBook:
         offering it and failing at the call.
         """
         return self.method(reactor, owner, name) is not None
+
+    def server_variable(self, name: str) -> str | None:
+        """The node id of one server-wide configuration variable."""
+        return self.server_variables.get(name)
+
+    def server_method(self, name: str) -> str | None:
+        """The node id of one server-wide configuration method."""
+        return self.server_methods.get(name)
 
     def control_channels(self, reactor: str, actuator: str) -> list[str]:
         """The control-config channels an actuator publishes.

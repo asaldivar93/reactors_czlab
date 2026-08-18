@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -23,6 +24,10 @@ UNPAIRED_INPUT = 0.0
 #: How often unpaired actuators are refreshed and deliveries advanced, in
 #: seconds.
 UNPAIRED_PERIOD = 0.05
+
+#: Operator-configurable bounds for the server-wide sampling period.
+MIN_SAMPLE_PERIOD = 1.0
+MAX_SAMPLE_PERIOD = 30.0
 
 
 @dataclass
@@ -154,6 +159,43 @@ class Reactor:
                 else:
                     actuator.write_output(value)
 
+    def update_period(self, period: float) -> None:
+        """Change the sampling and actuator control periods together.
+
+        The running sampling loop snapshots ``self.period`` at the start of
+        each read/sleep cycle, so an update takes effect on its next cycle
+        without interrupting work in flight.
+
+        Parameters
+        ----------
+        period:
+            New sampling period in seconds.
+
+        Raises
+        ------
+        ValueError
+            If ``period`` is not finite or is outside the supported
+            1--30 second range. No state is changed on rejection.
+
+        """
+        if (
+            not math.isfinite(period)
+            or period < MIN_SAMPLE_PERIOD
+            or period > MAX_SAMPLE_PERIOD
+        ):
+            error_message = (
+                f"sampling period must be finite and between "
+                f"{MIN_SAMPLE_PERIOD:g} and {MAX_SAMPLE_PERIOD:g} seconds, "
+                f"got {period}"
+            )
+            raise ValueError(error_message)
+
+        # There are no awaits in this operation, so a running asyncio loop
+        # cannot observe the reactor and its actuator guards half-updated.
+        self.period = period
+        for actuator in self.actuators.values():
+            actuator.control_period = period
+
     def active_autotune_run(self) -> AutotuneRun | None:
         """Return the run that currently owns a pump pair, if any."""
         if self.autotune is None or self.autotune.run is None:
@@ -207,6 +249,10 @@ class Reactor:
         loop = asyncio.get_running_loop()
         next_tick = loop.time()
         while True:
+            # Keep one complete read/sleep cycle on one period. A settings
+            # change never wakes an existing sleep or shortens a read cycle;
+            # the next iteration snapshots the new value.
+            period = self.period
             async with asyncio.TaskGroup() as tg:
                 for sensor in self.sensors.values():
                     tg.create_task(sensor.read())
@@ -221,16 +267,16 @@ class Reactor:
 
             # Drift correct the next tick. If a read overran the period, skip
             # the ticks we missed instead of free running to catch up.
-            next_tick += self.period
+            next_tick += period
             now = loop.time()
             if next_tick < now:
                 _logger.warning(
                     "%s sampling overran its %.1fs period by %.3fs",
                     self.id,
-                    self.period,
+                    period,
                     now - next_tick,
                 )
-                next_tick = now + self.period
+                next_tick = now + period
             await asyncio.sleep(max(0.0, next_tick - now))
 
     async def actuator_loop(self) -> None:

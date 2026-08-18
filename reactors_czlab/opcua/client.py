@@ -30,6 +30,8 @@ _logger = logging.getLogger("client")
 SENSORS_NODE_RE = re.compile(r"^R\d+:sensors$")
 ACTUATORS_NODE_RE = re.compile(r"^R\d+:actuators$")
 REACTORS_NODE_RE = re.compile(r"^R\d+:")
+SERVER_CONFIG_NODE_RE = re.compile(r"^ServerConfig$")
+SERVER_CONFIG_PREFIX = "ServerConfig:"
 
 QUEUE_MAXSIZE = 1000
 #: Browse names split into exactly reactor:name:channel.
@@ -91,6 +93,8 @@ class OpcClient:
         self.sensor_vars: dict[str, dict] = {}
         self.actuator_vars: dict[str, dict] = {}
         self.methods: dict[str, dict] = {}
+        self.server_config_vars: dict[str, dict] = {}
+        self.server_config_methods: dict[str, dict] = {}
         self._history: dict[str, deque[tuple]] = {}
         #: Reactor id -> the name of the experiment currently running on
         #: it. Stamped onto every archived row so a run's data can be
@@ -171,10 +175,14 @@ class OpcClient:
         self.actuator_vars = await self.get_actuator_vars()
         self.variables = {**self.sensor_vars, **self.actuator_vars}
         self.methods = await self.get_methods()
+        self.server_config_vars = await self.get_server_config_vars()
+        self.server_config_methods = await self.get_server_config_methods()
         self.mappings = {
             "sensor_vars": self.sensor_vars,
             "actuator_vars": self.actuator_vars,
             "methods": self.methods,
+            "server_config_vars": self.server_config_vars,
+            "server_config_methods": self.server_config_methods,
         }
 
     async def disconnect(self) -> None:
@@ -288,6 +296,48 @@ class OpcClient:
 
         await find_methods(self.client.nodes.objects)
         return methods
+
+    async def get_server_config_vars(self) -> dict[str, dict]:
+        """Find server-wide configuration variables by their explicit root."""
+        return await self._get_server_config_nodes("Variable")
+
+    async def get_server_config_methods(self) -> dict[str, dict]:
+        """Find server-wide configuration methods by their explicit root."""
+        return await self._get_server_config_nodes("Method")
+
+    async def _get_server_config_nodes(
+        self,
+        node_class_name: str,
+    ) -> dict[str, dict]:
+        """Collect one class of nodes below the ``ServerConfig`` object."""
+        roots: list[Node] = []
+
+        async def find_root(node: Node) -> None:
+            name = (await node.read_browse_name()).Name
+            if SERVER_CONFIG_NODE_RE.match(name):
+                roots.append(node)
+                return
+            for child in await node.get_children():
+                await find_root(child)
+
+        found: dict[str, dict] = {}
+
+        async def collect(node: Node) -> None:
+            name = (await node.read_browse_name()).Name
+            node_class = (await node.read_node_class()).name
+            if node_class == node_class_name and name.startswith(
+                SERVER_CONFIG_PREFIX,
+            ):
+                found[node.nodeid.to_string()] = {
+                    "name": name.removeprefix(SERVER_CONFIG_PREFIX),
+                }
+            for child in await node.get_children():
+                await collect(child)
+
+        await find_root(self.client.nodes.objects)
+        for root in roots:
+            await collect(root)
+        return found
 
     async def init_subscriptions(self) -> None:
         """Subscribe to exactly the variables archived to the database."""

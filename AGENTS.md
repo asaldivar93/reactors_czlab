@@ -52,7 +52,7 @@ the client.
 ## Testing
 
 ```bash
-uv sync --extra dev && uv run pytest
+uv sync --extra dev --no-build-package scipy && uv run pytest
 ```
 
 `tests/` deliberately avoids importing `core.sensor` (it pulls in pymodbus).

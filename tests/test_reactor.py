@@ -319,6 +319,42 @@ def test_the_reactor_stamps_its_period_on_its_actuators(
     assert reactor.actuators["R0:pwm0"].control_period == 7.5
 
 
+def test_period_update_synchronizes_every_actuator(reactor: Reactor) -> None:
+    """The sampler and every volume guard change as one operation."""
+    reactor.update_period(12.5)
+
+    assert reactor.period == 12.5
+    assert {
+        actuator.control_period for actuator in reactor.actuators.values()
+    } == {12.5}
+
+
+@pytest.mark.parametrize(
+    "period",
+    [float("nan"), float("inf"), float("-inf"), 0.999, 30.001],
+)
+def test_period_update_rejects_invalid_values_without_mutation(
+    reactor: Reactor,
+    period: float,
+) -> None:
+    """A rejected global candidate cannot leave mismatched guards."""
+    before = (
+        reactor.period,
+        [
+            actuator.control_period
+            for actuator in reactor.actuators.values()
+        ],
+    )
+
+    with pytest.raises(ValueError, match="between 1 and 30"):
+        reactor.update_period(period)
+
+    assert reactor.period == before[0]
+    assert [
+        actuator.control_period for actuator in reactor.actuators.values()
+    ] == before[1]
+
+
 def test_stop_cancels_a_dose(make_calibrated_actuator, make_sensor) -> None:
     """A restart must not resume a dose that was in flight."""
     reactor = Reactor(
