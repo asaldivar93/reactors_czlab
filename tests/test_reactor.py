@@ -224,7 +224,7 @@ async def test_actuator_loop_ticks_paired_actuators(
     make_sensor,
     make_calibrated_actuator,
 ) -> None:
-    """A bolus on a paired pump is ended by the fast loop, not the sampler.
+    """A dose on a paired pump is ended by the fast loop, not the sampler.
 
     Regression: paired actuators are only refreshed once per sampling
     period. A dose timed at that granularity would overrun by seconds.
@@ -261,7 +261,7 @@ async def test_actuator_loop_ticks_a_truly_paired_actuator(
     make_sensor,
     make_calibrated_actuator,
 ) -> None:
-    """A bolus still ends once the actuator has actually left unpaired.
+    """A dose still ends once the actuator has actually left unpaired.
 
     ``test_actuator_loop_ticks_paired_actuators`` above never calls the
     pairing mechanism, so its actuator is still sitting in
@@ -319,7 +319,7 @@ def test_the_reactor_stamps_its_period_on_its_actuators(
     assert reactor.actuators["R0:pwm0"].control_period == 7.5
 
 
-def test_stop_cancels_a_bolus(make_calibrated_actuator, make_sensor) -> None:
+def test_stop_cancels_a_dose(make_calibrated_actuator, make_sensor) -> None:
     """A restart must not resume a dose that was in flight."""
     reactor = Reactor(
         "R0",

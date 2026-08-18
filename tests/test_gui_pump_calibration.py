@@ -7,6 +7,7 @@ import pytest
 from reactors_czlab.core.data import MAX_OUTPUT
 from reactors_czlab.gui.controllers.pump_calibration import (
     RunState,
+    calibration_chart,
     duty_error,
     seconds_error,
     view_from_payload,
@@ -71,10 +72,17 @@ class TestRunState:
 class TestFitAvailability:
     """When Fit may be offered."""
 
-    def test_two_distinct_duties_are_enough(self) -> None:
-        """The minimum a line can be fitted through."""
+    def test_four_distinct_duties_are_enough(self) -> None:
+        """The minimum that leaves uncertainty degrees of freedom."""
         view = view_from_payload(
-            _payload(run_points=[[1000.0, 10.0], [3000.0, 30.0]]),
+            _payload(
+                run_points=[
+                    [1000.0, 10.0],
+                    [1500.0, 15.0],
+                    [2000.0, 20.0],
+                    [3000.0, 30.0],
+                ],
+            ),
         )
         assert view.can_fit
 
@@ -84,7 +92,7 @@ class TestFitAvailability:
         assert not view.can_fit
 
     def test_two_points_at_one_duty_are_not(self) -> None:
-        """fit_line needs two distinct duties, not two points.
+        """The fitter needs four distinct duties, not four points.
 
         Discovering that through a refused fit means the operator has
         run the pump twice for nothing.
@@ -177,3 +185,36 @@ class TestFieldValidation:
     def test_negative_volume_is_refused(self) -> None:
         """A pump cannot deliver a negative volume."""
         assert volume_error(-1.0) is not None
+
+
+def test_calibration_chart_contains_fit_band_and_duty_markers() -> None:
+    """The pure chart model carries every server-calculated series."""
+    cal = _payload()["calibration"] | {
+        "model": "linear",
+        "points": [[1000.0, 10.0], [2000.0, 20.0]],
+        "fit_series": {
+            "duty": [1000.0, 2000.0],
+            "flow": [10.0, 20.0],
+            "lower": [9.0, 19.0],
+            "upper": [11.0, 21.0],
+        },
+    }
+
+    figure, has_band = calibration_chart(cal)
+
+    assert has_band is True
+    assert [trace["name"] for trace in figure["data"]] == [
+        "Measurements",
+        "95% lower",
+        "95% prediction band",
+        "linear fit",
+    ]
+    assert len(figure["layout"]["shapes"]) == 3
+
+
+def test_legacy_calibration_chart_has_no_synthetic_band() -> None:
+    """Old linear files remain visible and explicitly lack uncertainty."""
+    figure, has_band = calibration_chart(_payload()["calibration"])
+
+    assert has_band is False
+    assert [trace["name"] for trace in figure["data"]] == ["Measurements"]

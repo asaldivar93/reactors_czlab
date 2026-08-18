@@ -170,6 +170,10 @@ class ReactorAutotuneOpc:
             relay_direction = "acid"
         candidates = self._candidate_gains(run)
         result = asdict(snapshot.result) if snapshot.result is not None else None
+        adjusted_doses = {
+            "base": snapshot.base_dose_ml,
+            "acid": snapshot.acid_dose_ml,
+        }
         return self._response(
             True,
             snapshot.message,
@@ -190,10 +194,9 @@ class ReactorAutotuneOpc:
             current_ph=None if latest is None else latest.ph,
             relay_direction=relay_direction,
             elapsed_seconds=snapshot.elapsed_seconds,
-            adjusted_boluses_ml={
-                "base": snapshot.base_bolus_ml,
-                "acid": snapshot.acid_bolus_ml,
-            },
+            adjusted_doses_ml=adjusted_doses,
+            # Deprecated mixed-version alias. Do not use in business logic.
+            adjusted_boluses_ml=dict(adjusted_doses),
             dose={
                 "actual_ml": snapshot.actual_dose_ml,
                 "budget_ml": snapshot.dose_budget_ml,
@@ -511,7 +514,9 @@ class ReactorAutotuneOpc:
         if reason is not None:
             error_message = f"{node.id}: {reason}"
             raise ValueError(error_message)
-        min_val, max_val = node.actuator.dispenser.demand_limits()
+        min_val, max_val = node.actuator.dispenser.demand_limits(
+            pid=config.method is ControlMethod.pid,
+        )
         ControlFactory().create_control(
             config,
             min_val=min_val,
@@ -583,8 +588,8 @@ class ReactorAutotuneOpc:
             sensor_id: str,
             acid_id: str,
             setpoint: float,
-            base_bolus_ml: float,
-            acid_bolus_ml: float,
+            base_dose_ml: float,
+            acid_dose_ml: float,
             hysteresis_ph: float,
             max_minutes: float,
             phosphate_molar: float,
@@ -596,8 +601,8 @@ class ReactorAutotuneOpc:
         ) -> str:
             config = self._config(
                 setpoint,
-                base_bolus_ml,
-                acid_bolus_ml,
+                base_dose_ml,
+                acid_dose_ml,
                 hysteresis_ph,
                 max_minutes,
                 phosphate_molar,
@@ -615,8 +620,8 @@ class ReactorAutotuneOpc:
             sensor_id: str,
             acid_id: str,
             setpoint: float,
-            base_bolus_ml: float,
-            acid_bolus_ml: float,
+            base_dose_ml: float,
+            acid_dose_ml: float,
             hysteresis_ph: float,
             max_minutes: float,
             phosphate_molar: float,
@@ -628,8 +633,8 @@ class ReactorAutotuneOpc:
         ) -> str:
             config = self._config(
                 setpoint,
-                base_bolus_ml,
-                acid_bolus_ml,
+                base_dose_ml,
+                acid_dose_ml,
                 hysteresis_ph,
                 max_minutes,
                 phosphate_molar,
@@ -671,8 +676,8 @@ class ReactorAutotuneOpc:
                 _argument(name, ua.ObjectIds.Double)
                 for name in (
                     "Setpoint",
-                    "Base_bolus_ml",
-                    "Acid_bolus_ml",
+                    "Base_dose_ml",
+                    "Acid_dose_ml",
                     "Hysteresis_ph",
                     "Max_minutes",
                     "Phosphate_molar",
@@ -713,8 +718,8 @@ class ReactorAutotuneOpc:
     @staticmethod
     def _config(
         setpoint: float,
-        base_bolus_ml: float,
-        acid_bolus_ml: float,
+        base_dose_ml: float,
+        acid_dose_ml: float,
         hysteresis_ph: float,
         max_minutes: float,
         phosphate_molar: float,
@@ -730,8 +735,8 @@ class ReactorAutotuneOpc:
         budget = None if dose_budget_ml == 0 else dose_budget_ml
         return RelayTuneConfig(
             setpoint=setpoint,
-            u_base=base_bolus_ml,
-            u_acid=acid_bolus_ml,
+            base_dose_ml=base_dose_ml,
+            acid_dose_ml=acid_dose_ml,
             hysteresis=hysteresis_ph,
             max_minutes=max_minutes,
             phosphate_molar=phosphate_molar,

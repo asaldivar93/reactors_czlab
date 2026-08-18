@@ -49,6 +49,12 @@ uv run reactors-gui --endpoint opc.tcp://localhost:4840/ --port 8080 --period 10
 Then open `http://<host>:8080`. It listens on all interfaces, so the Pi
 can serve it to a laptop on the same network.
 
+Pump calibration is available under each reactor's Calibration tab. Collect
+at least four distinct duty measurements; the server fits linear and power
+models, qualifies the usable maximum from a 95% prediction band, and shows
+the selected fit in the GUI. Volume-control dialogs preview the server's
+effective dose cap and estimated duration before Apply.
+
 **It replaces `reactors-client`, it does not run beside it.** The GUI
 process hosts the archiver itself, so running both against one database
 inserts every reading twice.

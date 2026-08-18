@@ -8,7 +8,7 @@ nothing installed but pytest.
 
 from __future__ import annotations
 
-from typing import Callable
+from collections.abc import Callable
 
 import pytest
 
@@ -80,7 +80,7 @@ def actuator() -> RandomActuator:
 class FakeClock:
     """Monotonic clock the tests drive by hand.
 
-    Bolus timing is measured in seconds; sleeping through it would make the
+    Dose timing is measured in seconds; sleeping through it would make the
     suite slow and flaky, so the dispenser takes its clock as a parameter.
     """
 
@@ -101,7 +101,7 @@ def _build_calibration(name: str = "R0_pwm0") -> Calibration:
     """A fitted pump line with round numbers.
 
     flow = 0.01 * duty, so the dispense duty of 2000 gives 20 mL/min and a
-    1 mL bolus takes exactly 3 s.
+    1 mL dose takes exactly 3 s.
     """
     return Calibration(
         name,

@@ -14,14 +14,14 @@ from reactors_czlab.core.calibration import (
     CALIBRATION_ENV,
     CalibrationRun,
     calibration_path,
-    fit_line,
+    fit_models,
     load_calibration,
     load_into,
     save_calibration,
 )
 from reactors_czlab.core.control import _PidControl
 from reactors_czlab.core.data import (
-    MAX_BOLUS_SECONDS,
+    MAX_DOSE_SECONDS,
     MAX_OUTPUT,
     Calibration,
     Channel,
@@ -40,25 +40,111 @@ def _cal_dir(tmp_path, monkeypatch) -> None:
 
 def test_fit_recovers_a_known_line() -> None:
     """Points taken from flow = 0.01 * duty - 2 fit back to it."""
-    points = [(500.0, 3.0), (1500.0, 13.0), (2500.0, 23.0)]
+    points = [
+        (500.0, 3.0),
+        (1000.0, 8.0),
+        (1500.0, 13.0),
+        (2000.0, 18.0),
+        (2500.0, 23.0),
+    ]
 
-    a, b, r2 = fit_line(points)
+    fitted = fit_models(points)
 
-    assert a == pytest.approx(0.01)
-    assert b == pytest.approx(-2.0)
-    assert r2 == pytest.approx(1.0)
+    assert fitted.model == "linear"
+    assert fitted.a == pytest.approx(0.01)
+    assert fitted.b == pytest.approx(-2.0)
+    assert fitted.r2 == pytest.approx(1.0)
 
 
 def test_fit_rejects_too_few_distinct_duties() -> None:
     """Two measurements at the same duty do not define a line."""
     with pytest.raises(ValueError, match="distinct"):
-        fit_line([(1000.0, 5.0), (1000.0, 5.2)])
+        fit_models([(1000.0, 5.0), (1000.0, 5.2)])
 
 
 def test_fit_rejects_a_non_positive_slope() -> None:
     """More duty must mean more flow, or the pump is wired backwards."""
-    with pytest.raises(ValueError, match="slope"):
-        fit_line([(500.0, 20.0), (2500.0, 4.0)])
+    with pytest.raises(ValueError, match="model"):
+        fit_models(
+            [(500.0, 20.0), (1000.0, 16.0), (1500.0, 12.0), (2500.0, 4.0)],
+        )
+
+
+def test_fit_selects_a_power_law_when_it_has_the_lower_residual() -> None:
+    """Synthetic quadratic flow identifies the power model and exponent."""
+    fitted = fit_models(
+        [
+            (500.0, 0.25),
+            (1000.0, 1.0),
+            (1500.0, 2.25),
+            (2000.0, 4.0),
+            (2500.0, 6.25),
+        ],
+    )
+
+    assert fitted.model == "power"
+    assert fitted.a == pytest.approx(1e-6)
+    assert fitted.b == pytest.approx(2.0)
+    assert fitted.max_duty == 2500.0
+
+
+def test_power_calibration_converts_and_inverts_flow() -> None:
+    """Both delivery and flow-mode inversion honor the model discriminator."""
+    cal = Calibration("power", model="power", a=1e-6, b=2.0)
+
+    assert cal.flow_at(2000.0) == pytest.approx(4.0)
+    assert cal.duty_for(4.0) == pytest.approx(2000.0)
+
+
+def test_uncertainty_validation_accepts_the_twenty_percent_boundary() -> None:
+    """The documented 20% prediction half-width boundary is inclusive."""
+    cal = Calibration(
+        "R0_pwm0",
+        a=1.0,
+        b=0.0,
+        min_duty=1.0,
+        max_duty=100.0,
+        dispense_duty=100.0,
+        points=[(1.0, 1.0), (100.0, 100.0)],
+        fitted_at="2026-08-18T00:00:00+00:00",
+        r2=0.9,
+        residual=1.0,
+        fit_points=[(1.0, 1.0, 0.9, 1.1), (100.0, 100.0, 80.0, 120.0)],
+    )
+
+    assert cal.installable_reason() is None
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"model": "cubic"}, "model"),
+        ({"residual": float("nan"), "fit_points": [(4000.0, 40.0, 39.0, 41.0)]}, "residual"),
+        ({"residual": 1.0, "fit_points": [(4000.0, 40.0, 0.0, 80.0)]}, "lower prediction"),
+    ],
+)
+def test_load_rejects_malformed_new_fit_fields(
+    overrides: dict[str, object],
+    message: str,
+    caplog,
+) -> None:
+    """Model, residual, and prediction data are validated at the boundary."""
+    raw: dict[str, object] = {
+        "file": "R0_pwm0",
+        "a": 0.01,
+        "b": 0.0,
+        "min_duty": 0.0,
+        "max_duty": 4000.0,
+        "dispense_duty": 2000.0,
+        "points": [[1000.0, 10.0], [4000.0, 40.0]],
+        "fitted_at": "2026-08-18T00:00:00+00:00",
+        "r2": 1.0,
+    }
+    raw.update(overrides)
+    calibration_path("R0_pwm0").write_text(json.dumps(raw), encoding="utf-8")
+
+    assert load_calibration("R0_pwm0") is None
+    assert message in caplog.text
 
 
 def test_save_then_load_round_trips() -> None:
@@ -305,7 +391,12 @@ async def test_fit_installs_and_stores_the_line(
     actuator = make_calibrated_actuator(fitted=False)
     run = CalibrationRun(actuator, clock=clock, sleep=_FakeSleep(clock))
 
-    for duty, volume in ((1000.0, 5.0), (3000.0, 15.0)):
+    for duty, volume in (
+        (1000.0, 5.0),
+        (2000.0, 10.0),
+        (3000.0, 15.0),
+        (4000.0, 20.0),
+    ):
         await run.calibrate_point(duty, 60.0)
         run.record_point(volume)
 
@@ -402,7 +493,7 @@ async def test_set_duties_rejects_a_dispense_duty_below_the_floor(
     make_calibrated_actuator,
     clock,
 ) -> None:
-    """Dispensing below the stall floor would never finish a bolus."""
+    """Dispensing below the stall floor would never finish a dose."""
     actuator = make_calibrated_actuator()
     run = CalibrationRun(actuator, clock=clock)
 
@@ -436,7 +527,12 @@ async def test_fit_re_derives_a_running_pid_controllers_limits(
     assert actuator.dispenser.demand_limits() == (0.0, 40.0)
 
     run = CalibrationRun(actuator, clock=clock, sleep=_FakeSleep(clock))
-    for duty, volume in ((1000.0, 22.0), (3000.0, 66.0)):
+    for duty, volume in (
+        (1000.0, 22.0),
+        (2000.0, 44.0),
+        (3000.0, 66.0),
+        (4000.0, 88.0),
+    ):
         await run.calibrate_point(duty, 60.0)
         run.record_point(volume)
 
@@ -478,7 +574,12 @@ async def test_fit_re_derives_the_pid_integral_band_too(
     assert (controller.min_integral, controller.max_integral) == (0.0, 40.0)
 
     run = CalibrationRun(actuator, clock=clock, sleep=_FakeSleep(clock))
-    for duty, volume in ((1000.0, 22.0), (3000.0, 66.0)):
+    for duty, volume in (
+        (1000.0, 22.0),
+        (2000.0, 44.0),
+        (3000.0, 66.0),
+        (4000.0, 88.0),
+    ):
         await run.calibrate_point(duty, 60.0)
         run.record_point(volume)
     run.fit()
@@ -522,7 +623,12 @@ async def test_refit_reclamps_an_integral_above_the_shrunk_band(
 
     run = CalibrationRun(actuator, clock=clock, sleep=_FakeSleep(clock))
     # A shallower line: a=0.005 -> max flow at duty 4000 = 20 mL/min.
-    for duty, volume in ((1000.0, 5.5), (3000.0, 16.5)):
+    for duty, volume in (
+        (1000.0, 5.5),
+        (2000.0, 11.0),
+        (3000.0, 16.5),
+        (4000.0, 22.0),
+    ):
         await run.calibrate_point(duty, 60.0)
         run.record_point(volume)
 
@@ -532,7 +638,7 @@ async def test_refit_reclamps_an_integral_above_the_shrunk_band(
     assert controller._integral_sum == pytest.approx(20.0)
 
 
-async def test_fit_refuses_a_stall_floor_above_the_dispense_duty(
+async def test_fit_moves_an_invalid_dispense_duty_into_the_usable_band(
     make_calibrated_actuator,
     clock,
 ) -> None:
@@ -547,17 +653,25 @@ async def test_fit_refuses_a_stall_floor_above_the_dispense_duty(
     calibration.
     """
     actuator = make_calibrated_actuator()  # dispense_duty defaults to 2000
-    old_cal = actuator.channel.calibration
     run = CalibrationRun(actuator, clock=clock, sleep=_FakeSleep(clock))
     # flow = 0.015 * duty - 40 -> stall floor ~2667, above dispense_duty.
-    for duty, volume in ((3000.0, 5.5), (4000.0, 22.0)):
+    for duty, volume in (
+        (3000.0, 5.5),
+        (3200.0, 8.8),
+        (3600.0, 15.4),
+        (4000.0, 22.0),
+    ):
         await run.calibrate_point(duty, 60.0)
         run.record_point(volume)
 
     result = run.fit()
 
-    assert "stall" in result.lower()
-    assert actuator.channel.calibration is old_cal
+    assert "fitted flow" in result.lower()
+    assert actuator.channel.calibration.min_duty > 2000.0
+    assert (
+        actuator.channel.calibration.dispense_duty
+        == actuator.channel.calibration.max_duty
+    )
 
 
 async def test_reload_does_not_push_an_inverted_range_onto_the_controller(
@@ -628,6 +742,7 @@ async def test_stall_floor_is_bounded_by_max_duty(
     straight to a live controller.
     """
     actuator = make_calibrated_actuator()  # max_duty = 4000
+    old_cal = actuator.channel.calibration
     run = CalibrationRun(actuator, clock=clock, sleep=_FakeSleep(clock))
     # Raise dispense_duty first so the fit is not itself refused by the
     # min_duty <= dispense_duty invariant once the floor clamps to 4000.
@@ -645,8 +760,8 @@ async def test_stall_floor_is_bounded_by_max_duty(
 
     result = run.fit()
 
-    assert "fitted flow" in result  # the fit was accepted, not refused
-    assert actuator.channel.calibration.min_duty == pytest.approx(4000.0)
+    assert "uncertainty" in result
+    assert actuator.channel.calibration is old_cal
 
 
 async def test_stall_floor_uses_a_measured_zero_reading_as_evidence(
@@ -666,8 +781,10 @@ async def test_stall_floor_uses_a_measured_zero_reading_as_evidence(
     # flow at all: the floor must follow the direct evidence.
     for duty, volume in (
         (800.0, 0.0),
-        (2000.0, 13.2),
-        (4000.0, 30.8),
+        (1600.0, 12.1),
+        (2400.0, 20.9),
+        (3200.0, 29.7),
+        (4000.0, 38.5),
     ):
         await run.calibrate_point(duty, 60.0)
         run.record_point(volume)
@@ -776,7 +893,7 @@ async def test_reload_re_derives_the_controllers_limits(
     assert (controller.min_val, controller.max_val) == (0.0, 80.0)
 
 
-async def test_set_duties_re_derives_the_controllers_limits(
+async def test_pid_volume_limits_stay_on_qualified_max_duty(
     make_calibrated_actuator,
     clock,
 ) -> None:
@@ -797,13 +914,13 @@ async def test_set_duties_re_derives_the_controllers_limits(
         ),
     )
     controller = actuator.controller
-    expected_before = 20.0 * 10.0 / 60.0
+    expected_before = 40.0 * 10.0 / 60.0
     assert controller.max_val == pytest.approx(expected_before)
 
     run = CalibrationRun(actuator, clock=clock)
     run.set_duties(400.0, 4000.0)  # dispense_duty raised -> 40 mL/min
 
-    expected_after = 40.0 * 10.0 / 60.0
+    expected_after = expected_before
     assert controller.max_val == pytest.approx(expected_after)
 
 
@@ -851,9 +968,9 @@ async def test_fit_at_the_exact_zero_flow_boundary_is_refused(
     Regression: ``fit()``'s own check used
     ``current.dispense_duty < min_duty`` - a duty-comparison proxy -
     which passed at this exact boundary even though ``check_unit()``
-    and ``Dispenser._start_bolus`` both treat
+    and ``Dispenser._start_dose`` both treat
     ``flow_at(dispense_duty) <= 0`` as unusable. The calibration this
-    let through then divided by zero in ``_start_bolus`` the next time
+    let through then divided by zero in ``_start_dose`` the next time
     the control loop wrote a positive volume demand, with no
     controller-level clamp to catch it either - a manual controller
     does not consult ``min_val``/``max_val`` at all, so the guard has
@@ -873,14 +990,21 @@ async def test_fit_at_the_exact_zero_flow_boundary_is_refused(
 
     # flow = 0.01 * duty - 10 -> zero flow at duty 1000, exactly the
     # dispense_duty just configured above.
-    for duty, volume in ((2000.0, 11.0), (3000.0, 22.0)):
+    for duty, volume in (
+        (1500.0, 5.5),
+        (2000.0, 11.0),
+        (2500.0, 16.5),
+        (3000.0, 22.0),
+        (4000.0, 33.0),
+    ):
         await run.calibrate_point(duty, 60.0)
         run.record_point(volume)
 
     result = run.fit()
 
-    assert "keeping the old calibration" in result
-    assert actuator.channel.calibration.b == pytest.approx(0.0)  # old cal
+    assert "fitted flow" in result
+    assert actuator.channel.calibration.b == pytest.approx(-10.0)
+    assert actuator.channel.calibration.dispense_duty == pytest.approx(4000.0)
 
     # No degenerate calibration reached the channel, so driving the
     # control loop's write path - exactly what
@@ -912,7 +1036,13 @@ async def test_a_refit_one_count_above_the_boundary_still_succeeds(
 
     # Same line as the boundary test: flow = 0.01 * duty - 10, zero at
     # duty 1000, so duty 1001 produces a small positive flow.
-    for duty, volume in ((2000.0, 11.0), (3000.0, 22.0)):
+    for duty, volume in (
+        (1500.0, 5.5),
+        (2000.0, 11.0),
+        (2500.0, 16.5),
+        (3000.0, 22.0),
+        (4000.0, 33.0),
+    ):
         await run.calibrate_point(duty, 60.0)
         run.record_point(volume)
 
@@ -930,7 +1060,7 @@ async def test_a_refit_one_count_above_the_boundary_still_succeeds(
     actuator.tick()
 
 
-async def test_fit_refuses_a_line_with_no_flow_up_to_max_duty(
+async def test_fit_confines_max_duty_to_the_measured_range(
     make_calibrated_actuator,
     clock,
 ) -> None:
@@ -953,18 +1083,20 @@ async def test_fit_refuses_a_line_with_no_flow_up_to_max_duty(
     # caught by the stall-floor branch instead of the max-duty flow one
     # this test is named for.
     run.set_duties(0.0, 4000.0)
-    old_cal = actuator.channel.calibration
-
-    # flow = 0.33 * duty - 1335.4: positive at 4050/4090, negative by 4000.
-    for duty, volume in ((4050.0, 1.1), (4090.0, 14.3)):
+    # flow = 0.33 * duty - 1335.4 across four measured duties.
+    for duty, volume in (
+        (4050.0, 1.21),
+        (4060.0, 4.84),
+        (4070.0, 8.47),
+        (4090.0, 15.73),
+    ):
         await run.calibrate_point(duty, 60.0)
         run.record_point(volume)
 
     result = run.fit()
 
-    assert "keeping the old calibration" in result
-    assert "no flow anywhere" in result
-    assert actuator.channel.calibration is old_cal
+    assert "fitted flow" in result
+    assert actuator.channel.calibration.max_duty == 4090.0
 
 
 async def test_set_duties_at_the_exact_zero_flow_boundary_is_refused(
@@ -1015,7 +1147,7 @@ async def test_reload_refuses_a_stored_calibration_at_the_zero_flow_boundary(
 
     result = run.reload()
 
-    assert "no flow" in result.lower()
+    assert "no usable stored calibration" in result.lower()
     assert actuator.channel.calibration is old_cal
 
 
@@ -1052,7 +1184,12 @@ async def test_an_explicit_integral_band_survives_a_refit_untouched(
     assert controller._integral_band_is_default is False
 
     run = CalibrationRun(actuator, clock=clock, sleep=_FakeSleep(clock))
-    for duty, volume in ((1000.0, 22.0), (3000.0, 66.0)):
+    for duty, volume in (
+        (1000.0, 22.0),
+        (2000.0, 44.0),
+        (3000.0, 66.0),
+        (4000.0, 88.0),
+    ):
         await run.calibrate_point(duty, 60.0)
         run.record_point(volume)
 
@@ -1068,7 +1205,7 @@ async def test_an_explicit_integral_band_survives_a_refit_untouched(
     assert controller._integral_sum == 12.5
 
 
-async def test_fit_respects_the_measured_stall_floor_not_just_the_line(
+async def test_fit_moves_dispense_above_the_measured_stall_floor(
     make_calibrated_actuator,
     clock,
 ) -> None:
@@ -1086,19 +1223,31 @@ async def test_fit_respects_the_measured_stall_floor_not_just_the_line(
     actuator = make_calibrated_actuator()
     run = CalibrationRun(actuator, clock=clock, sleep=_FakeSleep(clock))
     run.set_duties(0.0, 1450.0)
-    old_a = actuator.channel.calibration.a
 
     # The line's own x-intercept sits below 1500, but 1500 measured
     # zero flow directly: the real stall floor is 1500, not the
     # intercept, and 1450 < 1500.
-    for duty, volume in ((1500.0, 0.0), (2000.0, 22.0), (3000.0, 44.0)):
+    for duty, volume in (
+        (1500.0, 0.0),
+        (1800.0, 17.6),
+        (2100.0, 24.2),
+        (2400.0, 30.8),
+        (2700.0, 37.4),
+        (3000.0, 44.0),
+        (3500.0, 55.0),
+        (4000.0, 66.0),
+    ):
         await run.calibrate_point(duty, 60.0)
         run.record_point(volume)
 
     result = run.fit()
 
-    assert "stall" in result.lower()
-    assert actuator.channel.calibration.a == pytest.approx(old_a)
+    assert "fitted flow" in result.lower()
+    assert actuator.channel.calibration.min_duty >= 1500.0
+    assert (
+        actuator.channel.calibration.dispense_duty
+        == actuator.channel.calibration.max_duty
+    )
 
 
 async def test_reload_refuses_an_unfitted_file_with_poisoned_numbers(
@@ -1111,7 +1260,7 @@ async def test_reload_refuses_an_unfitted_file_with_poisoned_numbers(
     Regression: both round 2 guards were gated behind
     ``stored.is_fitted``, so a file with ``fitted_at: ""`` sailed
     through with whatever numbers the rest of the file carried -
-    ``Dispenser._start_bolus`` does not check ``is_fitted`` before
+    ``Dispenser._start_dose`` does not check ``is_fitted`` before
     dividing by ``flow_at(dispense_duty)``.
 
     Attack: a live manual (unclamped) volume-mode controller is already
@@ -1143,7 +1292,7 @@ async def test_reload_refuses_an_unfitted_file_with_poisoned_numbers(
 
     result = run.reload()
 
-    assert "unusable" in result.lower()
+    assert "no usable stored calibration" in result.lower()
     assert actuator.channel.calibration is old_cal
 
     # No degenerate calibration reached the channel: driving the
@@ -1261,7 +1410,7 @@ async def test_set_duties_refuses_a_dispense_duty_above_the_ceiling(
     make_calibrated_actuator,
     clock,
 ) -> None:
-    """The bolus duty is written to the pin, so the band must bound it.
+    """The dose duty is written to the pin, so the band must bound it.
 
     Regression (D3): ``set_duties(0, 4095)`` on a ``max_duty=4000`` pump
     installed - ``set_duties()``'s own range check only bounded the
@@ -1285,7 +1434,7 @@ async def test_reload_refuses_an_out_of_scale_dispense_duty(
 ) -> None:
     """A hand-edited dispense duty must not reach the pin.
 
-    Regression (D3): ``_start_bolus`` wrote ``cal.dispense_duty``
+    Regression (D3): ``_start_dose`` wrote ``cal.dispense_duty``
     unclamped, so a file carrying ``"dispense_duty": 1e9`` installed
     through ``reload()`` and 1e9 went to the output. ``MAX_OUTPUT`` is
     4095.
@@ -1320,8 +1469,7 @@ async def test_reload_refuses_an_out_of_scale_dispense_duty(
 
     result = run.reload()
 
-    assert "unusable" in result.lower()
-    assert "above max duty" in result
+    assert "no usable stored calibration" in result.lower()
     assert actuator.channel.calibration is old_cal
 
     # Drive the loop's write path: what lands on the pin is the old
@@ -1352,14 +1500,14 @@ def test_load_into_refuses_an_out_of_scale_dispense_duty() -> None:
     assert channel.calibration.dispense_duty == MAX_OUTPUT  # placeholder
 
 
-async def test_reload_refuses_a_line_too_flat_to_finish_a_bolus(
+async def test_reload_refuses_a_line_too_flat_to_finish_a_dose(
     make_calibrated_actuator,
     clock,
 ) -> None:
     """A near-flat line strands the pump ON, so it must not install.
 
     Regression (D4): ``a=1e-12`` is a positive slope producing positive
-    flow, so every check up to this round accepted it. A 1 mL bolus
+    flow, so every check up to this round accepted it. A 1 mL dose
     against it gets a deadline about 1900 years out and ``tick()`` never
     turns the pump off - the same failure the non-finite demand
     rejection exists to prevent, reached through the calibration.
@@ -1390,17 +1538,16 @@ async def test_reload_refuses_a_line_too_flat_to_finish_a_bolus(
 
     result = run.reload()
 
-    assert "unusable" in result.lower()
-    assert "delivers only" in result
+    assert "no usable stored calibration" in result.lower()
     assert actuator.channel.calibration is old_cal
 
-    # The bolus the live controller arms next runs on the old line -
+    # The dose the live controller arms next runs on the old line -
     # 1 mL at 20 mL/min, so it comes due in about 3 s, not 6e10.
     actuator.write_output(0.0)
 
     assert actuator.channel.value == 2000.0
-    remaining = actuator.dispenser._bolus_until - perf_counter()
-    assert 0 < remaining < MAX_BOLUS_SECONDS
+    remaining = actuator.dispenser._dose_until - perf_counter()
+    assert 0 < remaining < MAX_DOSE_SECONDS
     assert remaining == pytest.approx(3.0, abs=0.5)
 
 
@@ -1417,7 +1564,7 @@ async def test_record_point_refuses_an_unmeasurable_volume(
 
     Regression: `record_point()` validated nothing. A `Float` from a
     generic OPC client can carry `inf` or `nan`, and the whole path
-    below it is comparisons that a NaN walks through: `fit_line`'s
+    below it is comparisons that a NaN walks through: the old fitter's
     `a <= 0`, all ten branches of `installable_reason()`, and
     `load_calibration`'s `a <= 0`. One bad argument therefore produced
     a NaN line, `json.dumps` wrote it out as the literal `NaN`, it
@@ -1511,7 +1658,7 @@ async def test_a_non_finite_calibration_never_reaches_the_channel(
 
     result = run.reload()
 
-    assert "finite" in result
+    assert "no usable stored calibration" in result
     assert actuator.channel.calibration is old_cal
     assert load_into(actuator.channel) is False
     assert actuator.channel.calibration is old_cal

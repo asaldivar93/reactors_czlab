@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import math
 from collections.abc import Callable
+from dataclasses import dataclass
 from time import perf_counter
 from typing import TYPE_CHECKING
 
@@ -30,6 +31,19 @@ DEFAULT_CONTROL_PERIOD = 10.0
 
 #: Seconds in a minute. Flow is mL/min, every clock here is seconds.
 _SECONDS_PER_MINUTE = 60.0
+
+#: Longest one ordinary manual, timer, or boundary dose may run.
+MAX_NON_PID_DOSE_SECONDS = 60.0 * 60.0
+
+
+@dataclass(frozen=True)
+class DosePolicy:
+    """Server-authoritative delivery limit for one volume decision."""
+
+    duty: float
+    flow: float
+    max_duration: float
+    max_volume: float
 
 
 def check_unit(unit: OutputUnit, channel: Channel) -> str | None:
@@ -95,7 +109,7 @@ class Dispenser:
         control_period:
             Seconds between control decisions.
         clock:
-            Monotonic clock, injectable so bolus timing is testable.
+            Monotonic clock, injectable so dose timing is testable.
 
         Raises
         ------
@@ -121,21 +135,21 @@ class Dispenser:
         self._clock = clock
         self._current_duty = 0.0
         self._since = clock()
-        self._bolus_until: float | None = None
+        self._dose_until: float | None = None
         self._last_decision = float("-inf")
 
     def __repr__(self) -> str:
         """Print the unit and how much has been delivered."""
         return f"Dispenser({self.unit}, {self.total_volume:.3f} mL)"
 
-    def duty(self, demand: float) -> float:
+    def duty(self, demand: float, *, pid: bool = False) -> float:
         """Duty counts realising ``demand``, and the new pump state.
 
         A non-finite demand (``inf``, ``-inf`` or ``nan``) is rejected
         here, before the unit is even looked at, because each unit turns
         one into a different failure and none of them is survivable:
         volume computes a deadline ``tick()``'s ``now <
-        self._bolus_until`` can never reach, stranding the pump ON; flow
+        self._dose_until`` can never reach, stranding the pump ON; flow
         inverts it to a non-finite duty (``nan < min_duty`` and ``min(nan,
         max_duty)`` both keep the ``nan``); and duty passes it straight
         through. The last two end at ``int(value)`` in
@@ -152,13 +166,13 @@ class Dispenser:
                 self.unit,
                 demand,
             )
-            self._bolus_until = None
+            self._dose_until = None
             return self._apply(0.0, now)
         if self.unit is OutputUnit.duty:
             return self._apply(demand, now)
         if self.unit is OutputUnit.flow:
             return self._apply(self._duty_for_flow(demand), now)
-        return self._start_bolus(demand, now)
+        return self._start_dose(demand, now, pid=pid)
 
     def tick(self) -> float | None:
         """Advance the delivery of a demand already accepted.
@@ -171,26 +185,42 @@ class Dispenser:
 
         """
         now = self._clock()
-        if self._bolus_until is None or now < self._bolus_until:
+        if self._dose_until is None or now < self._dose_until:
             self._accrue(now)
             return None
-        self._bolus_until = None
+        self._dose_until = None
         return self._apply(0.0, now)
 
-    def demand_limits(self) -> tuple[float, float]:
+    def demand_limits(self, *, pid: bool = False) -> tuple[float, float]:
         """Range a controller may demand, in this dispenser's unit."""
         if self.unit is OutputUnit.duty:
             return (0.0, MAX_OUTPUT)
         cal = self.channel.calibration
         if self.unit is OutputUnit.flow:
             return (0.0, cal.flow_at(cal.max_duty))
-        # The same capped duty _start_bolus writes, so the limit
-        # reported is the one the bolus would actually be run at.
-        duty = min(cal.dispense_duty, cal.max_duty)
-        per_period = (
-            cal.flow_at(duty) * self.control_period / _SECONDS_PER_MINUTE
-        )
-        return (0.0, per_period)
+        return (0.0, self.dose_policy(pid=pid).max_volume)
+
+    def dose_policy(self, *, pid: bool = False) -> DosePolicy:
+        """Return duty, flow, duration, and volume for a volume decision.
+
+        PID decisions use the uncertainty-qualified ``max_duty`` for at
+        most one sampling period. Other methods use ``dispense_duty`` for
+        at most one hour. The PID volume is moved one representable float
+        toward zero so a clamped request cannot round to a duration just
+        beyond its period.
+        """
+        cal = self.channel.calibration
+        if pid:
+            duty = cal.max_duty
+            max_duration = self.control_period
+        else:
+            duty = min(cal.dispense_duty, cal.max_duty)
+            max_duration = MAX_NON_PID_DOSE_SECONDS
+        flow = cal.flow_at(duty)
+        max_volume = flow * max_duration / _SECONDS_PER_MINUTE
+        if pid and max_volume > 0.0:
+            max_volume = math.nextafter(max_volume, 0.0)
+        return DosePolicy(duty, flow, max_duration, max_volume)
 
     def reset(self) -> None:
         """Forget any delivery in flight. Totals are kept.
@@ -198,11 +228,11 @@ class Dispenser:
         Returns nothing, unlike every other off-path here, which returns
         ``0.0`` for the caller to write through to the PLC. The caller
         must write 0 to the actuator itself after calling this - no
-        later ``tick()`` will do it, since there is no bolus left to
+        later ``tick()`` will do it, since there is no dose left to
         expire.
         """
         self._accrue(self._clock())
-        self._bolus_until = None
+        self._dose_until = None
         self._current_duty = 0.0
         self._last_decision = float("-inf")
 
@@ -221,10 +251,10 @@ class Dispenser:
             duty = cal.min_duty
         return min(duty, cal.max_duty)
 
-    def _start_bolus(self, demand: float, now: float) -> float:
+    def _start_dose(self, demand: float, now: float, *, pid: bool) -> float:
         """Accept a volume demand, unless the guard is still holding.
 
-        A bolus is an event, but ``write_output()`` is called every
+        A dose is an event, but ``write_output()`` is called every
         ``UNPAIRED_PERIOD`` for an unpaired actuator. Rate-limiting
         decisions to ``control_period`` is what stops a standing manual
         demand from being dispensed twenty times a second, and it makes
@@ -233,14 +263,10 @@ class Dispenser:
         A non-finite demand never reaches here - ``duty()`` rejects one
         for every unit before dispatching, since an infinite deadline
         would never come due and would strand the pump ON.
-        A finite demand beyond what ``demand_limits()`` says one
-        ``control_period`` can deliver is dispensed in full rather than
-        reduced - clamping it would cap every bolus at exactly one
-        ``control_period`` and foreclose a dose legitimately outliving
-        one (the next decision supersedes it instead; see
-        ``test_a_new_decision_supersedes_a_bolus_in_flight``), while
-        buying no safety, since a standing over-demand would just re-arm
-        every period and deliver the same total volume anyway.
+        Finite demands are capped by ``dose_policy``. Normal manual,
+        timer, and boundary decisions may run for at most one hour at the
+        configured dispense duty. PID decisions may run for at most one
+        period at the uncertainty-qualified maximum duty.
 
         The duty written is capped at ``max_duty``, mirroring what
         ``_duty_for_flow`` does with a converted duty. For every
@@ -254,29 +280,24 @@ class Dispenser:
         duty, so the time the pump runs always matches the duty it is
         actually run at.
         """
+        if demand <= 0:
+            self._dose_until = None
+            return self._apply(0.0, now)
         if now - self._last_decision < self.control_period:
             return self._current_duty
         self._last_decision = now
 
-        if demand <= 0:
-            self._bolus_until = None
-            return self._apply(0.0, now)
-
-        upper = self.demand_limits()[1]
-        if demand > upper:
-            _logger.warning(
-                "Volume demand %s mL exceeds the %.3f mL one "
-                "control_period can deliver; dispensing it in full",
-                demand,
-                upper,
-            )
-
-        cal = self.channel.calibration
-        duty = min(cal.dispense_duty, cal.max_duty)
-        seconds = _SECONDS_PER_MINUTE * demand / cal.flow_at(duty)
-        self._bolus_until = now + seconds
-        _logger.debug("Dispensing %s mL over %.3fs", demand, seconds)
-        return self._apply(duty, now)
+        policy = self.dose_policy(pid=pid)
+        effective = min(demand, policy.max_volume)
+        seconds = _SECONDS_PER_MINUTE * effective / policy.flow
+        self._dose_until = now + seconds
+        _logger.debug(
+            "Dispensing requested dose %s mL, effective %s mL over %.3fs",
+            demand,
+            effective,
+            seconds,
+        )
+        return self._apply(policy.duty, now)
 
     def _apply(self, value: float, now: float) -> float:
         """Account for the duty that was running, then take the new one."""

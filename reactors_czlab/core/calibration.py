@@ -1,24 +1,25 @@
-"""Fit, store and reload the linear calibration of a pump.
-
-Standard library only: this module runs on the Pi, which carries neither
-numpy nor psycopg. The fit is an ordinary least squares of ``flow`` on
-``duty`` and needs no more than that.
-"""
+"""Fit, store and reload linear or power-law pump calibrations."""
 
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
-import os
+import math
 from collections.abc import Callable
-from dataclasses import asdict, replace
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
+from os import environ
 from pathlib import Path
 from time import perf_counter
 from typing import TYPE_CHECKING
 
-from reactors_czlab.core.data import MAX_OUTPUT, Calibration
+import numpy as np
+from lmfit.model import ModelResult
+from lmfit.models import LinearModel, PowerLawModel
+from scipy.stats import t as student_t
+
+from reactors_czlab.core.data import MAX_OUTPUT, MIN_DISPENSE_FLOW, Calibration
 
 if TYPE_CHECKING:
     from reactors_czlab.core.actuator import Actuator
@@ -30,7 +31,13 @@ _logger = logging.getLogger("server.calibration")
 CALIBRATION_ENV = "REACTORS_CALIBRATION_DIR"
 
 #: Fewest distinct duty points a fit will accept.
-MIN_POINTS = 2
+MIN_POINTS = 4
+
+#: Largest accepted 95% prediction half-width as a fraction of fitted flow.
+MAX_RELATIVE_UNCERTAINTY = 0.20
+
+#: Number of samples persisted for calibration plotting.
+PLOT_SAMPLES = 128
 
 #: A calibration point shorter than this cannot be measured accurately.
 MIN_RUN_SECONDS = 1.0
@@ -41,7 +48,7 @@ MAX_RUN_SECONDS = 600.0
 
 def calibration_dir() -> Path:
     """Directory holding the calibration files, created if missing."""
-    override = os.environ.get(CALIBRATION_ENV)
+    override = environ.get(CALIBRATION_ENV)
     path = (
         Path(override)
         if override
@@ -56,10 +63,75 @@ def calibration_path(name: str) -> Path:
     return calibration_dir() / f"{name}.json"
 
 
-def fit_line(
-    points: list[tuple[float, float]],
-) -> tuple[float, float, float]:
-    """Fit ``flow = a * duty + b`` by ordinary least squares.
+@dataclass(frozen=True)
+class CalibrationFit:
+    """Selected LMFit result and its persisted uncertainty samples."""
+
+    model: str
+    a: float
+    b: float
+    r2: float
+    residual: float
+    max_duty: float
+    fit_points: list[tuple[float, float, float, float]]
+
+
+@dataclass(frozen=True)
+class _Candidate:
+    """One valid fitted model before cross-model selection."""
+
+    name: str
+    result: ModelResult
+    a: float
+    b: float
+    r2: float
+
+    def evaluate(self, duty: np.ndarray) -> np.ndarray:
+        """Evaluate this candidate on ``duty``."""
+        if self.name == "linear":
+            return self.a * duty + self.b
+        return self.a * duty**self.b
+
+    def prediction_band(
+        self,
+        duty: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Return fitted flow and a two-sided 95% prediction band.
+
+        LMFit supplies the fitted parameters and scaled covariance. The
+        Jacobian propagates that covariance to the model mean; adding the
+        residual variance makes this a prediction interval for a future
+        measurement rather than only a confidence interval for the mean.
+        """
+        fitted = self.evaluate(duty)
+        covariance = np.asarray(self.result.covar, dtype=float)
+        if self.name == "linear":
+            jacobian = np.column_stack((duty, np.ones_like(duty)))
+        else:
+            with np.errstate(divide="ignore", invalid="ignore"):
+                first = duty**self.b
+                second = self.a * first * np.log(duty)
+            # The power model is exactly zero at duty 0. Its exponent
+            # derivative has the limiting value 0 there.
+            second = np.where(duty == 0.0, 0.0, second)
+            jacobian = np.column_stack((first, second))
+        mean_variance = np.einsum(
+            "ij,jk,ik->i",
+            jacobian,
+            covariance,
+            jacobian,
+        )
+        residual_variance = max(0.0, float(self.result.redchi))
+        dof = max(1, int(self.result.ndata - self.result.nvarys))
+        multiplier = float(student_t.ppf(0.975, dof))
+        half_width = multiplier * np.sqrt(
+            np.maximum(0.0, mean_variance + residual_variance),
+        )
+        return fitted, fitted - half_width, fitted + half_width
+
+
+def fit_models(points: list[tuple[float, float]]) -> CalibrationFit:
+    """Fit linear and power-law models and select the safest best fit.
 
     Parameters
     ----------
@@ -68,44 +140,168 @@ def fit_line(
 
     Returns
     -------
-    tuple
-        ``(a, b, r2)``.
+    CalibrationFit
+        The candidate with the lowest unweighted chi-square, with linear
+        winning an effective tie.
 
     Raises
     ------
     ValueError
-        If fewer than ``MIN_POINTS`` distinct duty values were measured, or
-        if the fitted slope is not positive - a pump that delivers less at a
-        higher duty is wired backwards or was measured wrongly, and its line
-        cannot be safely inverted.
+        If fewer than ``MIN_POINTS`` distinct duty values were measured or
+        neither model has finite, monotonic parameters and a usable 95%
+        prediction band.
 
     """
-    if len({duty for duty, _ in points}) < MIN_POINTS:
+    distinct = len({duty for duty, _ in points})
+    if distinct < MIN_POINTS:
         error_message = (
             f"need at least {MIN_POINTS} distinct duty points, got "
-            f"{len(points)} measurements"
+            f"{distinct} from {len(points)} measurements"
         )
         raise ValueError(error_message)
-
-    n = len(points)
-    mean_x = sum(duty for duty, _ in points) / n
-    mean_y = sum(flow for _, flow in points) / n
-    sxx = sum((duty - mean_x) ** 2 for duty, _ in points)
-    sxy = sum((duty - mean_x) * (flow - mean_y) for duty, flow in points)
-
-    a = sxy / sxx
-    if a <= 0:
+    if any(
+        not math.isfinite(value)
+        for point in points
+        for value in point
+    ):
+        error_message = "calibration points must contain only finite numbers"
+        raise ValueError(error_message)
+    if any(
+        not 0.0 <= point[0] <= MAX_OUTPUT or point[1] < 0.0
+        for point in points
+    ):
         error_message = (
-            f"fitted slope {a:.6g} is not positive; the pump delivers less "
-            "at a higher duty"
+            f"calibration points require duty within 0 - {MAX_OUTPUT:.0f} "
+            "and non-negative flow"
         )
         raise ValueError(error_message)
-    b = mean_y - a * mean_x
 
-    syy = sum((flow - mean_y) ** 2 for _, flow in points)
-    r2 = 0.0 if syy == 0 else (sxy**2) / (sxx * syy)
+    ordered = sorted(points)
+    duty = np.asarray([point[0] for point in ordered], dtype=float)
+    flow = np.asarray([point[1] for point in ordered], dtype=float)
+    candidates: list[_Candidate] = []
+    failures: list[str] = []
+    for name in ("linear", "power"):
+        try:
+            candidates.append(_fit_candidate(name, duty, flow))
+        except Exception as exc:  # noqa: BLE001 - third-party fit boundary
+            failures.append(f"{name}: {exc}")
+    if not candidates:
+        error_message = "no installable calibration model: " + "; ".join(failures)
+        raise ValueError(error_message)
 
-    return a, b, r2
+    candidates.sort(key=lambda item: (float(item.result.chisqr), item.name != "linear"))
+    selected = candidates[0]
+    if len(candidates) > 1 and math.isclose(
+        float(candidates[0].result.chisqr),
+        float(candidates[1].result.chisqr),
+        rel_tol=1e-9,
+        abs_tol=1e-12,
+    ):
+        selected = next(item for item in candidates if item.name == "linear")
+
+    highest_measured = float(np.max(duty))
+    integer_duties = np.arange(0.0, math.floor(highest_measured) + 1.0)
+    fitted, lower, upper = selected.prediction_band(integer_duties)
+    qualified = (
+        np.isfinite(fitted)
+        & np.isfinite(lower)
+        & np.isfinite(upper)
+        & (lower > 0.0)
+        & (((upper - lower) / 2.0) <= MAX_RELATIVE_UNCERTAINTY * fitted)
+    )
+    if not np.any(qualified):
+        error_message = (
+            "neither model has a duty with a positive 95% lower prediction "
+            "bound and at most 20% relative uncertainty"
+        )
+        raise ValueError(error_message)
+    max_duty = float(integer_duties[np.flatnonzero(qualified)[-1]])
+
+    plot_duties = np.linspace(0.0, highest_measured, PLOT_SAMPLES)
+    if not np.any(plot_duties == max_duty):
+        plot_duties = np.sort(np.append(plot_duties, max_duty))
+    plot_fitted, plot_lower, plot_upper = selected.prediction_band(plot_duties)
+    if not all(
+        np.all(np.isfinite(values))
+        for values in (plot_fitted, plot_lower, plot_upper)
+    ):
+        error_message = f"{selected.name} prediction band is non-finite"
+        raise ValueError(error_message)
+    fit_points = [
+        tuple(float(value) for value in sample)
+        for sample in zip(
+            plot_duties,
+            plot_fitted,
+            plot_lower,
+            plot_upper,
+            strict=True,
+        )
+    ]
+    return CalibrationFit(
+        model=selected.name,
+        a=selected.a,
+        b=selected.b,
+        r2=selected.r2,
+        residual=float(selected.result.chisqr),
+        max_duty=max_duty,
+        fit_points=fit_points,
+    )
+
+
+def _fit_candidate(
+    name: str,
+    duty: np.ndarray,
+    flow: np.ndarray,
+) -> _Candidate:
+    """Fit and validate one named LMFit model."""
+    if name == "linear":
+        model = LinearModel()
+        result = model.fit(flow, model.guess(flow, x=duty), x=duty)
+        a = float(result.params["slope"].value)
+        b = float(result.params["intercept"].value)
+    else:
+        model = PowerLawModel()
+        positive_duty = duty[duty > 0]
+        positive_flow = flow[duty > 0]
+        if positive_duty.size < MIN_POINTS or np.any(positive_flow < 0):
+            error_message = "power fit needs four non-negative flows at positive duties"
+            raise ValueError(error_message)
+        initial_a = max(
+            np.finfo(float).tiny,
+            float(positive_flow[-1] / positive_duty[-1]),
+        )
+        params = model.make_params(amplitude=initial_a, exponent=1.0)
+        result = model.fit(flow, params, x=duty)
+        a = float(result.params["amplitude"].value)
+        b = float(result.params["exponent"].value)
+
+    if not result.success:
+        error_message = result.message or "optimizer did not converge"
+        raise ValueError(error_message)
+    if result.covar is None or np.shape(result.covar) != (2, 2):
+        error_message = "fit covariance is unavailable"
+        raise ValueError(error_message)
+    if not np.all(np.isfinite(result.covar)):
+        error_message = "fit covariance is non-finite"
+        raise ValueError(error_message)
+    if not all(math.isfinite(value) for value in (a, b, float(result.chisqr), float(result.redchi))):
+        error_message = "fit parameters or residual are non-finite"
+        raise ValueError(error_message)
+    if a <= 0 or (name == "power" and b <= 0):
+        error_message = "model coefficients do not define increasing positive flow"
+        raise ValueError(error_message)
+    probe = np.linspace(max(0.0, float(np.min(duty))), float(np.max(duty)), 256)
+    predicted = a * probe + b if name == "linear" else a * probe**b
+    if not np.all(np.isfinite(predicted)) or np.any(np.diff(predicted) <= 0):
+        error_message = "fitted flow is not finite and strictly increasing"
+        raise ValueError(error_message)
+    syy = float(np.sum((flow - np.mean(flow)) ** 2))
+    r2 = 0.0 if syy == 0.0 else 1.0 - float(result.chisqr) / syy
+    if not math.isfinite(r2):
+        error_message = "fit quality is non-finite"
+        raise ValueError(error_message)
+    return _Candidate(name, result, a, b, r2)
 
 
 def save_calibration(cal: Calibration) -> None:
@@ -116,9 +312,19 @@ def save_calibration(cal: Calibration) -> None:
     """
     path = calibration_path(cal.file)
     tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(asdict(cal), indent=2), encoding="utf-8")
-    os.replace(tmp, path)
-    _logger.info("Saved calibration %s: a=%s b=%s", cal.file, cal.a, cal.b)
+    tmp.write_text(
+        json.dumps(asdict(cal), indent=2, allow_nan=False),
+        encoding="utf-8",
+    )
+    tmp.replace(path)
+    _logger.info(
+        "Saved %s calibration %s: a=%s b=%s residual=%s",
+        cal.model,
+        cal.file,
+        cal.a,
+        cal.b,
+        cal.residual,
+    )
 
 
 def load_calibration(name: str) -> Calibration | None:
@@ -165,16 +371,23 @@ def load_calibration(name: str) -> Calibration | None:
         cal.max_duty = float(cal.max_duty)
         cal.dispense_duty = float(cal.dispense_duty)
         cal.r2 = float(cal.r2)
+        if cal.residual is not None:
+            cal.residual = float(cal.residual)
         cal.points = [(float(d), float(f)) for d, f in cal.points]
+        cal.fit_points = [
+            tuple(float(value) for value in point)
+            for point in cal.fit_points
+        ]
     except Exception:  # see docstring: this function must never raise
         _logger.exception("Unreadable calibration file for %s", name)
         return None
 
-    if cal.a <= 0:
+    reason = cal.installable_reason()
+    if reason is not None:
         _logger.warning(
-            "Calibration %s has a non-positive slope %s, ignoring",
+            "Calibration %s is not installable: %s",
             name,
-            cal.a,
+            reason,
         )
         return None
     return cal
@@ -364,7 +577,7 @@ class CalibrationRun:
 
         The volume arrives from a generic OPC client as a ``Float``, so
         it can be ``inf`` or ``nan``, and neither is caught downstream:
-        ``fit_line``'s ``a <= 0`` and every branch of
+        the model fitter's parameter checks and every branch of
         ``Calibration.installable_reason()`` are comparisons, and a
         comparison against ``nan`` is false. A single bad argument
         therefore used to reach the calibration file and reload from it
@@ -412,22 +625,42 @@ class CalibrationRun:
             )
 
         try:
-            a, b, r2 = fit_line(self.points)
+            fitted = fit_models(self.points)
         except ValueError as exc:
             _logger.warning("Fit refused for %s: %s", self.actuator.id, exc)
             return str(exc)
 
-        min_duty = self._stall_floor(a, b, current.max_duty)
+        min_duty = self._stall_floor(
+            fitted.model,
+            fitted.a,
+            fitted.b,
+            fitted.max_duty,
+        )
+        dispense_duty = current.dispense_duty
+        if not (
+            min_duty <= dispense_duty <= fitted.max_duty
+            and self._flow_at(
+                fitted.model,
+                fitted.a,
+                fitted.b,
+                dispense_duty,
+            )
+            >= MIN_DISPENSE_FLOW
+        ):
+            dispense_duty = fitted.max_duty
         cal = Calibration(
             file=current.file,
-            a=a,
-            b=b,
+            a=fitted.a,
+            b=fitted.b,
             min_duty=min_duty,
-            max_duty=current.max_duty,
-            dispense_duty=current.dispense_duty,
+            max_duty=fitted.max_duty,
+            dispense_duty=dispense_duty,
             points=list(self.points),
             fitted_at=datetime.now(UTC).isoformat(),
-            r2=r2,
+            r2=fitted.r2,
+            model=fitted.model,
+            residual=fitted.residual,
+            fit_points=fitted.fit_points,
         )
         reason = cal.installable_reason()
         if reason is not None:
@@ -438,8 +671,9 @@ class CalibrationRun:
         self.actuator.channel.calibration = cal
         self.actuator.refresh_controller_limits()
         return (
-            f"fitted flow = {a:.6g} * duty + {b:.6g} (r2 {r2:.4f}), "
-            f"stall floor {cal.min_duty:.0f}"
+            f"fitted flow using {cal.model} model: {self._equation(cal)} "
+            f"(r2 {cal.r2:.4f}, residual {cal.residual:.6g}), stall floor "
+            f"{cal.min_duty:.0f}, qualified max duty {cal.max_duty:.0f}"
         )
 
     def clear_points(self) -> str:
@@ -482,7 +716,7 @@ class CalibrationRun:
         return f"reloaded {current.file}, fitted at {stored.fitted_at}"
 
     def set_duties(self, min_duty: float, dispense_duty: float) -> str:
-        """Adjust the stall floor and the bolus duty without a refit."""
+        """Adjust the stall floor and the volume-dose duty without a refit."""
         cal = self.actuator.channel.calibration
         if cal is None:
             return f"{self.actuator.id} has no calibration slot on its channel"
@@ -508,7 +742,13 @@ class CalibrationRun:
         self.actuator.refresh_controller_limits()
         return f"min duty {min_duty}, dispense duty {dispense_duty}"
 
-    def _stall_floor(self, a: float, b: float, max_duty: float) -> float:
+    def _stall_floor(
+        self,
+        model: str,
+        a: float,
+        b: float,
+        max_duty: float,
+    ) -> float:
         """Lowest duty the pump is believed to actually turn at.
 
         The fitted x-intercept is the estimate; a point that measured no
@@ -518,8 +758,20 @@ class CalibrationRun:
         there, but adopting it verbatim could push the floor past the
         ceiling and invert the usable band.
         """
-        floor = max(0.0, -b / a)
+        floor = max(0.0, -b / a) if model == "linear" else 0.0
         measured = [duty for duty, flow in self.points if flow <= 0]
         if measured:
             floor = max(floor, max(measured))
         return min(floor, max_duty)
+
+    @staticmethod
+    def _flow_at(model: str, a: float, b: float, duty: float) -> float:
+        """Evaluate fitted parameters before a Calibration exists."""
+        return a * duty + b if model == "linear" else a * duty**b
+
+    @staticmethod
+    def _equation(calibration: Calibration) -> str:
+        """Human-readable equation for a fitted calibration."""
+        if calibration.model == "linear":
+            return f"flow = {calibration.a:.6g} * duty + {calibration.b:.6g}"
+        return f"flow = {calibration.a:.6g} * duty ** {calibration.b:.6g}"

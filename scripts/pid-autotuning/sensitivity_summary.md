@@ -7,8 +7,8 @@ procedure itself have to be changed from the one already delivered?
 **Answer.** No. The relay-feedback autotuner is self-adapting: it measures the process gain at the
 live operating point every run, so a change in volume, buffer, or titrant strength is absorbed
 automatically and the same procedure serves all strains. The **one** requirement is that the relay
-must size its own bolus so the limit cycle clears the hysteresis band — a rule already mandated in
-`implementation_spec.md` §6. Hard-coding a fixed bolus is the only thing that would force per-strain
+must size its own dose so the limit cycle clears the hysteresis band — a rule already mandated in
+`implementation_spec.md` §6. Hard-coding a fixed dose is the only thing that would force per-strain
 retuning, and only in one corner (dilute titrant + high buffer + large volume).
 
 This note draws entirely on results already produced (`robustness_metrics.csv`,
@@ -59,7 +59,7 @@ is tuned on the *same* mis-calibrated pump it will later drive, so the error par
 
 ![Robustness 1-D sweeps — working volume, titrant molarity, and pump-calibration error.]({{artifact:9a261dd8-e5ea-4667-89d1-bdd86044776f}})
 
-## 3. The one thing that must adapt: relay bolus size
+## 3. The one thing that must adapt: relay dose size
 
 The single failure in the whole sweep is diagnostic: **0.1 M titrant produced Ku ≈ 3.8×10⁵** —
 meaningless. It is the same failure mode as the Δt = 2 s case in the sampling-time study, with an
@@ -69,17 +69,17 @@ identical cause. The describing function is
     Ku = 4·d / ( π·√(a² − h²) )
 ```
 
-If the per-period bolus `d` delivers too few titrant equivalents relative to what the buffer absorbs,
+If the per-period dose `d` delivers too few titrant equivalents relative to what the buffer absorbs,
 the pH limit-cycle amplitude `a` collapses toward the hysteresis half-width `h`, the denominator → 0,
 and `Ku` diverges. The trigger is a **combination**: dilute titrant **and/or** high buffer **and/or**
-large volume **and/or** too-small a bolus. This is not a control-law failure — it is an
+large volume **and/or** too-small a dose. This is not a control-law failure — it is an
 under-powered *experiment*.
 
 The fix is already a hard requirement in `implementation_spec.md` §6: the autotuner sizes its relay
-bolus from the live operating condition so the cycle amplitude clears the hysteresis band
-(target `a ≳ 3h`), rather than using a fixed mL bolus. Written that way, the procedure covers the
+dose from the live operating condition so the cycle amplitude clears the hysteresis band
+(target `a ≳ 3h`), rather than using a fixed mL dose. Written that way, the procedure covers the
 entire envelope above with no per-strain intervention, and it must reject a run (or enlarge the
-bolus) when a limit cycle of sufficient amplitude cannot be established.
+dose) when a limit cycle of sufficient amplitude cannot be established.
 
 ## 4. Practical guidance per strain
 
@@ -88,9 +88,9 @@ bolus) when a limit cycle of sufficient amplitude cannot be established.
    edges. No procedure change.
 2. **Different medium buffer (7–28 mM) or vessel volume (2–10 L):** covered — the relay re-measures
    `Kp` each run. No procedure change.
-3. **Different titrant concentration:** covered *provided the bolus is auto-sized*. The caution:
+3. **Different titrant concentration:** covered *provided the dose is auto-sized*. The caution:
    pairing a **dilute titrant (≤ 0.1 M) with a strongly buffered, large-volume culture** is the
-   corner where the bolus-sizing guard earns its place. Confirm that guard and the
+   corner where the dose-sizing guard earns its place. Confirm that guard and the
    amplitude-clearance / "cannot establish limit cycle" abort are implemented, rather than
    hard-coding a fixed dose.
 
@@ -98,13 +98,13 @@ bolus) when a limit cycle of sufficient amplitude cannot be established.
 
 Implement the relay-amplitude auto-sizing (already specified) and the same autocalibration procedure
 serves all strains — different volumes, buffers, titrant molarities, and setpoints are handled by
-in-situ re-identification. Only a hard-coded fixed bolus would force per-strain retuning, and only in
+in-situ re-identification. Only a hard-coded fixed dose would force per-strain retuning, and only in
 the dilute-titrant / high-buffer / large-volume corner.
 
 ## References
 
 - Process model and static-gain law: `process_model.md` (eq. 8).
 - Method, tuning rules, β-based gain scaling: `autocalibration_method.md`.
-- Bolus auto-sizing requirement and acceptance tests: `implementation_spec.md` §6.
+- Dose auto-sizing requirement and acceptance tests: `implementation_spec.md` §6.
 - Data and reproduction: `robustness_metrics.csv`, `scripts/robustness_sweep.py`;
   amplitude/`dt` failure mode: `scripts/sampling_time_study.py`.

@@ -46,6 +46,8 @@ the client.
 - ruff `line-length = 150`, `target-version = "py311"`.
 - Do not add `__eq__` that compares an object to a bare id string. Objects are looked up through the `dict[str, ...]` collections; a custom `__eq__` also sets `__hash__ = None`.
 - Failed device reads log at `warning` (they must appear in `record.log`, which is INFO-level), not `debug`.
+- Do not re-invent the wheel, If a solution for a problem is already available in a library prefer the library solution instead. You are allowed to add packages to the pyproject.toml file.
+- Use the pathlib library instead of the os library for every os method for which pathlib offers a replacement.
 
 ## Testing
 

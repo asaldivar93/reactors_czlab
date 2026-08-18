@@ -146,7 +146,7 @@ class _PlantHarness:
 def _plant_harness(
     *,
     period: float = REFERENCE_DT,
-    bolus_ml: float = 0.30,
+    dose_ml: float = 0.30,
     max_minutes: float = 60.0,
 ) -> _PlantHarness:
     clock = _Clock()
@@ -162,8 +162,8 @@ def _plant_harness(
     )
     config = RelayTuneConfig(
         setpoint=7.0,
-        u_base=bolus_ml,
-        u_acid=bolus_ml,
+        base_dose_ml=dose_ml,
+        acid_dose_ml=dose_ml,
         hysteresis=0.02,
         dt=period,
         dead_time=REFERENCE_DEAD_TIME,
@@ -264,8 +264,8 @@ def test_live_reference_run_identifies_without_spurious_adaptation(
         *tuning_rules(identification.Ku, identification.Pu)["TL-PI"],
     )
 
-    assert reference_run.base_bolus_ml == pytest.approx(0.30)
-    assert reference_run.acid_bolus_ml == pytest.approx(0.30)
+    assert reference_run.base_dose_ml == pytest.approx(0.30)
+    assert reference_run.acid_dose_ml == pytest.approx(0.30)
     assert identification.Ku == pytest.approx(18.6, rel=0.15)
     assert identification.Pu == pytest.approx(293.0, rel=0.10)
     assert gains == pytest.approx((5.83, 0.0090, 0.0), rel=0.15, abs=1e-12)
@@ -388,8 +388,8 @@ def test_two_second_fixed_flow_run_refuses_an_undersized_relay() -> None:
     # at two seconds this is only 0.04 mL per decision.
     config = RelayTuneConfig(
         setpoint=7.0,
-        u_base=1.2 * 2.0 / 60.0,
-        u_acid=1.2 * 2.0 / 60.0,
+        base_dose_ml=1.2 * 2.0 / 60.0,
+        acid_dose_ml=1.2 * 2.0 / 60.0,
         hysteresis=0.02,
         dt=2.0,
         dead_time=REFERENCE_DEAD_TIME,
@@ -438,8 +438,8 @@ async def test_gui_disconnect_does_not_abort_the_server_owned_run(
             sensor.id,
             acid.id,
             RelayTuneConfig(
-                u_base=0.30,
-                u_acid=0.30,
+                base_dose_ml=0.30,
+                acid_dose_ml=0.30,
                 max_minutes=60.0,
                 acknowledge_other_loops=True,
             ),
@@ -512,8 +512,8 @@ async def test_active_tune_preserves_paired_and_unpaired_loop_jobs(
         base.id,
         acid.id,
         RelayTuneConfig(
-            u_base=0.20,
-            u_acid=0.20,
+            base_dose_ml=0.20,
+            acid_dose_ml=0.20,
             max_minutes=5.0,
             acknowledge_other_loops=True,
         ),

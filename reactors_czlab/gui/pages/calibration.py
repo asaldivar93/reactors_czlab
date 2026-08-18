@@ -27,6 +27,7 @@ from reactors_czlab.gui.components.shell import (
     reactor_tabs,
 )
 from reactors_czlab.gui.controllers.pump_calibration import (
+    calibration_chart,
     duty_error,
     seconds_error,
     view_from_payload,
@@ -302,7 +303,7 @@ async def pump_calibration_page(reactor: str) -> None:
         ui.label("Pump calibration").classes("text-xl font-semibold")
         ui.label(
             "Run the pump at a duty, weigh what it delivered, record it. "
-            "Two distinct duties are enough to fit.",
+            "Four distinct duties are required to fit and qualify uncertainty.",
         ).classes("text-sm text-gray-500")
 
         pumps = [
@@ -364,13 +365,15 @@ async def _pump_panel(reactor: str, pump: str, reload) -> None:
 
 
 def _installed_line(view) -> None:
-    """The fitted line currently installed, and its duty limits."""
+    """The fitted model currently installed, plot, and duty limits."""
     cal = view.calibration
     with ui.card().classes("w-full"):
         if view.fitted:
+            equation = cal.get("equation", "a * duty + b")
             ui.label(
-                f"flow = {cal['a']:.6g} * duty + {cal['b']:.6g}  "
-                f"(r2 {cal['r2']:.4f})",
+                f"{cal.get('model', 'linear')}: flow = {equation}  "
+                f"(a={cal['a']:.6g}, b={cal['b']:.6g}, "
+                f"r2={cal['r2']:.4f}, residual={cal.get('residual')})",
             ).classes("font-mono text-sm")
             ui.label(f"fitted at {cal['fitted_at']}").classes(
                 "text-xs text-gray-500",
@@ -395,6 +398,15 @@ def _installed_line(view) -> None:
             ui.label(cal["installable_reason"]).classes(
                 "text-sm text-red-700",
             )
+
+        if view.fitted:
+            figure, has_band = calibration_chart(cal)
+            ui.plotly(figure).style("width: 100%; min-width: 0")
+            if not has_band:
+                ui.label(
+                    "Uncertainty is unavailable for this legacy linear fit. "
+                    "Refit with at least four distinct duties to qualify it.",
+                ).classes("text-sm text-orange-700")
 
 
 def _collected_points(view) -> None:
@@ -548,7 +560,7 @@ async def _run_controls(reactor: str, pump: str, view, reload) -> None:
         if not view.can_fit:
             fit_button.disable()
             fit_button.tooltip(
-                "Two points at different duties are needed to fit",
+                "Four points at different duties are needed to fit",
             )
         else:
             disable_when_read_only(fit_button)
@@ -602,13 +614,13 @@ def _calibration_method_button(
 
 
 def _set_duties_card(view, call, reload) -> None:
-    """Adjust the stall floor and bolus duty without a refit."""
+    """Adjust the stall floor and non-PID dose duty without a refit."""
     cal = view.calibration
     with ui.card().classes("w-full"):
         ui.label("Duty limits").classes("text-sm font-semibold")
         ui.label(
             "Changes the stall floor and the duty used for volume "
-            "boluses. Does not refit the line.",
+            "doses. PID volume doses use max duty. Does not refit the model.",
         ).classes("text-xs text-gray-500")
         with ui.row().classes("items-end flex-wrap").style("gap: 0.5rem"):
             min_duty = ui.number(

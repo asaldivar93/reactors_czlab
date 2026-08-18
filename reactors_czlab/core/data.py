@@ -13,27 +13,27 @@ ERROR_VALUE = -0.111
 #: Full scale of the PLC analog/PWM outputs (0 - 10 V).
 MAX_OUTPUT = 4095.0
 
-#: Dose the bolus-time bound below is expressed for, in mL. 1 mL is the
+#: Dose the time bound below is expressed for, in mL. 1 mL is the
 #: order of magnitude an operator types into a volume demand.
-REFERENCE_BOLUS_ML = 1.0
+REFERENCE_DOSE_ML = 1.0
 
-#: Longest a single reference bolus may hold the pump ON, in seconds
-#: (24 h). ``Dispenser._start_bolus`` turns a volume demand into a
+#: Longest a single reference dose may hold the pump ON, in seconds
+#: (24 h). ``Dispenser._start_dose`` turns a volume demand into a
 #: deadline of ``60 * demand / flow_at(dispense_duty)`` seconds and runs
 #: the pump until it passes, so an almost-flat calibration line makes
 #: that deadline effectively never come due - the same "stranded ON"
 #: hazard the non-finite demand rejection exists for, reached through
 #: the calibration instead of through the demand.
-MAX_BOLUS_SECONDS = 24 * 60 * 60.0
+MAX_DOSE_SECONDS = 24 * 60 * 60.0
 
 #: Slowest flow, in mL/min, a calibration may claim at its dispense
 #: duty and still be installable: the flow that just delivers
-#: ``REFERENCE_BOLUS_ML`` within ``MAX_BOLUS_SECONDS``, i.e. 1 mL/day.
+#: ``REFERENCE_DOSE_ML`` within ``MAX_DOSE_SECONDS``, i.e. 1 mL/day.
 #: Deliberately far below any pump this system can calibrate - the
 #: calibration procedure caps a single point at 600 s, so a pump this
 #: slow would deliver 7 uL in the longest run an operator can measure,
 #: and could never have produced an honest fit in the first place.
-MIN_DISPENSE_FLOW = 60.0 * REFERENCE_BOLUS_ML / MAX_BOLUS_SECONDS
+MIN_DISPENSE_FLOW = 60.0 * REFERENCE_DOSE_ML / MAX_DOSE_SECONDS
 
 #: ``float("inf")``, kept module level so ``_is_finite`` costs one
 #: comparison chain. This module imports nothing outside ``dataclasses``
@@ -45,6 +45,8 @@ _INFINITY = float("inf")
 #: Calibration fields the pump path does arithmetic with. A non-finite
 #: value in any of them poisons every comparison downstream of it.
 _DRIVING_FIELDS = ("a", "b", "min_duty", "max_duty", "dispense_duty")
+
+CALIBRATION_MODELS = ("linear", "power")
 
 
 def _is_finite(value: float) -> bool:
@@ -98,7 +100,7 @@ class Channel:
 
 @dataclass
 class Calibration:
-    """Linear calibration of a pump: ``flow = a * duty + b``.
+    """Calibration of a pump selected from linear and power-law models.
 
     Flow is mL/min and duty is raw PLC counts. ``fitted_at`` empty means the
     calibration has never been fitted and must not be used to convert.
@@ -108,13 +110,21 @@ class Calibration:
     file:
         File stem the calibration is stored under, e.g. ``R0_pwm0``.
     a, b:
-        Slope and intercept of the fitted line.
+        Model coefficients. Linear uses ``a * duty + b``; power uses
+        ``a * duty**b``.
+    model:
+        ``"linear"`` (the backwards-compatible default) or ``"power"``.
+    residual:
+        Unweighted fit chi-square, or ``None`` for a legacy linear file.
+    fit_points:
+        Plotting samples as ``(duty, fitted_flow, lower_95, upper_95)``.
+        Legacy linear files have no samples until they are refitted.
     min_duty:
         Stall floor. Below this the pump does not turn.
     max_duty:
         Highest duty the pump may be driven at.
     dispense_duty:
-        Duty used for volume boluses.
+        Duty used for volume doses.
     points:
         Measured ``(duty, flow)`` pairs the fit was built from.
     fitted_at:
@@ -133,6 +143,11 @@ class Calibration:
     points: list[tuple[float, float]] = field(default_factory=list)
     fitted_at: str = ""
     r2: float = 0.0
+    model: str = "linear"
+    residual: float | None = None
+    fit_points: list[tuple[float, float, float, float]] = field(
+        default_factory=list,
+    )
 
     @property
     def is_fitted(self) -> bool:
@@ -141,20 +156,40 @@ class Calibration:
 
     def flow_at(self, duty: float) -> float:
         """Flow in mL/min produced at ``duty`` counts."""
-        return self.a * duty + self.b
+        match self.model:
+            case "linear":
+                return self.a * duty + self.b
+            case "power":
+                return self.a * duty**self.b
+            case _:
+                error_message = f"unsupported calibration model {self.model!r}"
+                raise ValueError(error_message)
 
     def duty_for(self, flow: float) -> float:
         """Duty counts needed for ``flow`` mL/min.
 
         Raises
         ------
+        ValueError
+            If a power calibration is asked to invert a negative flow or
+            the calibration model is unknown.
         ZeroDivisionError
-            If the slope is zero. Loading and fitting both reject a
-            non-positive slope, so this only happens on a hand-edited
+            If a coefficient required for inversion is zero. Loading and
+            fitting reject this, so it is reachable only on a hand-edited
             object.
 
         """
-        return (flow - self.b) / self.a
+        match self.model:
+            case "linear":
+                return (flow - self.b) / self.a
+            case "power" if flow < 0:
+                error_message = "a power calibration cannot invert negative flow"
+                raise ValueError(error_message)
+            case "power":
+                return (flow / self.a) ** (1.0 / self.b)
+            case _:
+                error_message = f"unsupported calibration model {self.model!r}"
+                raise ValueError(error_message)
 
     def installable_reason(self) -> str | None:
         """Why this calibration may not replace what is on a channel.
@@ -181,7 +216,7 @@ class Calibration:
         every check below on its own merits, not because it is
         exempted. A hand-edited file can set ``fitted_at`` to the empty
         string while leaving dangerous numbers in the rest of the
-        fields, and ``Dispenser._start_bolus`` divides by
+        fields, and ``Dispenser._start_dose`` divides by
         ``flow_at(dispense_duty)`` without ever consulting
         ``is_fitted``. So the numbers are what get checked, regardless
         of the flag.
@@ -191,7 +226,7 @@ class Calibration:
         <= min_duty <= dispense_duty <= max_duty <= MAX_OUTPUT``, and a
         flow at the dispense duty of at least ``MIN_DISPENSE_FLOW``.
         That is what makes every duty ``Dispenser`` writes in-scale, and
-        every bolus deadline it computes both finite and reachable.
+        every dose deadline it computes both finite and reachable.
 
         The finiteness check has to come first, and cannot be expressed
         as one more range comparison: ``nan`` satisfies none of the
@@ -209,8 +244,8 @@ class Calibration:
         operator after the wrong number, so the branches are split by
         consequence rather than merged for brevity: a dispense duty
         under the stall floor delivers *nothing*, one at exactly zero
-        flow gives a bolus that never finishes, one below the line's
-        zero crossing gives a bolus that finishes instantly having
+        flow gives a dose that never finishes, one below the line's
+        zero crossing gives a dose that finishes instantly having
         delivered nothing, and one that is merely far too slow strands
         the pump ON for as long as the deadline says.
 
@@ -230,18 +265,54 @@ class Calibration:
                     "check here or clamp in a controller can catch it, "
                     "and the duty it produces cannot be written to a pin"
                 )
+        if self.model not in CALIBRATION_MODELS:
+            return (
+                f"model {self.model!r} is unsupported; expected one of "
+                f"{', '.join(CALIBRATION_MODELS)}"
+            )
         if not _is_finite(self.r2):
             return (
                 f"fit quality r2 is {self.r2}, not a finite number; a "
                 "fit that could not score itself is not one to drive a "
                 "pump with"
             )
+        if self.residual is not None and (
+            not _is_finite(self.residual) or self.residual < 0
+        ):
+            return (
+                f"fit residual {self.residual} is not a finite, non-negative "
+                "chi-square"
+            )
+        has_uncertainty = bool(self.fit_points)
+        if (self.residual is None) != (not has_uncertainty):
+            return (
+                "fit residual and 95% prediction samples must either both "
+                "be present or both be absent"
+            )
+        if self.model == "power" and not has_uncertainty:
+            return "a power calibration requires 95% prediction samples"
         if self.a <= 0:
             return (
-                f"slope {self.a:.6g} is not positive; a higher duty "
+                f"coefficient a={self.a:.6g} is not positive; a higher duty "
                 "would not mean more flow, so no flow or volume demand "
                 "can be turned into a duty"
             )
+        if self.model == "power" and self.b <= 0:
+            return (
+                f"power exponent b={self.b:.6g} is not positive; a higher "
+                "duty would not mean more flow"
+            )
+        for point in self.points:
+            if not isinstance(point, list | tuple) or len(point) != 2:
+                return "each measured calibration point must contain duty and flow"
+            duty, measured_flow = point
+            if not _is_finite(duty) or not _is_finite(measured_flow):
+                return "measured calibration points must be finite"
+            if not 0 <= duty <= MAX_OUTPUT or measured_flow < 0:
+                return (
+                    "measured calibration points require an in-range duty "
+                    "and non-negative flow"
+                )
         if self.min_duty < 0:
             return (
                 f"stall floor {self.min_duty:.0f} is negative; the "
@@ -261,46 +332,90 @@ class Calibration:
             return (
                 f"dispense duty {self.dispense_duty:.0f} is below the "
                 f"stall floor {self.min_duty:.0f}; the pump was "
-                "measured not to turn there, so a bolus would run the "
+                "measured not to turn there, so a dose would run the "
                 "clock down while delivering nothing"
             )
         if self.dispense_duty > self.max_duty:
             return (
                 f"dispense duty {self.dispense_duty:.0f} is above max "
-                f"duty {self.max_duty:.0f}; a bolus is written at that "
+                f"duty {self.max_duty:.0f}; a dose is written at that "
                 "duty, so it would drive the pump past its ceiling"
             )
+        if (
+            has_uncertainty
+            and self.points
+            and self.max_duty > max(duty for duty, _ in self.points)
+        ):
+            return (
+                f"max duty {self.max_duty:.0f} is above the largest measured "
+                "duty; uncertainty qualification may not extrapolate"
+            )
+        if has_uncertainty:
+            previous_duty = -_INFINITY
+            max_sample: tuple[float, float, float, float] | None = None
+            for sample in self.fit_points:
+                if not isinstance(sample, list | tuple) or len(sample) != 4:
+                    return "each prediction sample must contain four numbers"
+                duty, fitted, lower, upper = sample
+                if not all(_is_finite(value) for value in sample):
+                    return f"prediction sample at duty {duty} is non-finite"
+                if duty <= previous_duty:
+                    return "prediction sample duties must be strictly increasing"
+                if lower > fitted or fitted > upper:
+                    return (
+                        f"prediction sample at duty {duty:.0f} is not ordered "
+                        "lower <= fitted <= upper"
+                    )
+                previous_duty = duty
+                if abs(duty - self.max_duty) <= 1e-9:
+                    max_sample = sample
+            if max_sample is None:
+                return "prediction samples do not include the selected max duty"
+            _, fitted, lower, upper = max_sample
+            half_width = (upper - lower) / 2.0
+            if lower <= 0:
+                return "the 95% lower prediction bound is not positive at max duty"
+            if fitted <= 0 or half_width > 0.2 * fitted:
+                return (
+                    "the 95% prediction half-width exceeds 20% of fitted flow "
+                    "at max duty"
+                )
         # Implied by the checks above plus the dispense-flow checks
         # below (the slope is positive and dispense_duty <= max_duty,
         # so flow at max_duty is the largest flow in the band), but
         # kept explicit: flow mode never touches dispense_duty, and
         # "nothing anywhere in the band" is the message that fits a
         # line whose whole usable range is dead.
-        if self.flow_at(self.max_duty) <= 0:
+        max_flow = self.flow_at(self.max_duty)
+        if not _is_finite(max_flow):
+            return "fitted flow at max duty is non-finite"
+        if max_flow <= 0:
             return (
                 "this calibration produces no flow anywhere in its "
                 f"usable band (zero or negative at max duty "
                 f"{self.max_duty:.0f})"
             )
         flow = self.flow_at(self.dispense_duty)
+        if not _is_finite(flow):
+            return "fitted flow at dispense duty is non-finite"
         if flow == 0:
             return (
                 f"dispense duty {self.dispense_duty:.0f} produces no "
-                "flow; a bolus at that duty would never finish"
+                "flow; a dose at that duty would never finish"
             )
         if flow < 0:
             return (
                 f"dispense duty {self.dispense_duty:.0f} is below "
                 f"where the line reaches zero flow ({flow:.6g} "
-                "mL/min); a bolus there would end immediately having "
+                "mL/min); a dose there would end immediately having "
                 "delivered nothing"
             )
         if flow < MIN_DISPENSE_FLOW:
             return (
                 f"dispense duty {self.dispense_duty:.0f} delivers only "
-                f"{flow:.6g} mL/min; {REFERENCE_BOLUS_ML:.0f} mL would "
-                f"take {60.0 * REFERENCE_BOLUS_ML / flow:.0f} s, past "
-                f"the {MAX_BOLUS_SECONDS:.0f} s a bolus may hold the "
+                f"{flow:.6g} mL/min; {REFERENCE_DOSE_ML:.0f} mL would "
+                f"take {60.0 * REFERENCE_DOSE_ML / flow:.0f} s, past "
+                f"the {MAX_DOSE_SECONDS:.0f} s a dose may hold the "
                 "pump on"
             )
         return None

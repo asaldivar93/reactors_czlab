@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 import pytest
 
 from reactors_czlab.core.data import (
@@ -121,14 +123,14 @@ def test_check_unit_rejects_flow_on_an_unfitted_calibration() -> None:
     assert check_unit(OutputUnit.flow, channel) is not None
 
 
-def test_a_volume_demand_starts_a_bolus(channel: Channel, clock) -> None:
+def test_a_volume_demand_starts_a_dose(channel: Channel, clock) -> None:
     """1 mL at the 2000 count dispense duty runs the pump at that duty."""
     disp = Dispenser(OutputUnit.volume, channel, clock=clock)
 
     assert disp.duty(1.0) == 2000.0
 
 
-def test_the_bolus_ends_on_time(channel: Channel, clock) -> None:
+def test_the_dose_ends_on_time(channel: Channel, clock) -> None:
     """2000 counts is 20 mL/min, so 1 mL is exactly 3 s of running."""
     disp = Dispenser(OutputUnit.volume, channel, clock=clock)
     disp.duty(1.0)
@@ -140,7 +142,7 @@ def test_the_bolus_ends_on_time(channel: Channel, clock) -> None:
     assert disp.tick() == 0.0
 
 
-def test_the_bolus_ends_only_once(channel: Channel, clock) -> None:
+def test_the_dose_ends_only_once(channel: Channel, clock) -> None:
     """After it has stopped the pump, the fast loop has nothing to say."""
     disp = Dispenser(OutputUnit.volume, channel, clock=clock)
     disp.duty(1.0)
@@ -171,7 +173,7 @@ def test_a_repeated_demand_is_ignored_within_the_control_period(
     assert disp.duty(1.0) == 2000.0
 
     clock.advance(3.1)
-    disp.tick()  # bolus finished, pump off
+    disp.tick()  # dose finished, pump off
 
     for _ in range(20):
         clock.advance(0.05)
@@ -195,7 +197,7 @@ def test_a_new_decision_is_accepted_after_the_control_period(
     assert disp.duty(1.0) == 2000.0
 
 
-def test_a_new_decision_supersedes_a_bolus_in_flight(
+def test_a_new_decision_supersedes_a_dose_in_flight(
     channel: Channel,
     clock,
 ) -> None:
@@ -232,7 +234,7 @@ def test_a_zero_volume_demand_stops_the_pump(channel: Channel, clock) -> None:
     assert disp.duty(0.0) == 0.0
 
 
-def test_volume_totals_survive_a_superseded_bolus(
+def test_volume_totals_survive_a_superseded_dose(
     channel: Channel,
     clock,
 ) -> None:
@@ -265,11 +267,12 @@ def test_volume_demand_limits_use_the_control_period(
         clock=clock,
     )
 
-    # 20 mL/min for 10 s = 3.3333 mL.
-    assert disp.demand_limits()[1] == pytest.approx(20.0 * 10.0 / 60.0)
+    # PID uses qualified max duty: 40 mL/min for 10 s, moved one float down.
+    capacity = 40.0 * 10.0 / 60.0
+    assert disp.demand_limits(pid=True)[1] == math.nextafter(capacity, 0.0)
 
 
-def test_reset_cancels_a_bolus(channel: Channel, clock) -> None:
+def test_reset_cancels_a_dose(channel: Channel, clock) -> None:
     """Reactor.stop() must not leave a dose to resume."""
     disp = Dispenser(
         OutputUnit.volume,
@@ -286,7 +289,7 @@ def test_reset_cancels_a_bolus(channel: Channel, clock) -> None:
 
 
 def test_check_unit_rejects_a_dispense_duty_that_does_not_pump() -> None:
-    """A bolus needs a positive flow at the dispense duty or it never ends."""
+    """A dose needs a positive flow at the dispense duty or it never ends."""
     # b=-15 puts the line's zero crossing at duty 1500: the pump does
     # not turn at the 1000 count dispense duty, but the rest of the band
     # is fine. (b=-50 would put the crossing at 5000, above full scale,
@@ -349,7 +352,7 @@ def test_a_non_finite_demand_leaves_the_pump_off(
     """Every non-finite demand is rejected before a deadline is computed.
 
     Regression: `now < math.inf` is always True, so tick() could never
-    turn an infinite bolus off, stranding the pump ON forever. NaN slips
+    turn an infinite dose off, stranding the pump ON forever. NaN slips
     past a bare `demand <= 0` check (NaN comparisons are always False),
     so it could fire a spurious dispense_duty write before the next tick
     noticed `now < nan` was also False and stopped it.
@@ -369,37 +372,65 @@ def test_a_non_finite_demand_leaves_the_pump_off(
     assert disp._current_duty == 0.0
 
 
-def test_an_oversized_demand_still_gets_its_full_bolus(
+def test_an_oversized_non_pid_demand_is_capped_to_one_hour(
     channel: Channel,
     clock,
 ) -> None:
-    """A finite demand beyond demand_limits() is dispensed in full.
-
-    Silently clamping to the per-period limit would make every bolus
-    exactly one control_period long, foreclosing the supersession model
-    that test_a_new_decision_supersedes_a_bolus_in_flight pins, while
-    buying no real safety: a standing over-demand would just re-arm
-    every period instead of running once, delivering the same total
-    volume to the reactor either way.
-    """
+    """A finite manual request is accepted but cannot run over one hour."""
     disp = Dispenser(
         OutputUnit.volume,
         channel,
         control_period=1.0,
         clock=clock,
     )
-    upper = disp.demand_limits()[1]  # 0.333 mL
-    demand = 1.0  # well beyond the one-period limit
+    upper = disp.demand_limits()[1]  # 1200 mL at 20 mL/min for one hour
+    demand = upper * 2.0
 
     assert demand > upper
     assert disp.duty(demand) == 2000.0
 
-    # 1 mL at 20 mL/min is 3 s of running - outlives the 1 s control_period.
-    clock.advance(2.9)
+    clock.advance(3599.9)
     assert disp.tick() is None
 
     clock.advance(0.2)
     assert disp.tick() == 0.0
+
+
+def test_pid_dose_uses_max_duty_and_cannot_outlive_one_period(
+    channel: Channel,
+    clock,
+) -> None:
+    """PID gets the qualified fast duty and one representable-short cap."""
+    disp = Dispenser(
+        OutputUnit.volume,
+        channel,
+        control_period=10.0,
+        clock=clock,
+    )
+    capacity = math.nextafter(40.0 * 10.0 / 60.0, 0.0)
+
+    assert disp.duty(capacity * 100.0, pid=True) == 4000.0
+
+    clock.advance(10.0)
+    assert disp.tick() == 0.0
+    assert disp.total_volume == pytest.approx(40.0 * 10.0 / 60.0)
+
+
+def test_stop_demand_is_immediate_even_while_rate_limit_is_holding(
+    channel: Channel,
+    clock,
+) -> None:
+    """Zero and negative demands remain stop commands, never queued events."""
+    disp = Dispenser(
+        OutputUnit.volume,
+        channel,
+        control_period=10.0,
+        clock=clock,
+    )
+    disp.duty(1.0)
+
+    assert disp.duty(-1.0) == 0.0
+    assert disp._current_duty == 0.0
 
 
 def test_reset_re_arms_the_guard(channel: Channel, clock) -> None:
@@ -495,9 +526,9 @@ def test_volume_demand_limits_use_the_capped_dispense_duty(
     channel: Channel,
     clock,
 ) -> None:
-    """The limit reported must be for the duty a bolus is really run at.
+    """The limit reported must be for the duty a dose is really run at.
 
-    `_start_bolus` writes `min(dispense_duty, max_duty)`; before this,
+    `_start_dose` writes `min(dispense_duty, max_duty)`; before this,
     `demand_limits()` read the raw `dispense_duty`, so a calibration
     mutated in place after installation had a controller clamped to a
     per-period volume the pump was never going to deliver.
@@ -510,9 +541,9 @@ def test_volume_demand_limits_use_the_capped_dispense_duty(
         clock=clock,
     )
 
-    # 4000 counts is 40 mL/min, so 40 mL in the 60 s period - not the
-    # 60 mL the uncapped 6000 counts would suggest.
-    assert disp.demand_limits() == (0.0, pytest.approx(40.0))
+    # 4000 counts is 40 mL/min, so the ordinary one-hour cap is 2400 mL,
+    # not the 3600 mL the uncapped 6000 counts would suggest.
+    assert disp.demand_limits() == (0.0, pytest.approx(2400.0))
 
 
 @pytest.mark.parametrize(
@@ -531,7 +562,7 @@ def test_a_non_finite_demand_is_refused_in_every_unit(
 ) -> None:
     """No unit may pass a non-finite demand through to the pin.
 
-    Regression: the rejection lived inside `_start_bolus`, so only
+    Regression: the rejection lived inside `_start_dose`, so only
     volume mode had it. Duty mode passed a NaN straight through, and
     flow mode kept it (`duty_for(nan)` is NaN, `nan < min_duty` is
     False, and `min(nan, max_duty)` returns the NaN). Both end at

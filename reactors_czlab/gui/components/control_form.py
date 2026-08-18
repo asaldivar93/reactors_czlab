@@ -14,6 +14,8 @@ from reactors_czlab.gui.components.shell import disable_when_read_only
 from reactors_czlab.gui.control import (
     CONFIG_FIELDS,
     build_config_args,
+    dose_preview,
+    dose_preview_text,
     fields_for,
 )
 from reactors_czlab.gui.state import STATE
@@ -150,6 +152,34 @@ async def _build_dialog(
                             value=current if current is not None else 0.0,
                             format="%.4f",
                         ).classes("w-full")
+
+                preview_label = ui.label().classes("text-xs text-gray-600")
+
+                def update_dose_preview() -> None:
+                    demand_input = inputs.get("value")
+                    requested = (
+                        None if demand_input is None else demand_input.value
+                    )
+                    preview = dose_preview(
+                        method_select.value,
+                        unit_select.value,
+                        requested,
+                        state.get("dose_limits"),
+                    )
+                    message, capped = dose_preview_text(preview)
+                    preview_label.set_text(message)
+                    preview_label.set_visibility(bool(message))
+                    preview_label.classes(
+                        add="text-orange-700" if capped else "text-gray-600",
+                        remove="text-gray-600" if capped else "text-orange-700",
+                    )
+
+                demand_input = inputs.get("value")
+                if demand_input is not None:
+                    demand_input.on_value_change(
+                        lambda _: update_dose_preview(),
+                    )
+                update_dose_preview()
 
         def on_method_change() -> None:
             _logger.info(

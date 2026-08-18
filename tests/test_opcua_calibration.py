@@ -28,7 +28,6 @@ import pytest
 from asyncua import ua
 
 from reactors_czlab.core.calibration import CALIBRATION_ENV
-from reactors_czlab.core.data import MAX_OUTPUT
 from reactors_czlab.opcua.actuator import ActuatorOpc
 
 
@@ -102,11 +101,15 @@ async def test_a_full_calibration_over_the_methods(calibrating) -> None:
     """Run two points, record them, fit, and the channel is calibrated."""
     node_opc, methods = calibrating
 
-    status = await _call(methods["calibrate_point"], 1000.0, 60.0)
-    assert "now record the measured" in status
-    await _call(methods["record_point"], 10.0)
-    await _call(methods["calibrate_point"], 3000.0, 60.0)
-    await _call(methods["record_point"], 30.0)
+    for duty, volume in (
+        (1000.0, 10.0),
+        (2000.0, 20.0),
+        (3000.0, 30.0),
+        (4000.0, 40.0),
+    ):
+        status = await _call(methods["calibrate_point"], duty, 60.0)
+        assert "now record the measured" in status
+        await _call(methods["record_point"], volume)
 
     result = await _call(methods["fit_calibration"])
 
@@ -237,10 +240,14 @@ class TestGetCalibration:
         """After a fit, the screen can show the whole installed line."""
         _, methods = calibrating
 
-        await _call(methods["calibrate_point"], 1000.0, 60.0)
-        await _call(methods["record_point"], 10.0)
-        await _call(methods["calibrate_point"], 3000.0, 60.0)
-        await _call(methods["record_point"], 30.0)
+        for duty, volume in (
+            (1000.0, 10.0),
+            (2000.0, 20.0),
+            (3000.0, 30.0),
+            (4000.0, 40.0),
+        ):
+            await _call(methods["calibrate_point"], duty, 60.0)
+            await _call(methods["record_point"], volume)
         await _call(methods["fit_calibration"])
 
         cal = json.loads(await _call(methods["get_calibration"]))[
@@ -250,8 +257,18 @@ class TestGetCalibration:
         assert cal["is_fitted"] is True
         assert cal["fitted_at"]
         assert cal["a"] == pytest.approx(0.01)
-        assert cal["points"] == [[1000.0, 10.0], [3000.0, 30.0]]
-        assert cal["max_duty"] == pytest.approx(MAX_OUTPUT)
+        assert cal["points"] == [
+            [1000.0, 10.0],
+            [2000.0, 20.0],
+            [3000.0, 30.0],
+            [4000.0, 40.0],
+        ]
+        # The exact through-origin data leaves LMFit's linear covariance
+        # unavailable, so the valid power candidate (exponent 1) wins.
+        assert cal["model"] == "power"
+        assert cal["residual"] == pytest.approx(0.0, abs=1e-20)
+        assert cal["fit_series"]["duty"]
+        assert cal["max_duty"] == pytest.approx(4000.0)
         assert cal["min_duty"] <= cal["dispense_duty"] <= cal["max_duty"]
 
     async def test_carries_the_installable_reason_verbatim(
@@ -271,7 +288,7 @@ class TestGetCalibration:
         ]
 
         assert cal["installable_reason"] is not None
-        assert "slope" in cal["installable_reason"]
+        assert "coefficient" in cal["installable_reason"]
 
     async def test_an_actuator_with_no_slot_reports_null(
         self,

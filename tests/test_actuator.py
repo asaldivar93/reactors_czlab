@@ -239,24 +239,24 @@ def test_total_volume_survives_a_config_change(
     assert actuator.dispenser.total_volume == 12.5
 
 
-def test_calibrating_blocks_a_bolus_in_flight(
+def test_calibrating_blocks_a_dose_in_flight(
     make_calibrated_actuator,
     clock,
     monkeypatch,
 ) -> None:
-    """tick() must not finish a bolus while a calibration run owns the pump.
+    """tick() must not finish a dose while a calibration run owns the pump.
 
     Regression: mutation testing showed the previous version of this
     test stayed green with ``if self.calibrating: return`` deleted from
-    ``tick()``, because no bolus was ever armed - ``dispenser.tick()``
-    returned ``None`` regardless of the guard. This arms a real bolus,
+    ``tick()``, because no dose was ever armed - ``dispenser.tick()``
+    returned ``None`` regardless of the guard. This arms a real dose,
     lets its deadline pass, then checks that ``tick()`` does not finish
     it while calibrating.
 
     ``dispenser.reset()`` is stubbed out here so the ``calibrating``
     property's own edge-triggered reset (see
     ``test_calibrating_freezes_the_dispensers_clock``) does not clear
-    the bolus before ``tick()`` gets a chance to - this test isolates
+    the dose before ``tick()`` gets a chance to - this test isolates
     ``tick()``'s own guard.
     """
     actuator = make_calibrated_actuator()
@@ -273,8 +273,8 @@ def test_calibrating_blocks_a_bolus_in_flight(
             output_unit=OutputUnit.volume,
         ),
     )
-    actuator.write_output(0)  # arms a 3 s bolus (1 mL at 20 mL/min)
-    clock.advance(3.0)  # past the bolus deadline
+    actuator.write_output(0)  # arms a 3 s dose (1 mL at 20 mL/min)
+    clock.advance(3.0)  # past the dose deadline
 
     monkeypatch.setattr(actuator.dispenser, "reset", lambda: None)
     writes = []
@@ -327,7 +327,7 @@ def test_calibrating_blocks_a_decision(
     Regression: mutation testing showed the suite stayed green with
     ``if self.calibrating: return`` deleted from ``write_output()`` -
     the exact twin of the ``tick()`` guard that
-    ``test_calibrating_blocks_a_bolus_in_flight`` pins. Both arms of
+    ``test_calibrating_blocks_a_dose_in_flight`` pins. Both arms of
     the interlock now have a test; without this one, a calibration
     point's own duty could be overwritten mid-measurement by the
     sampling loop, silently corrupting the fit that follows.
@@ -345,14 +345,14 @@ def test_calibrating_blocks_a_decision(
     assert writes == []
 
 
-def test_a_unit_swap_stops_a_bolus_in_flight(
+def test_a_unit_swap_stops_a_dose_in_flight(
     make_calibrated_actuator,
     clock,
 ) -> None:
-    """Changing the output unit mid-bolus must turn the pump off.
+    """Changing the output unit mid-dose must turn the pump off.
 
     Regression: the swap called ``Dispenser.reset()``, which discards
-    the bolus deadline, but never honoured that method's "the caller
+    the dose deadline, but never honoured that method's "the caller
     must write 0" contract - the other two callers, ``Reactor.stop()``
     and ``CalibrationRun.calibrate_point()``, do. The pump was left at
     the dispense duty with nothing that would ever stop it: the new
@@ -377,7 +377,7 @@ def test_a_unit_swap_stops_a_bolus_in_flight(
             output_unit=OutputUnit.volume,
         ),
     )
-    actuator.write_output(0)  # arms a 3 s bolus at 2000 counts
+    actuator.write_output(0)  # arms a 3 s dose at 2000 counts
     assert actuator.channel.value == 2000
 
     actuator.set_control_config(
@@ -406,8 +406,8 @@ def test_a_unit_swap_does_not_disturb_a_calibration_run(
 ) -> None:
     """An OPC output_unit write mid-calibration must not touch the pin.
 
-    Regression: the unit-swap write-0 added to stop a bolus (see
-    ``test_a_unit_swap_stops_a_bolus_in_flight``) was the one
+    Regression: the unit-swap write-0 added to stop a dose (see
+    ``test_a_unit_swap_stops_a_dose_in_flight``) was the one
     pin-writing path in the class not guarded on ``calibrating`` -
     ``write_output()`` and ``tick()`` both return early while a
     calibration run owns the pump. A run drives the pump directly, so
@@ -543,7 +543,7 @@ def test_refresh_controller_limits_zeros_a_non_positive_range(
     leaving the controller's old (positive) limits in place. A clamped
     controller (PID) could then still command a positive demand against
     a calibration that could no longer deliver it, dividing by zero in
-    ``Dispenser._start_bolus``.
+    ``Dispenser._start_dose``.
 
     ``CalibrationRun.fit()``/``set_duties()``/``reload()`` all now
     refuse a calibration that would produce this range before it ever

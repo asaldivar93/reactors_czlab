@@ -97,7 +97,7 @@ def _status(phase: str = "idle") -> dict:
             "max_minutes": 30.0,
             "current_ph": 7.03,
             "elapsed_seconds": 125.0,
-            "adjusted_boluses_ml": {"base": 0.2, "acid": 0.25},
+            "adjusted_doses_ml": {"base": 0.2, "acid": 0.25},
             "dose": {"actual_ml": 1.2, "budget_ml": 8.0},
             "safety": {"safe_low": 6.0, "safe_high": 8.0},
             "noise_sigma": 0.003,

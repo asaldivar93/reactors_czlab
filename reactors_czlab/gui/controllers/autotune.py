@@ -16,7 +16,7 @@ from typing import Any
 
 AUTOTUNE_VERSION = 1
 DEFAULT_SETPOINT = 7.0
-DEFAULT_BOLUS_ML = 0.20
+DEFAULT_DOSE_ML = 0.20
 DEFAULT_HYSTERESIS_PH = 0.02
 DEFAULT_MAX_MINUTES = 30.0
 DEFAULT_PHOSPHATE_MM = 14.0
@@ -44,8 +44,8 @@ class FormState:
     base_id: str = ""
     acid_id: str = ""
     setpoint: float = DEFAULT_SETPOINT
-    base_bolus_ml: float = DEFAULT_BOLUS_ML
-    acid_bolus_ml: float = DEFAULT_BOLUS_ML
+    base_dose_ml: float = DEFAULT_DOSE_ML
+    acid_dose_ml: float = DEFAULT_DOSE_ML
     hysteresis_ph: float = DEFAULT_HYSTERESIS_PH
     max_minutes: float = DEFAULT_MAX_MINUTES
     phosphate_mm: float = DEFAULT_PHOSPHATE_MM
@@ -61,8 +61,8 @@ class FormState:
             self.sensor_id,
             self.acid_id,
             self.setpoint,
-            self.base_bolus_ml,
-            self.acid_bolus_ml,
+            self.base_dose_ml,
+            self.acid_dose_ml,
             self.hysteresis_ph,
             self.max_minutes,
             self.phosphate_mm / 1000.0,
@@ -235,7 +235,7 @@ def run_from_payload(raw: object) -> RunView:
     form = _form_from_status(payload)
     safety = _mapping(payload.get("safety"))
     dose = _mapping(payload.get("dose"))
-    boluses = _mapping(payload.get("adjusted_boluses_ml"))
+    doses = _dose_values(payload, "adjusted")
     result = _mapping(payload.get("result"))
     identification = _mapping(result.get("identification"))
     candidates = _mapping(payload.get("candidate_gains"))
@@ -284,8 +284,8 @@ def run_from_payload(raw: object) -> RunView:
         noise_sigma=_optional_float(payload.get("noise_sigma")),
         settling_cycles=_int(payload.get("settling_cycles", 0), "settling cycles"),
         clean_cycles=_int(payload.get("clean_cycles", 0), "clean cycles"),
-        adjusted_base_ml=_optional_float(boluses.get("base")),
-        adjusted_acid_ml=_optional_float(boluses.get("acid")),
+        adjusted_base_ml=_optional_float(doses.get("base")),
+        adjusted_acid_ml=_optional_float(doses.get("acid")),
         warnings=_strings(payload.get("warnings")),
         trace=trace,
         ku=_optional_float(identification.get("Ku")),
@@ -308,8 +308,8 @@ def validate_form(form: FormState) -> tuple[str, ...]:
 
     positive = {
         "Setpoint": form.setpoint,
-        "Base bolus": form.base_bolus_ml,
-        "Acid bolus": form.acid_bolus_ml,
+        "Base dose": form.base_dose_ml,
+        "Acid dose": form.acid_dose_ml,
         "Hysteresis": form.hysteresis_ph,
         "Maximum time": form.max_minutes,
         "Phosphate concentration": form.phosphate_mm,
@@ -362,17 +362,17 @@ def replace_selection(
 def _form_from_status(payload: Mapping[str, Any]) -> FormState:
     selection = _mapping(payload.get("selection"))
     chemistry = _mapping(payload.get("chemistry"))
-    boluses = _mapping(payload.get("adjusted_boluses_ml"))
+    doses = _dose_values(payload, "adjusted")
     return FormState(
         sensor_id=_string(selection.get("sensor_id")),
         base_id=_string(selection.get("base_id")),
         acid_id=_string(selection.get("acid_id")),
         setpoint=_optional_float(payload.get("setpoint")) or DEFAULT_SETPOINT,
-        base_bolus_ml=(
-            _optional_float(boluses.get("base")) or DEFAULT_BOLUS_ML
+        base_dose_ml=(
+            _optional_float(doses.get("base")) or DEFAULT_DOSE_ML
         ),
-        acid_bolus_ml=(
-            _optional_float(boluses.get("acid")) or DEFAULT_BOLUS_ML
+        acid_dose_ml=(
+            _optional_float(doses.get("acid")) or DEFAULT_DOSE_ML
         ),
         hysteresis_ph=(
             _optional_float(payload.get("hysteresis_ph"))
@@ -399,6 +399,15 @@ def _form_from_status(payload: Mapping[str, Any]) -> FormState:
 
 def _mapping(value: object) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
+
+
+def _dose_values(payload: Mapping[str, Any], prefix: str) -> Mapping[str, Any]:
+    """Read canonical dose values, falling back at the JSON boundary."""
+    canonical = _mapping(payload.get(f"{prefix}_doses_ml"))
+    if canonical:
+        return canonical
+    # Deprecated mixed-version alias. Business/UI state remains canonical.
+    return _mapping(payload.get(f"{prefix}_boluses_ml"))
 
 
 def _sequence(value: object) -> list[object] | tuple[object, ...]:

@@ -21,7 +21,7 @@ Those scripts are the *behavioural specification*: the production code must repr
 
 Two distinct "calibrations" exist in this codebase; do not conflate them.
 
-1. **Pump flow calibration** (already implemented, `core/calibration.py`): fits `flow = a·duty + b`
+1. **Pump flow calibration** (already implemented, `core/calibration.py`): selects between `flow = a·duty + b` and `flow = a·duty^b`
    so the `Dispenser` can convert a demanded volume (mL) into a duty and a run-time. This feature
    **depends on** it being current but does not change it.
 2. **PID autocalibration** (this feature): finds the controller gains `kp, ki, kd` for the pH
@@ -51,9 +51,10 @@ The implementer must hook into these existing structures; file paths are relativ
   `write(duty)` bypasses the change guard and drives the pump directly (used by the pump-calibration
   run). The **`calibrating` property** is the hardware interlock: while `True` the normal control
   loop leaves the actuator alone (see `actuator.py` lines guarding on `self.calibrating`).
-- **`core/dispenser.py :: Dispenser`** — converts a mL demand into a bolus: `dispense_duty` for
-  `60·mL/flow` seconds, capped at one control period's worth (`MAX_BOLUS_SECONDS`,
-  `MIN_DISPENSE_FLOW` in `core/data.py`). `reset()` cancels a delivery in flight.
+- **`core/dispenser.py :: Dispenser`** — converts a mL demand into a timed dose. Ordinary control
+  uses `dispense_duty` with a one-hour cap; PID uses uncertainty-qualified `max_duty` with a
+  one-period cap. Relay-autotune preflight deliberately remains exact and checks its requested dose
+  at `dispense_duty` before starting. `reset()` cancels a delivery in flight.
 - **`core/calibration.py :: CalibrationRun`** — the template to copy. It is a plain object that holds
   run state, mutates the actuator, and **returns a status string from every method**; the operator
   drives it step-by-step from a generic OPC client and reads each result off the method call.
@@ -106,16 +107,16 @@ Create these; mirror the existing calibration feature's structure and style.
 ### 4.1 The relay experiment
 
 Regulate pH by a **relay** instead of the PID: while the measured pH is **below** setpoint − h, dose
-the **base** pump a fixed bolus `u_base` mL per control period; while **above** setpoint + h, dose the
-**acid** pump `u_acid` mL per period; inside the ±h hysteresis band, hold. This drives a bounded
+the **base** pump a fixed dose `base_dose_ml` mL per control period; while **above** setpoint + h, dose the
+**acid** pump `acid_dose_ml` mL per period; inside the ±h hysteresis band, hold. This drives a bounded
 limit cycle centred near the setpoint. Record the pH trace and the signed volume-per-period trace.
 
 - The relay is realised **through the existing actuation path** — request `u` mL, let the
   `Dispenser` convert it to duty and run-time, exactly as in normal operation. Do **not** write raw
-  duties. This guarantees the experiment sees the same nonlinearity (bolus cap, stall floor,
+  duties. This guarantees the experiment sees the same nonlinearity (dose cap, stall floor,
   flow-calibration) the controller will.
 - The two pumps are one-sided actuators, so the relay is intrinsically **asymmetric**: allow
-  `u_base ≠ u_acid`. A metabolically loaded loop settles into an asymmetric cycle; letting the two
+  `base_dose_ml ≠ acid_dose_ml`. A metabolically loaded loop settles into an asymmetric cycle; letting the two
   amplitudes differ lets the experiment sit centred on the setpoint rather than drift
   (Åström & Hägglund 1984, https://doi.org/10.1016/0005-1098(84)90014-1; Shen, Wu & Yu 1996,
   https://doi.org/10.1002/aic.690420431).
@@ -172,7 +173,7 @@ silently inside the control loop.
 Mirror `init_calibration_methods`. Every method returns a status string. Declare `ua.Argument`s with
 clear names/descriptions as the existing code does. Methods on the **base** actuator's node:
 
-1. `autotune_start(setpoint, u_base_mL, u_acid_mL, hysteresis_pH, max_minutes)` → status.
+1. `autotune_start(setpoint, base_dose_ml_mL, acid_dose_ml_mL, hysteresis_pH, max_minutes)` → status.
    Validates ranges (see §6), sets `calibrating = True` on **both** actuators, resets both
    dispensers, records the start, and begins the relay experiment. Non-blocking start is acceptable
    if the run executes in a task; otherwise it runs to completion and returns the identification
@@ -202,7 +203,7 @@ fight the relay while a run is in progress.
 - **Time budget.** `max_minutes` hard stop (default 30). Relay period at 14 mM buffer, pH 7 is
   ~5 min (Pu ≈ 293 s in the reference), so ~4–6 cycles fit comfortably; reject if no clean cycles by
   the deadline.
-- **Amplitude bounds.** `u_base, u_acid` within `[MIN_DISPENSE_FLOW-equivalent, one-period cap]`;
+- **Amplitude bounds.** `base_dose_ml, acid_dose_ml` within `[MIN_DISPENSE_FLOW-equivalent, one-period cap]`;
   `hysteresis ≥ 2×` pH sensor noise σ to avoid chattering on noise.
 - **Sampling time (Δt) is variable — recompute Δt-dependent settings at run time.** The current
   control period is Δt = 10 s but it may change; the feature must read `actuator.control_period` at
@@ -210,11 +211,11 @@ fight the relay while a run is in progress.
   integrates/differentiates with the true elapsed time, so `ki`/`kd` are continuous-time quantities —
   see `autocalibration_method.md` §4.4), so a Δt change does **not** require re-tuning. But two things
   MUST scale with Δt:
-  1. **Relay amplitude.** Specify the relay bolus so the limit-cycle amplitude stays a safe multiple
-     of the hysteresis (`a ≳ 3·h`). Either fix the *per-period* bolus `u` (mL, the reference
+  1. **Relay amplitude.** Specify the relay dose so the limit-cycle amplitude stays a safe multiple
+     of the hysteresis (`a ≳ 3·h`). Either fix the *per-period* dose `u` (mL, the reference
      approach) or, if a *flow* (mL/min) is configured, compute `u = flow·Δt/60` and reject the run if
      the resulting `u` is too small to lift `a` clear of `h` at this Δt. At very small Δt an
-     under-sized bolus makes `√(a²−h²)` → 0 and `Ku` diverges (verified failure at Δt = 2 s in
+     under-sized dose makes `√(a²−h²)` → 0 and `Ku` diverges (verified failure at Δt = 2 s in
      `scripts/sampling_time_study.py`); guard against it explicitly.
   2. **Period-counted budgets.** The "minimum complete cycles", time budget, and dead-time delay
      (`round(dead_time/Δt)` periods) are all expressed in periods; recompute them from the live Δt.
@@ -237,7 +238,7 @@ fight the relay while a run is in progress.
 
 Drive `AutotuneRun` against `scripts/ph_process_model.py :: PhPlant` (the validated fake). With the
 reference configuration (V = 5 L, C_P = 14 mM phosphate, setpoint 7.0, titrant 0.5 M,
-`u_base = u_acid = 0.20 mL`, `hysteresis = 0.02 pH`, `dt = 10 s`, dead time 10 s, noise σ = 0.005 pH,
+`base_dose_ml = acid_dose_ml = 0.20 mL`, `hysteresis = 0.02 pH`, `dt = 10 s`, dead time 10 s, noise σ = 0.005 pH,
 seed 0):
 
 - **Identification.** `Ku` within ±15 % of the reference **18.6 mL/pH** and `Pu` within ±10 % of
@@ -258,7 +259,7 @@ seed 0):
 - **Sampling-time (Δt) robustness.** Reproduce `scripts/sampling_time_study.py`: gains tuned at
   Δt = 10 s and applied unchanged at Δt ∈ {5, 20, 40} s keep disturbance-rejection IAE within ~1.6×
   of the Δt = 10 s value and never oscillate (confirms Δt-portable gains). And: the relay-amplitude
-  guard rejects a run whose per-period bolus is too small to clear the hysteresis band (the Δt = 2 s
+  guard rejects a run whose per-period dose is too small to clear the hysteresis band (the Δt = 2 s
   fixed-flow failure case), rather than returning a bogus Ku.
 
 Robustness envelope (informational, from `robustness_sweep.py`): re-running the relay in situ across
@@ -273,7 +274,7 @@ same plant.
 
 | Parameter | Default | Unit | Notes |
 |---|---|---|---|
-| `u_base`, `u_acid` | 0.20 | mL/period | asymmetric allowed; ≥ min dispensable bolus |
+| `base_dose_ml`, `acid_dose_ml` | 0.20 | mL/period | asymmetric allowed; ≥ min dispensable dose |
 | `hysteresis` (h) | 0.02 | pH | ≥ 2× sensor noise σ |
 | control period `Δt` | 10 (variable) | s | **read `actuator.control_period` at run time**; gains are Δt-portable, but relay amplitude and period-counted budgets scale with Δt (§6). Recommended Δt ≤ Pu/10 ≈ 30 s |
 | min complete cycles | 4 | – | discard first transient cycle |

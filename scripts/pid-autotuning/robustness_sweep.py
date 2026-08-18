@@ -57,7 +57,7 @@ def make_plant(C_P, V, setpoint, c_titrant, pH0=None):
 def autotune_in_situ(C_P, V, setpoint, c_titrant, u_amp=0.30, seed=0):
     """Run the relay experiment at this condition; return TL-PI code gains + (Ku,Pu)."""
     plant = make_plant(C_P, V, setpoint, c_titrant, pH0=setpoint)
-    cfg = RelayConfig(setpoint=setpoint, u_base=u_amp, u_acid=u_amp, hysteresis=0.02,
+    cfg = RelayConfig(setpoint=setpoint, base_dose_ml=u_amp, acid_dose_ml=u_amp, hysteresis=0.02,
                       dt=DT, dead_time=10.0, max_cycles=10)
     res = run_relay_experiment(plant, cfg, r_metabolic=2e-7, noise_pH=0.005, seed=seed)
     Kc, Ti, Td = tuning_rules(res.Ku, res.Pu)["TL-PI"]
@@ -153,7 +153,7 @@ def sweep_1d(outdir):
     iae_g = []
     for dg in g_vals:
         # the relay experiment itself is affected: model by scaling the amplitude
-        # actually delivered -> equivalently scale the relay bolus by dg.
+        # actually delivered -> equivalently scale the relay dose by dg.
         gains, Ku, Pu = autotune_in_situ(0.014, 5.0, 7.0, 0.5, u_amp=0.30 * dg, seed=0)
         m = score_loop(gains, 0.014, 5.0, 7.0, 0.5, delivery_gain=dg, seed=1)
         iae_g.append(m["IAE"])

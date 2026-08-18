@@ -111,7 +111,9 @@ def test_identified_and_failed_lifecycle_records_are_audited(tmp_path, make_cali
     assert record["phase"] == "identified"
     assert record["started_utc"] and record["ended_utc"]
     assert record["baseline_sigma"] >= 0
-    assert record["adjusted_boluses_ml"]["base"] > 0
+    assert record["adjusted_doses_ml"]["base"] > 0
+    assert record["adjusted_boluses_ml"] == record["adjusted_doses_ml"]
+    assert record["initial_boluses_ml"] == record["initial_doses_ml"]
     assert record["actual_dose_ml"] > 0
     assert record["identification"]["Ku"] > 0 and record["identification"]["Pu"] > 0
     assert record["candidates"]["TL-PI"]["kp"] > 0
@@ -157,7 +159,7 @@ def test_bad_audit_documents_are_visible_refusals(tmp_path, raw) -> None:
 @pytest.mark.parametrize("run_id", ["", "duplicate"])
 def test_empty_or_duplicate_run_ids_are_refused(tmp_path, run_id) -> None:
     audit = _audit(tmp_path)
-    run = {"run_id": run_id, "selection": {"channel_index": 0}, "chemistry": {"phosphate_molar": 0.014, "base_molar": 0.5, "acid_molar": 0.5}, "safety": {"safe_low": 6.0, "safe_high": 8.0, "dose_budget_ml": 1.0}, "initial_boluses_ml": {"base": 0.2, "acid": 0.2}}
+    run = {"run_id": run_id, "selection": {"channel_index": 0}, "chemistry": {"phosphate_molar": 0.014, "base_molar": 0.5, "acid_molar": 0.5}, "safety": {"safe_low": 6.0, "safe_high": 8.0, "dose_budget_ml": 1.0}, "initial_doses_ml": {"base": 0.2, "acid": 0.2}}
     document = {"version": 1, "reactor_id": "R0", "runs": [run], "events": [], "latest_applied": None}
     if run_id == "duplicate":
         document["runs"].append(dict(run))
@@ -176,6 +178,46 @@ def test_generated_duplicate_run_id_refuses_without_corrupting_history(tmp_path,
     assert audit.path.read_text(encoding="utf-8") == before
     assert audit.read().ok
     second.abort()
+
+
+def test_legacy_dose_keys_are_loaded_and_reemitted_as_aliases(tmp_path) -> None:
+    """Mixed-version audit files cross one isolated serialization adapter."""
+    audit = _audit(tmp_path)
+    run = {
+        "run_id": "legacy",
+        "selection": {"channel_index": 0},
+        "chemistry": {
+            "phosphate_molar": 0.014,
+            "base_molar": 0.5,
+            "acid_molar": 0.5,
+        },
+        "safety": {
+            "safe_low": 6.0,
+            "safe_high": 8.0,
+            "dose_budget_ml": 1.0,
+        },
+        "initial_boluses_ml": {"base": 0.2, "acid": 0.2},
+        "adjusted_boluses_ml": {"base": 0.3, "acid": 0.3},
+    }
+    audit.path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "reactor_id": "R0",
+                "runs": [run],
+                "events": [],
+                "latest_applied": None,
+            },
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = audit.read()
+
+    assert loaded.ok
+    record = loaded.data["runs"][0]
+    assert record["initial_doses_ml"] == record["initial_boluses_ml"]
+    assert record["adjusted_doses_ml"] == record["adjusted_boluses_ml"]
 
 
 def test_missing_and_wrong_reactor_documents_are_refused(tmp_path) -> None:

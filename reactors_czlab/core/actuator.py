@@ -103,7 +103,7 @@ class Actuator(ABC):
         and re-zeroes the clock, so neither edge can span a calibration
         run.
 
-        That ``reset()`` also throws away any bolus deadline, and this
+        That ``reset()`` also throws away any dose deadline, and this
         setter deliberately does not write 0 afterwards - the caller
         owns the pin across the whole interlock. ``CalibrationRun`` writes
         its requested duty immediately and zeroes it in ``finally``;
@@ -147,7 +147,7 @@ class Actuator(ABC):
             self.calibrating = True
             # Raising the interlock cancels any dispenser deadline, so stop
             # the physical pin here as part of taking ownership. Otherwise a
-            # pre-existing bolus would be left ON with nothing able to tick it.
+            # pre-existing dose would be left ON with nothing able to tick it.
             self.write(0.0)
             self.channel.old_value = 0.0
         except Exception:
@@ -226,6 +226,7 @@ class Actuator(ABC):
             raise ValueError(error_message)
         self._control_period = period
         self.dispenser.control_period = period
+        self.refresh_controller_limits()
 
     def write_output(self, sens_value: float) -> None:
         """Write the actuator value derived from a sensor reading."""
@@ -240,7 +241,12 @@ class Actuator(ABC):
             )
             return
         demand = self.controller.get_value(sens_value)
-        self._write_if_changed(self.dispenser.duty(demand))
+        self._write_if_changed(
+            self.dispenser.duty(
+                demand,
+                pid=self.controller.method is ControlMethod.pid,
+            ),
+        )
 
     def tick(self) -> None:
         """Let the dispenser finish a delivery it already started."""
@@ -286,7 +292,9 @@ class Actuator(ABC):
                 self.channel,
                 self._control_period,
             )
-        min_val, max_val = dispenser.demand_limits()
+        min_val, max_val = dispenser.demand_limits(
+            pid=config.method is ControlMethod.pid,
+        )
         try:
             new_controller = ControlFactory().create_control(
                 config,
@@ -374,7 +382,7 @@ class Actuator(ABC):
         range* on refusal instead - which is what let a PID go on
         commanding a positive demand against a calibration that could
         no longer deliver it, dividing by zero in
-        ``Dispenser._start_bolus``. Zeroing forces every clamped
+        ``Dispenser._start_dose``. Zeroing forces every clamped
         controller to demand nothing until the calibration is fixed,
         rather than continuing to demand something the pump can no
         longer express. Manual/timer/on-boundaries controllers do not
@@ -383,7 +391,9 @@ class Actuator(ABC):
         - ``fit()``/``set_duties()``/``reload()`` refusing to install
         one is - but it closes the gap for the controller that does.
         """
-        min_val, max_val = self.dispenser.demand_limits()
+        min_val, max_val = self.dispenser.demand_limits(
+            pid=self.controller.method is ControlMethod.pid,
+        )
         if max_val <= min_val:
             _logger.warning(
                 "%s demand range (%s, %s) is non-positive; zeroing the "

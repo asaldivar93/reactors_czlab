@@ -93,7 +93,7 @@ def _finish_baseline(run, clock, values=None) -> None:
 def _relay_step(run, clock, ph: float, *, period: float = 10.0) -> None:
     run.sample(ph)
     if run.is_active:
-        # Mirror the real 20 Hz actuator loop until the owned bolus ends.
+        # Mirror the real 20 Hz actuator loop until the owned dose ends.
         elapsed = 0.0
         while elapsed < period and (run.base.channel.value or run.acid.channel.value):
             step = min(0.05, period - elapsed)
@@ -132,7 +132,7 @@ def _cycle(period: float = 40.0, amplitude: float = 0.08, ratio: float = 1.0) ->
     )
 
 
-def test_normal_run_identifies_from_actual_delivered_boluses(
+def test_normal_run_identifies_from_actual_delivered_doses(
     make_calibrated_actuator,
     clock,
 ) -> None:
@@ -172,13 +172,13 @@ def test_baseline_detrends_and_rejects_hysteresis_below_twice_noise(
     assert "2*sigma" in run.message
 
 
-def test_adaptation_scales_both_boluses_and_preserves_ratio(
+def test_adaptation_scales_both_doses_and_preserves_ratio(
     make_calibrated_actuator,
     clock,
 ) -> None:
     config = RelayTuneConfig(
-        u_base=0.10,
-        u_acid=0.20,
+        base_dose_ml=0.10,
+        acid_dose_ml=0.20,
         acknowledge_other_loops=True,
     )
     run, *_ = _started_run(make_calibrated_actuator, clock, config=config)
@@ -192,18 +192,18 @@ def test_adaptation_scales_both_boluses_and_preserves_ratio(
             break
 
     assert run.phase is AutotunePhase.adapting
-    assert run.base_bolus_ml == pytest.approx(0.20)
-    assert run.acid_bolus_ml == pytest.approx(0.40)
-    assert run.acid_bolus_ml / run.base_bolus_ml == pytest.approx(2.0)
+    assert run.base_dose_ml == pytest.approx(0.20)
+    assert run.acid_dose_ml == pytest.approx(0.40)
+    assert run.acid_dose_ml / run.base_dose_ml == pytest.approx(2.0)
 
 
-def test_adaptation_fails_when_required_bolus_is_not_deliverable(
+def test_adaptation_fails_when_required_dose_is_not_deliverable(
     make_calibrated_actuator,
     clock,
 ) -> None:
     config = RelayTuneConfig(
-        u_base=0.30,
-        u_acid=0.30,
+        base_dose_ml=0.30,
+        acid_dose_ml=0.30,
         acknowledge_other_loops=True,
     )
     run, *_ = _started_run(make_calibrated_actuator, clock, config=config, period=1.0)
@@ -223,8 +223,8 @@ def test_adaptation_fails_after_the_configured_attempt_limit(
     clock,
 ) -> None:
     config = RelayTuneConfig(
-        u_base=0.10,
-        u_acid=0.10,
+        base_dose_ml=0.10,
+        acid_dose_ml=0.10,
         max_adaptations=1,
         acknowledge_other_loops=True,
     )
@@ -348,7 +348,7 @@ def test_ownership_loss_recovers_orphaned_delivery_and_cleans_both_pumps(
     run, _, base, acid, _ = _started_run(make_calibrated_actuator, clock)
     _finish_baseline(run, clock)
     clock.advance(10.0)
-    run.sample(7.08)  # switches to acid and starts a 0.2 mL bolus
+    run.sample(7.08)  # switches to acid and starts a 0.2 mL dose
     clock.advance(0.3)  # 0.1 mL has physically run
     acid._autotune_owner = None
 
@@ -470,8 +470,8 @@ def test_control_period_warning_and_deliverability_bounds(
 
     clock.now = 0.0
     too_small = RelayTuneConfig(
-        u_base=0.001,
-        u_acid=0.2,
+        base_dose_ml=0.001,
+        acid_dose_ml=0.2,
         acknowledge_other_loops=True,
     )
     base, acid = _configured_pair(make_calibrated_actuator, clock)

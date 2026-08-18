@@ -8,6 +8,8 @@ from reactors_czlab.core.data import ControlMethod
 from reactors_czlab.gui.control import (
     CONFIG_FIELDS,
     build_config_args,
+    dose_preview,
+    dose_preview_text,
     fields_for,
 )
 
@@ -98,3 +100,43 @@ def test_unknown_method_name_is_refused_by_the_form_model() -> None:
     """The field list is still explicit even though enum codes are dynamic."""
     with pytest.raises(KeyError):
         fields_for("bang-bang")
+
+
+def test_non_pid_volume_preview_reports_the_authoritative_cap() -> None:
+    """The dialog warns but does not reject an oversized finite request."""
+    limits = {
+        "non_pid": {
+            "duty": 2000.0,
+            "flow": 20.0,
+            "max_duration": 3600.0,
+            "max_volume": 1200.0,
+        },
+    }
+
+    preview = dose_preview("manual", "volume", 1500.0, limits)
+    text, capped = dose_preview_text(preview)
+
+    assert preview.effective == 1200.0
+    assert preview.duration == 3600.0
+    assert capped is True
+    assert "will be capped" in text
+
+
+def test_pid_volume_preview_uses_the_period_policy() -> None:
+    """PID shows capacity because its requested dose is sensor-driven."""
+    limits = {
+        "pid": {
+            "duty": 4000.0,
+            "flow": 40.0,
+            "max_duration": 10.0,
+            "max_volume": 6.666,
+        },
+    }
+
+    preview = dose_preview("pid", "volume", None, limits)
+    text, capped = dose_preview_text(preview)
+
+    assert preview.pid is True
+    assert preview.max_volume == 6.666
+    assert "per decision" in text
+    assert capped is False

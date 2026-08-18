@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 import logging
 import math
-import os
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -31,14 +30,14 @@ AUDIT_VERSION = 1
 _SAFE_REACTOR = re.compile(r"^[A-Za-z0-9_-]+$")
 _NUMERIC_KEYS = frozenset(
     {
-        "actual_acid_ml", "actual_base_ml", "actual_dose_ml", "acid_bolus_ml", "acid_molar", "amplitude",
-        "base_bolus_ml", "base_molar", "base_half_seconds", "base_requests", "acid_half_seconds", "acid_requests",
+        "actual_acid_ml", "actual_base_ml", "actual_dose_ml", "acid_dose_ml", "acid_molar", "amplitude",
+        "base_dose_ml", "base_molar", "base_half_seconds", "base_requests", "acid_half_seconds", "acid_requests",
         "clean_cycles", "dose_budget_ml", "default_dose_budget_ml", "ended_at",
         "half_cycle_ratio", "hysteresis", "kd", "ki", "kp", "Ku", "Pu",
         "max_minutes", "noise_sigma", "period", "ph", "phosphate_molar",
         "peak_ph", "requested_acid_ml", "requested_base_ml", "requested_volume_ml",
         "safe_high", "safe_low", "sample_index", "setpoint", "settling_cycles",
-        "started_at", "timestamp", "trough_ph", "u_acid", "u_base",
+        "started_at", "timestamp", "trough_ph",
     },
 )
 
@@ -137,7 +136,7 @@ class AutotuneAudit:
         *,
         directory: Callable[[], Path] = calibration_dir,
         utcnow: Callable[[], datetime] = lambda: datetime.now(UTC),
-        replace_file: Callable[..., None] = os.replace,
+        replace_file: Callable[..., object] = Path.replace,
         run_id: Callable[[], str] = lambda: uuid4().hex,
     ) -> None:
         """Bind injectable filesystem and time dependencies for safe tests."""
@@ -340,6 +339,10 @@ class AutotuneAudit:
             error_message = "autotune run belongs to a different reactor"
             raise ValueError(error_message)
         channel = self._validate_selection(run.context, run.sensor_id, run.base_id, run.acid_id, run.config.setpoint)
+        initial_doses = {
+            "base": run.config.base_dose_ml,
+            "acid": run.config.acid_dose_ml,
+        }
         return {
             "run_id": run_id,
             "started_utc": _utc_iso(self._utcnow()),
@@ -347,17 +350,25 @@ class AutotuneAudit:
             "selection": {"sensor_id": run.sensor_id, "base_id": run.base_id, "acid_id": run.acid_id, "channel_index": channel},
             "chemistry": self._chemistry_from_run(run),
             "safety": {"safe_low": run.safe_low, "safe_high": run.safe_high, "dose_budget_ml": run.dose_budget_ml},
-            "initial_boluses_ml": {"base": run.config.u_base, "acid": run.config.u_acid},
+            "initial_doses_ml": initial_doses,
+            # Deprecated mixed-version alias. Do not use in business logic.
+            "initial_boluses_ml": dict(initial_doses),
             "phase": run.phase.value,
             "message": run.message,
         }
 
     def _terminal_record(self, run: AutotuneRun) -> dict[str, Any]:
         result = run.result
+        adjusted_doses = {
+            "base": run.base_dose_ml,
+            "acid": run.acid_dose_ml,
+        }
         record: dict[str, Any] = {
             "ended_utc": _utc_iso(self._utcnow()), "ended_at": run.ended_at,
             "phase": run.phase.value, "message": run.message, "terminal_reason": run.message,
-            "adjusted_boluses_ml": {"base": run.base_bolus_ml, "acid": run.acid_bolus_ml},
+            "adjusted_doses_ml": adjusted_doses,
+            # Deprecated mixed-version alias. Do not use in business logic.
+            "adjusted_boluses_ml": dict(adjusted_doses),
             "actual_dose_ml": run.actual_dose_ml,
             "trace": [self._sample(item) for item in run.samples[-240:]],
             "switch_times": list(run.switch_times[-240:]),
@@ -474,6 +485,9 @@ class AutotuneAudit:
             error_message = "autotune audit document identities or histories are invalid"
             raise ValueError(error_message)
         document = {"version": version, "reactor_id": reactor_id, "runs": runs, "events": events, "latest_applied": latest}
+        for item in runs:
+            if isinstance(item, dict):
+                self._normalise_dose_aliases(item)
         self._validate_nested(document)
         if latest is not None:
             self._candidate_from_latest_or_mapping(latest, "stored")
@@ -501,7 +515,7 @@ class AutotuneAudit:
             selection = record["selection"]
             chemistry = record["chemistry"]
             safety = record["safety"]
-            initial = record["initial_boluses_ml"]
+            initial = record["initial_doses_ml"]
         except KeyError as exc:
             error_message = f"autotune audit run is missing {exc.args[0]}"
             raise ValueError(error_message) from exc
@@ -519,13 +533,13 @@ class AutotuneAudit:
             _number(chemistry.get(name), f"chemistry.{name}")
         for name in ("safe_low", "safe_high", "dose_budget_ml"):
             _number(safety.get(name), f"safety.{name}")
-        self._boluses(initial, "initial_boluses_ml")
-        if "adjusted_boluses_ml" in record:
-            adjusted = record["adjusted_boluses_ml"]
+        self._doses(initial, "initial_doses_ml")
+        if "adjusted_doses_ml" in record:
+            adjusted = record["adjusted_doses_ml"]
             if not isinstance(adjusted, Mapping):
-                error_message = "adjusted boluses are malformed"
+                error_message = "adjusted doses are malformed"
                 raise ValueError(error_message)
-            self._boluses(adjusted, "adjusted_boluses_ml")
+            self._doses(adjusted, "adjusted_doses_ml")
         for name in ("trace", "switch_times", "cycles"):
             if name not in record:
                 continue
@@ -536,11 +550,27 @@ class AutotuneAudit:
             _number(value, "switch_times")
 
     @staticmethod
-    def _boluses(raw: Mapping[str, Any], name: str) -> None:
+    def _doses(raw: Mapping[str, Any], name: str) -> None:
         for side in ("base", "acid"):
             if _number(raw.get(side), f"{name}.{side}") <= 0:
                 error_message = f"{name}.{side} must be positive"
                 raise ValueError(error_message)
+
+    @staticmethod
+    def _normalise_dose_aliases(record: dict[str, Any]) -> None:
+        """Read legacy audit keys and emit both names from one value.
+
+        The legacy names are confined to this serialization adapter and
+        should be removed after the mixed-version compatibility window.
+        """
+        for canonical, legacy in (
+            ("initial_doses_ml", "initial_boluses_ml"),
+            ("adjusted_doses_ml", "adjusted_boluses_ml"),
+        ):
+            value = record.get(canonical, record.get(legacy))
+            if value is not None:
+                record[canonical] = value
+                record[legacy] = value
 
     def _validate_nested(self, value: object, name: str = "document") -> None:
         if isinstance(value, Mapping):

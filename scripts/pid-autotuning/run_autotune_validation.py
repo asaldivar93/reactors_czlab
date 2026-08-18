@@ -57,7 +57,7 @@ def make_plant(pH0=7.0):
 # --------------------------------------------------------------------------- #
 def stage1_autotune(outdir: str, seed: int = 0):
     plant = make_plant(pH0=SETPOINT)
-    cfg = RelayConfig(setpoint=SETPOINT, u_base=0.30, u_acid=0.30, hysteresis=0.02,
+    cfg = RelayConfig(setpoint=SETPOINT, base_dose_ml=0.30, acid_dose_ml=0.30, hysteresis=0.02,
                       dt=DT, dead_time=10.0, max_cycles=10)
     res = run_relay_experiment(plant, cfg, r_metabolic=2e-7, noise_pH=0.005, seed=seed)
 

@@ -6,7 +6,7 @@ import asyncio
 import json
 import logging
 from collections.abc import Callable
-from dataclasses import fields
+from dataclasses import asdict, fields
 from typing import TYPE_CHECKING
 
 from asyncua import ua, uamethod
@@ -242,7 +242,7 @@ class ActuatorOpc:
             return (False, reason)
 
         # A selected-pump change can replace/reset the dispenser that owns a
-        # live bolus. Abort synchronously before the first awaited readback
+        # live dose. Abort synchronously before the first awaited readback
         # write so cleanup cannot be delayed behind OPC I/O. An identical
         # complete config remains the historical no-op.
         if (
@@ -589,8 +589,20 @@ class ActuatorOpc:
             "backwards": config.backwards,
             "methods": [item.value for item in control_method.values()],
             "output_units": [item.value for item in output_unit_map.values()],
+            "dose_limits": self._dose_limits(),
         }
         return json.dumps(payload)
+
+    def _dose_limits(self) -> dict[str, dict[str, float]] | None:
+        """Calculate both volume policies from the live calibration."""
+        cal = self.actuator.channel.calibration
+        if cal is None or not cal.is_fitted or cal.installable_reason() is not None:
+            return None
+        dispenser = self.actuator.dispenser
+        return {
+            "non_pid": asdict(dispenser.dose_policy(pid=False)),
+            "pid": asdict(dispenser.dose_policy(pid=True)),
+        }
 
     def calibration_json(self) -> str:
         """Serialise the pump's calibration and its run state.
@@ -622,17 +634,38 @@ class ActuatorOpc:
             "calibration": None,
         }
         if cal is not None:
+            equation = (
+                "a * duty + b"
+                if cal.model == "linear"
+                else "a * duty ** b"
+            )
+            fit_series = {
+                "duty": [point[0] for point in cal.fit_points],
+                "flow": [point[1] for point in cal.fit_points],
+                "lower": [point[2] for point in cal.fit_points],
+                "upper": [point[3] for point in cal.fit_points],
+            }
             state["calibration"] = {
                 "file": cal.file,
+                "model": cal.model,
                 "a": cal.a,
                 "b": cal.b,
                 "r2": cal.r2,
+                "residual": cal.residual,
+                "equation": equation,
+                "equation_metadata": {
+                    "dependent": "flow_ml_min",
+                    "independent": "duty",
+                    "parameters": {"a": cal.a, "b": cal.b},
+                },
                 "min_duty": cal.min_duty,
                 "max_duty": cal.max_duty,
                 "dispense_duty": cal.dispense_duty,
                 "fitted_at": cal.fitted_at,
                 "is_fitted": cal.is_fitted,
                 "points": [list(point) for point in cal.points],
+                "fit_points": [list(point) for point in cal.fit_points],
+                "fit_series": fit_series,
                 # The single authority on whether this may be installed,
                 # and already worded for an operator. Carried through so
                 # the screen shows the reason rather than deriving its
@@ -684,7 +717,7 @@ class ActuatorOpc:
             min_duty: float,
             dispense_duty: float,
         ) -> str:
-            """Adjust the stall floor and the bolus duty without a refit."""
+            """Adjust the stall floor and the dose duty without a refit."""
             return run.set_duties(min_duty, dispense_duty)
 
         inarg_duty = ua.Argument()
@@ -719,7 +752,7 @@ class ActuatorOpc:
         inarg_dispense.Name = "Dispense_duty"
         inarg_dispense.DataType = ua.NodeId(ua.ObjectIds.Float)
         inarg_dispense.Description = ua.LocalizedText(
-            Text="Duty used for volume boluses",
+            Text="Duty used for non-PID volume doses",
         )
 
         @uamethod

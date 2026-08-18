@@ -6,7 +6,7 @@ ki*error*dt``; ``d_term = -kd*Δmeas/dt``). Because the stored gains are
 continuous-time quantities (ki = Kc/Ti [s^-1], kd = Kc*Td [s]), a change of Δt
 should NOT by itself require re-tuning -- the discrete law tracks the continuous
 one for any Δt. What Δt DOES change is (a) the relay experiment's per-period
-bolus, and (b) the sample-and-hold phase lag (~Δt/2 of added dead time), which
+dose, and (b) the sample-and-hold phase lag (~Δt/2 of added dead time), which
 sets an upper Δt beyond which hot gains lose margin.
 
 This script quantifies both effects so the design criterion "Δt may change" rests
@@ -15,8 +15,8 @@ on evidence.
 Experiment 1 -- gain dt-invariance: tune once at Δt=10 s, then run the closed
     loop (disturbance rejection) at Δt in {2,5,10,20,40} s WITHOUT re-tuning.
 Experiment 2 -- identification vs Δt: re-run the relay autotune at each Δt and
-    report Ku, Pu, and the TL-PI gains. The relay bolus is held at a fixed FLOW
-    (mL/min) so the physical dosing rate is Δt-independent; the per-period bolus
+    report Ku, Pu, and the TL-PI gains. The relay dose is held at a fixed FLOW
+    (mL/min) so the physical dosing rate is Δt-independent; the per-period dose
     is u = flow*Δt/60.
 
 Outputs: fig_sampling_time.png, sampling_time_metrics.csv. Run: python sampling_time_study.py
@@ -60,10 +60,10 @@ def make_plant(pH0=7.0):
 
 
 def autotune_at_dt(dt, seed=0):
-    """Relay autotune at sample period dt; bolus held at a fixed physical flow."""
+    """Relay autotune at sample period dt; dose held at a fixed physical flow."""
     u = RELAY_FLOW_ML_MIN * dt / 60.0     # mL per period at this Δt
     plant = make_plant(pH0=7.0)
-    cfg = RelayConfig(setpoint=7.0, u_base=u, u_acid=u, hysteresis=0.02,
+    cfg = RelayConfig(setpoint=7.0, base_dose_ml=u, acid_dose_ml=u, hysteresis=0.02,
                       dt=dt, dead_time=DEAD_TIME, max_cycles=10)
     res = run_relay_experiment(plant, cfg, r_metabolic=2e-7, noise_pH=0.005, seed=seed)
     Kc, Ti, Td = tuning_rules(res.Ku, res.Pu)["TL-PI"]
@@ -139,7 +139,7 @@ def main(outdir="figures"):
 
     # (c) identified Ku, Pu vs Δt (re-tuned). Flag cells where the relay cycle
     # amplitude collapsed toward the hysteresis band (identification unreliable):
-    # a small per-period bolus at small Δt gives a ~ h and Ku ~ 4d/(pi*sqrt(a^2-h^2)) blows up.
+    # a small per-period dose at small Δt gives a ~ h and Ku ~ 4d/(pi*sqrt(a^2-h^2)) blows up.
     Kus = np.array([retuned[d][1] for d in DT_VALS])
     Pus = np.array([retuned[d][2] for d in DT_VALS])
     KU_MAX_PLAUSIBLE = 200.0  # mL/pH; anything above is a failed identification here

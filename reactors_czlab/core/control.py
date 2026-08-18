@@ -334,13 +334,15 @@ class _PidControl(_Control):
             self.max_integral = self.max_val
         self.min_integral = _as_float("min_integral", self.min_integral)
         self.max_integral = _as_float("max_integral", self.max_integral)
+        self._cap_integral_band()
 
     def refresh_derived_limits(self) -> None:
         """Track the anti-windup band to ``min_val``/``max_val``.
 
-        Only when the band was never configured explicitly - an
-        operator-chosen band is a deliberate override and must survive a
-        recalibration untouched.
+        An automatic band tracks the whole output range. An explicit band
+        keeps the operator's lower values but is still capped to the live
+        output maximum: anti-windup state above what the actuator can dose
+        is not useful or safe.
 
         The stored ``_integral_sum`` is reclamped immediately rather
         than left for the next ``get_value()`` step: a refit that
@@ -350,14 +352,26 @@ class _PidControl(_Control):
         up, and until then the controller sits saturated - exactly the
         sustained overdosing anti-windup exists to prevent.
         """
-        if not self._integral_band_is_default:
-            return
-        self.min_integral = self.min_val
-        self.max_integral = self.max_val
+        if self._integral_band_is_default:
+            self.min_integral = self.min_val
+            self.max_integral = self.max_val
+        else:
+            self._cap_integral_band()
         self._integral_sum = max(
             self.min_integral,
             min(self._integral_sum, self.max_integral),
         )
+
+    def _cap_integral_band(self) -> None:
+        """Cap explicit anti-windup bounds to the achievable output."""
+        self.min_integral = min(self.min_integral, self.max_val)
+        self.max_integral = min(self.max_integral, self.max_val)
+        if self.min_integral > self.max_integral:
+            error_message = (
+                f"min_integral {self.min_integral} is above max_integral "
+                f"{self.max_integral}"
+            )
+            raise TypeError(error_message)
 
     def adopt_config(self, other: _Control) -> None:
         """Adopt config in place, keeping the integral and last reading.

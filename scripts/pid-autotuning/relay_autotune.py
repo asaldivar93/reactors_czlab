@@ -35,8 +35,8 @@ def main(outdir: str = "figures", seed: int = 0) -> None:
     )
     config = RelayTuneConfig(
         setpoint=7.0,
-        u_base=0.30,
-        u_acid=0.30,
+        base_dose_ml=0.30,
+        acid_dose_ml=0.30,
         hysteresis=0.02,
         dt=10.0,
         dead_time=10.0,

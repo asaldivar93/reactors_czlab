@@ -388,3 +388,23 @@ def test_get_control_config_lists_server_enum_options(
 
     assert state["methods"] == ["manual", "timer", "on_boundaries", "pid"]
     assert state["output_units"] == ["duty", "flow", "volume"]
+
+
+def test_get_control_config_includes_both_server_dose_policies(
+    make_calibrated_actuator,
+) -> None:
+    """The GUI previews the same duties, durations, and caps as delivery."""
+    actuator = make_calibrated_actuator()
+    actuator.control_period = 10.0
+
+    state = json.loads(ActuatorOpc(actuator).control_config_json())
+
+    assert state["dose_limits"]["non_pid"] == {
+        "duty": 2000.0,
+        "flow": 20.0,
+        "max_duration": 3600.0,
+        "max_volume": 1200.0,
+    }
+    assert state["dose_limits"]["pid"]["duty"] == 4000.0
+    assert state["dose_limits"]["pid"]["max_duration"] == 10.0
+    assert state["dose_limits"]["pid"]["max_volume"] < 40.0 * 10.0 / 60.0

@@ -137,8 +137,8 @@ async def opc_autotune(
 def _config() -> RelayTuneConfig:
     return RelayTuneConfig(
         setpoint=7.0,
-        u_base=0.2,
-        u_acid=0.2,
+        base_dose_ml=0.2,
+        acid_dose_ml=0.2,
         hysteresis=0.02,
         max_minutes=30.0,
         phosphate_molar=0.014,
@@ -163,8 +163,8 @@ def _identified(reactor_opc: ReactorOpc) -> None:
     run.result = AutotuneResult(
         RelayIdentification(18.6, 293.0, 0.05, 7.0, 4),
         noise_sigma=0.001,
-        base_bolus_ml=0.2,
-        acid_bolus_ml=0.2,
+        base_dose_ml=0.2,
+        acid_dose_ml=0.2,
         actual_dose_ml=1.0,
         cycles=(),
     )
@@ -188,8 +188,8 @@ def test_method_declarations_match_the_public_contract(opc_autotune) -> None:
         "Sensor_id",
         "Acid_id",
         "Setpoint",
-        "Base_bolus_ml",
-        "Acid_bolus_ml",
+        "Base_dose_ml",
+        "Acid_dose_ml",
         "Hysteresis_ph",
         "Max_minutes",
         "Phosphate_molar",
@@ -266,6 +266,7 @@ def test_status_json_is_versioned_bounded_and_contains_candidates(opc_autotune) 
     }
     assert payload["max_minutes"] == 30.0
     assert payload["relay_direction"] == "none"
+    assert payload["adjusted_boluses_ml"] == payload["adjusted_doses_ml"]
     assert set(payload["candidate_gains"]) == {"ZN-PID", "TL-PI", "TL-PID", "SIMC"}
     assert len(payload["trace"]) <= 240
     assert len(payload["cycles"]) <= 12

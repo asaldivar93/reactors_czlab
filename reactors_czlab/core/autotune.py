@@ -24,13 +24,13 @@ from reactors_czlab.core.ph_model import (
 class RelayTuneConfig:
     """Configuration for a split-range relay-feedback experiment.
 
-    The 0.20 mL bolus defaults are intended for the future live workflow.
+    The 0.20 mL dose defaults are intended for the future live workflow.
     Deterministic model validation explicitly uses 0.30 mL.
     """
 
     setpoint: float = 7.0
-    u_base: float = 0.20
-    u_acid: float = 0.20
+    base_dose_ml: float = 0.20
+    acid_dose_ml: float = 0.20
     hysteresis: float = 0.02
     dt: float = 10.0
     dead_time: float = 10.0
@@ -63,7 +63,7 @@ class RelayController:
         self.high = True
 
     def output(self, ph: float) -> float:
-        """Return signed bolus demand in mL for one control period."""
+        """Return signed dose demand in mL for one control period."""
         if self.high and ph > self.config.setpoint + self.config.hysteresis:
             self.high = False
         elif (
@@ -71,7 +71,7 @@ class RelayController:
             and ph < self.config.setpoint - self.config.hysteresis
         ):
             self.high = True
-        return self.config.u_base if self.high else -self.config.u_acid
+        return self.config.base_dose_ml if self.high else -self.config.acid_dose_ml
 
 
 @dataclass(frozen=True)
@@ -97,8 +97,8 @@ class RelayResult:
     a_amp: float
     cycle_mean_pH: float
     cycles_used: int
-    u_base: float
-    u_acid: float
+    base_dose_ml: float
+    acid_dose_ml: float
     switch_times: list[float] = field(default_factory=list)
 
 
@@ -120,8 +120,8 @@ def _identify_relay(
     time: np.ndarray,
     ph: np.ndarray,
     switch_times: np.ndarray,
-    u_base: float,
-    u_acid: float,
+    base_dose_ml: float,
+    acid_dose_ml: float,
     hysteresis: float,
     *,
     settle_cycles: int,
@@ -156,7 +156,7 @@ def _identify_relay(
         )
         raise ValueError(error_message)
     corrected_amplitude = np.sqrt(max(amplitude**2 - hysteresis**2, 1e-12))
-    ultimate_gain = 2.0 * (u_base + u_acid) / (
+    ultimate_gain = 2.0 * (base_dose_ml + acid_dose_ml) / (
         np.pi * corrected_amplitude
     )
     return RelayIdentification(
@@ -216,14 +216,14 @@ def identify_ku_pu(
         raise ValueError(error_message)
 
     if isinstance(relay_amp, tuple):
-        u_base, u_acid = relay_amp
+        base_dose_ml, acid_dose_ml = relay_amp
     else:
-        u_base = u_acid = relay_amp
+        base_dose_ml = acid_dose_ml = relay_amp
     if (
-        not np.isfinite(u_base)
-        or not np.isfinite(u_acid)
-        or u_base <= 0
-        or u_acid <= 0
+        not np.isfinite(base_dose_ml)
+        or not np.isfinite(acid_dose_ml)
+        or base_dose_ml <= 0
+        or acid_dose_ml <= 0
     ):
         error_message = "relay amplitudes must be finite and positive"
         raise ValueError(error_message)
@@ -241,8 +241,8 @@ def identify_ku_pu(
         np.arange(ph.size, dtype=float) * dt,
         ph,
         switch_times,
-        float(u_base),
-        float(u_acid),
+        float(base_dose_ml),
+        float(acid_dose_ml),
         hysteresis,
         settle_cycles=0,
     )
@@ -308,8 +308,8 @@ def run_relay_experiment(
         time_array,
         ph_array,
         np.asarray(switch_times),
-        config.u_base,
-        config.u_acid,
+        config.base_dose_ml,
+        config.acid_dose_ml,
         config.hysteresis,
         settle_cycles=config.settle_cycles,
     )
@@ -322,8 +322,8 @@ def run_relay_experiment(
         a_amp=identification.amplitude,
         cycle_mean_pH=identification.mean_ph,
         cycles_used=identification.cycles_used,
-        u_base=config.u_base,
-        u_acid=config.u_acid,
+        base_dose_ml=config.base_dose_ml,
+        acid_dose_ml=config.acid_dose_ml,
         switch_times=switch_times,
     )
 
@@ -520,8 +520,8 @@ class AutotuneResult:
 
     identification: RelayIdentification
     noise_sigma: float
-    base_bolus_ml: float
-    acid_bolus_ml: float
+    base_dose_ml: float
+    acid_dose_ml: float
     actual_dose_ml: float
     cycles: tuple[CycleSummary, ...]
 
@@ -538,8 +538,8 @@ class AutotuneStatus:
     safe_high: float | None
     dose_budget_ml: float | None
     actual_dose_ml: float
-    base_bolus_ml: float
-    acid_bolus_ml: float
+    base_dose_ml: float
+    acid_dose_ml: float
     noise_sigma: float | None
     settling_cycles: int
     clean_cycles: int
@@ -697,8 +697,8 @@ class AutotuneRun:
         self.dose_budget_ml: float | None = None
         self.started_at: float | None = None
         self.ended_at: float | None = None
-        self.base_bolus_ml = float(self.config.u_base)
-        self.acid_bolus_ml = float(self.config.u_acid)
+        self.base_dose_ml = float(self.config.base_dose_ml)
+        self.acid_dose_ml = float(self.config.acid_dose_ml)
         self.samples: list[AutotuneSample] = []
         self.switch_times: list[float] = []
         self.cycles: list[CycleSummary] = []
@@ -742,8 +742,8 @@ class AutotuneRun:
         self._validate_selection()
         config = self.config
         finite_positive = {
-            "base bolus": config.u_base,
-            "acid bolus": config.u_acid,
+            "base dose": config.base_dose_ml,
+            "acid dose": config.acid_dose_ml,
             "hysteresis": config.hysteresis,
             "maximum minutes": config.max_minutes,
             "baseline seconds": config.baseline_seconds,
@@ -789,14 +789,14 @@ class AutotuneRun:
                 error_message = "dose budget override requires explicit acknowledgement"
                 raise ValueError(error_message)
             budget = config.dose_budget_ml
-        if config.u_base + config.u_acid > budget:
+        if config.base_dose_ml + config.acid_dose_ml > budget:
             error_message = "one base/acid relay pair exceeds the combined dose budget"
             raise ValueError(error_message)
 
         warnings: list[str] = []
-        for label, actuator, bolus in (
-            ("base", self.base, config.u_base),
-            ("acid", self.acid, config.u_acid),
+        for label, actuator, dose in (
+            ("base", self.base, config.base_dose_ml),
+            ("acid", self.acid, config.acid_dose_ml),
         ):
             if not math.isfinite(actuator.control_period) or actuator.control_period <= 0:
                 error_message = f"{label} control period must be finite and positive"
@@ -806,9 +806,9 @@ class AutotuneRun:
             )
             minimum = flow * ACTUATOR_TICK_SECONDS / 60.0
             maximum = flow * actuator.control_period / 60.0
-            if bolus < minimum or bolus > maximum:
+            if dose < minimum or dose > maximum:
                 error_message = (
-                    f"{label} bolus {bolus:.6g} mL is outside the deliverable "
+                    f"{label} dose {dose:.6g} mL is outside the deliverable "
                     f"range [{minimum:.6g}, {maximum:.6g}] mL"
                 )
                 raise ValueError(error_message)
@@ -877,7 +877,7 @@ class AutotuneRun:
         return self.status(now)
 
     def tick(self) -> AutotuneStatus:
-        """Advance owned bolus deadlines from the 20 Hz actuator loop."""
+        """Advance owned dose deadlines from the 20 Hz actuator loop."""
         if not self.is_active:
             return self.status()
         now = self.clock()
@@ -911,8 +911,8 @@ class AutotuneRun:
             safe_high=self.safe_high,
             dose_budget_ml=self.dose_budget_ml,
             actual_dose_ml=self.actual_dose_ml,
-            base_bolus_ml=self.base_bolus_ml,
-            acid_bolus_ml=self.acid_bolus_ml,
+            base_dose_ml=self.base_dose_ml,
+            acid_dose_ml=self.acid_dose_ml,
             noise_sigma=self.noise_sigma,
             settling_cycles=self._settling_seen,
             clean_cycles=len(self.cycles),
@@ -1000,7 +1000,7 @@ class AutotuneRun:
         elif not self._relay_high and ph < self.config.setpoint - self.config.hysteresis:
             self._relay_high = True
             switched = True
-        requested = self.base_bolus_ml if self._relay_high else -self.acid_bolus_ml
+        requested = self.base_dose_ml if self._relay_high else -self.acid_dose_ml
         self.base.autotune_demand(self, max(requested, 0.0))
         self.acid.autotune_demand(self, max(-requested, 0.0))
         self._append_sample(now, ph, requested)
@@ -1107,29 +1107,29 @@ class AutotuneRun:
             self._terminate(AutotunePhase.failed, "adequate relay amplitude could not be reached", now)
             return
         factor = min(2.0, 3.0 * self.config.hysteresis / cycle.amplitude)
-        new_base = self.base_bolus_ml * factor
-        new_acid = self.acid_bolus_ml * factor
+        new_base = self.base_dose_ml * factor
+        new_acid = self.acid_dose_ml * factor
         remaining = self.dose_budget_ml - self.actual_dose_ml
         try:
-            self._validate_adapted_bolus(self.base, new_base, "base")
-            self._validate_adapted_bolus(self.acid, new_acid, "acid")
+            self._validate_adapted_dose(self.base, new_base, "base")
+            self._validate_adapted_dose(self.acid, new_acid, "acid")
         except ValueError as exc:
             self._terminate(AutotunePhase.failed, f"adequate relay amplitude cannot be delivered: {exc}", now)
             return
         if new_base + new_acid > remaining:
             self._terminate(AutotunePhase.failed, "adequate relay amplitude exceeds the remaining dose budget", now)
             return
-        self.base_bolus_ml = new_base
-        self.acid_bolus_ml = new_acid
+        self.base_dose_ml = new_base
+        self.acid_dose_ml = new_acid
         self._adaptations += 1
         self.phase = AutotunePhase.adapting
-        self.message = f"adapted both relay boluses by {factor:.3g}x"
+        self.message = f"adapted both relay doses by {factor:.3g}x"
 
-    def _validate_adapted_bolus(self, actuator: _ActuatorLike, bolus: float, label: str) -> None:
+    def _validate_adapted_dose(self, actuator: _ActuatorLike, dose: float, label: str) -> None:
         flow = actuator.channel.calibration.flow_at(actuator.channel.calibration.dispense_duty)
         maximum = flow * actuator.control_period / 60.0
-        if not math.isfinite(bolus) or bolus > maximum:
-            error_message = f"{label} bolus {bolus:.6g} mL exceeds {maximum:.6g} mL"
+        if not math.isfinite(dose) or dose > maximum:
+            error_message = f"{label} dose {dose:.6g} mL exceeds {maximum:.6g} mL"
             raise ValueError(error_message)
 
     def _begin_settling(self) -> None:
@@ -1154,10 +1154,10 @@ class AutotuneRun:
         if base_requests <= 0 or acid_requests <= 0 or base_actual <= 0 or acid_actual <= 0:
             self._terminate(AutotunePhase.failed, "relay cycles contain no actual delivered dose", now)
             return
-        actual_base_bolus = base_actual / base_requests
-        actual_acid_bolus = acid_actual / acid_requests
+        actual_base_dose = base_actual / base_requests
+        actual_acid_dose = acid_actual / acid_requests
         corrected = math.sqrt(max(amplitude**2 - self.config.hysteresis**2, 1e-12))
-        ku = 2.0 * (actual_base_bolus + actual_acid_bolus) / (math.pi * corrected)
+        ku = 2.0 * (actual_base_dose + actual_acid_dose) / (math.pi * corrected)
         identification = RelayIdentification(
             ku,
             mean_period,
@@ -1173,8 +1173,8 @@ class AutotuneRun:
         self.result = AutotuneResult(
             identification,
             self.noise_sigma or 0.0,
-            self.base_bolus_ml,
-            self.acid_bolus_ml,
+            self.base_dose_ml,
+            self.acid_dose_ml,
             self.actual_dose_ml,
             tuple(self.cycles),
         )
@@ -1431,7 +1431,7 @@ class SplitRangeConfig:
     dt: float = 10.0
     base_pump: Pump = field(default_factory=Pump)
     acid_pump: Pump = field(default_factory=Pump)
-    min_bolus: float = 0.0
+    min_dose: float = 0.0
 
 
 class SplitRangeController:
@@ -1473,9 +1473,9 @@ class SplitRangeController:
                 acid = 0.0
             if measurement > self.config.setpoint - self.config.dead_band:
                 base = 0.0
-        if self.config.min_bolus > 0:
-            base = 0.0 if base < self.config.min_bolus else base
-            acid = 0.0 if acid < self.config.min_bolus else acid
+        if self.config.min_dose > 0:
+            base = 0.0 if base < self.config.min_dose else base
+            acid = 0.0 if acid < self.config.min_dose else acid
         return base, acid
 
 

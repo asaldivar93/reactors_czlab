@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from reactors_czlab.core.data import (
-    MAX_BOLUS_SECONDS,
+    MAX_DOSE_SECONDS,
     MAX_OUTPUT,
     MIN_DISPENSE_FLOW,
     Calibration,
@@ -102,7 +102,7 @@ def test_installable_reason_rejects_a_flat_line() -> None:
     reason = _cal(a=0.0, b=1.0).installable_reason()
 
     assert reason is not None
-    assert "slope" in reason
+    assert "coefficient" in reason
 
 
 def test_installable_reason_rejects_a_negative_stall_floor() -> None:
@@ -146,9 +146,9 @@ def test_installable_reason_rejects_a_max_duty_above_full_scale() -> None:
 def test_a_dispense_duty_below_the_stall_floor_is_refused_honestly() -> None:
     """The refusal must name the failure that actually happens.
 
-    Regression (D1): this branch said "a bolus at that duty would never
+    Regression (D1): this branch said "a dose at that duty would never
     finish". For this calibration - the findings file's own numbers -
-    flow at 1450 counts is a positive 1.57 mL/min, so the bolus does
+    flow at 1450 counts is a positive 1.57 mL/min, so the dose does
     finish, in 39 s. What really happens is that the pump was *measured*
     not to turn at 1450, so those 39 s deliver nothing. A guard that
     lies about why it refused sends the operator after the wrong number.
@@ -158,7 +158,7 @@ def test_a_dispense_duty_below_the_stall_floor_is_refused_honestly() -> None:
     reason = cal.installable_reason()
 
     # The evidence that the old message was false, asserted rather than
-    # described: the bolus terminates, and quickly.
+    # described: the dose terminates, and quickly.
     assert cal.flow_at(1450.0) == pytest.approx(1.565)
     assert 60.0 / cal.flow_at(1450.0) == pytest.approx(38.3, abs=0.1)
 
@@ -169,7 +169,7 @@ def test_a_dispense_duty_below_the_stall_floor_is_refused_honestly() -> None:
 
 
 def test_installable_reason_rejects_a_dispense_duty_above_max_duty() -> None:
-    """_start_bolus writes dispense_duty; the band is what bounds it.
+    """_start_dose writes dispense_duty; the band is what bounds it.
 
     Regression (D3): `set_duties(0, 4095)` on a max_duty=4000 pump
     installed, and a hand-edited `dispense_duty: 1e9` installed through
@@ -187,7 +187,7 @@ def test_installable_reason_rejects_a_line_dead_across_its_band() -> None:
 
     Pins the max-duty branch by its text: with the dispense duty at the
     ceiling the dispense-flow branch would also refuse this, but with a
-    message about boluses, which is not what an operator selecting flow
+    message about doses, which is not what an operator selecting flow
     mode needs to read.
     """
     cal = _cal(b=-50.0, min_duty=4000.0, dispense_duty=4000.0)
@@ -199,7 +199,7 @@ def test_installable_reason_rejects_a_line_dead_across_its_band() -> None:
 
 
 def test_installable_reason_rejects_exact_zero_flow_at_dispense() -> None:
-    """flow_at(dispense_duty) == 0 divides by zero in _start_bolus.
+    """flow_at(dispense_duty) == 0 divides by zero in _start_dose.
 
     The one branch whose "would never finish" wording is fair: the
     deadline is 60 * demand / 0.
@@ -215,7 +215,7 @@ def test_installable_reason_rejects_negative_flow_at_dispense() -> None:
     """A dispense duty under the line's zero crossing delivers nothing.
 
     Split from the exact-zero branch because the consequence differs:
-    the deadline is negative, so the bolus expires on the next tick
+    the deadline is negative, so the dose expires on the next tick
     having delivered nothing at all - it does not "never finish".
     """
     reason = _cal(b=-10.0, dispense_duty=500.0).installable_reason()
@@ -229,8 +229,8 @@ def test_installable_reason_rejects_a_line_too_flat_to_finish() -> None:
     """A near-zero slope strands the pump ON.
 
     Regression (D4): `flow_at(dispense_duty) > 0` is the wrong shape for
-    the hazard _start_bolus names. A slope of 1e-12 is positive, so it
-    installed, and a 1 mL bolus got a deadline 6e10 s - about 1900 years
+    the hazard _start_dose names. A slope of 1e-12 is positive, so it
+    installed, and a 1 mL dose got a deadline 6e10 s - about 1900 years
     - out, with the pump held at the dispense duty the whole time. That
     is the same "stranded ON" failure the non-finite demand rejection
     exists to prevent, reached through the calibration instead.
@@ -240,14 +240,14 @@ def test_installable_reason_rejects_a_line_too_flat_to_finish() -> None:
     reason = cal.installable_reason()
 
     assert cal.flow_at(cal.dispense_duty) > 0  # the old check passed
-    assert 60.0 / cal.flow_at(cal.dispense_duty) > MAX_BOLUS_SECONDS
+    assert 60.0 / cal.flow_at(cal.dispense_duty) > MAX_DOSE_SECONDS
     assert reason is not None
     assert "delivers only" in reason
-    assert f"{MAX_BOLUS_SECONDS:.0f} s" in reason
+    assert f"{MAX_DOSE_SECONDS:.0f} s" in reason
 
 
 def test_a_legitimately_slow_pump_is_still_installable() -> None:
-    """The bolus-time bound must not refuse a real, slow pump.
+    """The dose-time bound must not refuse a real, slow pump.
 
     0.01 mL/min at the dispense duty is 1 mL in 100 minutes - already
     at the edge of what this system's own calibration procedure can
@@ -282,7 +282,7 @@ def test_installable_reason_rejects_a_non_finite_field(
     check is a comparison, and a comparison against NaN is False, so a
     NaN slope walked through all of them and came out *installable*.
     `CalibrationRun.record_point()` accepted an operator's `inf` from a
-    generic OPC client, `fit_line`'s `a <= 0` did not catch the NaN
+    generic OPC client, the old fitter's `a <= 0` did not catch the NaN
     slope it produced, `json.dumps` wrote the literal `NaN`, and
     `load_calibration`'s `a <= 0` reloaded it at every boot. The duty
     that came out reached `int(nan)` in `PlcActuator.write`, whose

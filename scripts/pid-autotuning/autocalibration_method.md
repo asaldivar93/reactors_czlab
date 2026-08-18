@@ -6,7 +6,7 @@ This document specifies the PID *autocalibration* (autotuning) method developed 
 `scripts/relay_autotune.py` and validated in-silico by the studies described in
 `implementation_spec.md` and the accompanying simulation scripts. Throughout, "autocalibration" means
 finding the PID gains `(kp, ki, kd)`; it is distinct from the pump *flow* calibration
-(`flow = a·duty + b`) already present in `calibration.py`, which the autotuner assumes has already
+(linear or power-law flow model) already present in `calibration.py`, which the autotuner assumes has already
 been performed.
 
 ## 1. Problem statement and constraints
@@ -17,9 +17,9 @@ dictate the design:
 1. **Volume-output, split-range actuation.** pH is regulated by a *pair* of `_PidControl` instances
    on one pH sensor and one setpoint — a base loop (NaOH, `backwards=False`) and an acid loop (HCl,
    `backwards=True`). Each PID emits a **volume demand in mL**; the `Dispenser` converts each mL into
-   a timed pump bolus (`dispense_duty` run for `60·mL/flow` seconds) using the flow calibration. The
+   a timed pump dose (`dispense_duty` run for `60·mL/flow` seconds) using the flow calibration. The
    actuation is therefore **one-sided per reagent** — the base pump can only raise pH, the acid pump
-   only lower it — and quantised into boluses with a minimum dispensable volume.
+   only lower it — and quantised into doses with a minimum dispensable volume.
 2. **Strong, known static nonlinearity.** The process static gain `Kp = dpH/dV` varies ~130× across
    the titration curve (process model §8) and is smallest on the phosphate plateau where the loop
    operates. One fixed gain set cannot be right across setpoints, but the shape of the nonlinearity is
@@ -68,8 +68,8 @@ point.
 
 A textbook relay outputs `±d` through one actuator. Here the actuation is one-sided per reagent, so
 the relay is realised as a **switch between the two pumps**: while the (delayed, filtered) pH is below
-the setpoint the controller commands a fixed **base bolus** `u₊` (mL) each period; once pH rises above
-the setpoint it commands a fixed **acid bolus** `u₋` (mL). The signed relay output is
+the setpoint the controller commands a fixed **base dose** `u₊` (mL) each period; once pH rises above
+the setpoint it commands a fixed **acid dose** `u₋` (mL). The signed relay output is
 ```
 u(k) = { +u₊   (command base)   while relay "high"
        { −u₋   (command acid)    while relay "low"
@@ -134,10 +134,10 @@ The demonstration run against the phosphate plant (metabolic load `r = 2·10⁻�
 noise 0.005 pH) gives a clean bounded cycle centred exactly on pH 7.000 with `Ku = 18.6 mL/pH` and
 `Pu = 293 s`:
 
-![Relay-feedback experiment against the 14 mM phosphate plant at pH 7. Top: pH executes a bounded limit cycle within the hysteresis band around the setpoint. Bottom: the signed relay output switching between base (+) and acid (-) boluses.]({{artifact:5562528d-27c3-4c83-81c2-aeb02ced4ab2}})
+![Relay-feedback experiment against the 14 mM phosphate plant at pH 7. Top: pH executes a bounded limit cycle within the hysteresis band around the setpoint. Bottom: the signed relay output switching between base (+) and acid (-) doses.]({{artifact:5562528d-27c3-4c83-81c2-aeb02ced4ab2}})
 
 *Figure 1. Relay experiment: a bounded, self-limiting oscillation from which Ku and Pu are read. The
-oscillation amplitude is set by the relay bolus size, not by an unstable growth, so the experiment is
+oscillation amplitude is set by the relay dose size, not by an unstable growth, so the experiment is
 safe to run on a live vessel.*
 
 ## 4. Stage 2 — mapping (Ku, Pu) to the code's gains
@@ -231,7 +231,7 @@ sign change is applied to the gains themselves. Two split-range details:
   prevents the two loops from fighting and dosing against each other; δ is set at or just below the
   relay hysteresis `ε`. This mirrors the one-sided clamping the PID already performs (each loop clamps
   to `min_val` on the wrong side of the setpoint).
-- **Bolus quantisation and minimum volume.** The `Dispenser` delivers discrete boluses with a minimum
+- **Dose quantisation and minimum volume.** The `Dispenser` delivers discrete doses with a minimum
   dispensable volume. A demand below that minimum should be accumulated (or dropped) rather than
   issued, otherwise the loop limit-cycles on quantisation. The autotuner's integral band
   (`min_integral/max_integral`, auto-derived from the output range) already bounds windup; the
@@ -258,7 +258,7 @@ The method is: **an asymmetric, hysteretic relay experiment realised through the
 acid/base pumps** (§3) → **`(Ku, Pu)` mapped by Tyreus–Luyben (default) or SIMC to the code's
 `(kp, ki, kd)`** with the exact unit-preserving mapping M2 (§4) → **gains scaled by the known
 phosphate buffering intensity** to cover the operating band (§5) → **assigned to both split-range
-PIDs** with a dead band and bolus-quantisation guard (§6), under pH/volume/timeout safeguards (§7). It
+PIDs** with a dead band and dose-quantisation guard (§6), under pH/volume/timeout safeguards (§7). It
 uses only quantities the system already has (the split-range pumps, the flow calibration, the pH probe)
 plus the analytic buffer model, and every stage is exercised by the in-silico studies.
 

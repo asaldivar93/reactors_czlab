@@ -50,8 +50,8 @@ class _Elements:
     base: ui.select
     acid: ui.select
     setpoint: ui.number
-    base_bolus: ui.number
-    acid_bolus: ui.number
+    base_dose: ui.number
+    acid_dose: ui.number
     hysteresis: ui.number
     max_minutes: ui.number
     phosphate: ui.number
@@ -70,7 +70,7 @@ class _Elements:
     status_message: ui.label
     current_ph: ui.label
     relay: ui.label
-    boluses: ui.label
+    doses: ui.label
     sigma: ui.label
     cycles: ui.label
     dose: ui.label
@@ -247,11 +247,11 @@ def _build_elements(
                 setpoint = _number(
                     "Setpoint (pH)", form.setpoint, "%.3f",
                 )
-                base_bolus = _number(
-                    "Base bolus (mL)", form.base_bolus_ml, "%.3f",
+                base_dose = _number(
+                    "Base dose (mL)", form.base_dose_ml, "%.3f",
                 )
-                acid_bolus = _number(
-                    "Acid bolus (mL)", form.acid_bolus_ml, "%.3f",
+                acid_dose = _number(
+                    "Acid dose (mL)", form.acid_dose_ml, "%.3f",
                 )
                 hysteresis = _number(
                     "Hysteresis (pH)", form.hysteresis_ph, "%.3f",
@@ -357,7 +357,7 @@ def _build_elements(
             ), ui.card().classes("w-full"):
                 current_ph = _metric_label()
                 relay = _metric_label()
-                boluses = _metric_label()
+                doses = _metric_label()
                 sigma = _metric_label()
                 cycles = _metric_label()
                 dose = _metric_label()
@@ -427,8 +427,8 @@ def _build_elements(
         base=base,
         acid=acid,
         setpoint=setpoint,
-        base_bolus=base_bolus,
-        acid_bolus=acid_bolus,
+        base_dose=base_dose,
+        acid_dose=acid_dose,
         hysteresis=hysteresis,
         max_minutes=max_minutes,
         phosphate=phosphate,
@@ -447,7 +447,7 @@ def _build_elements(
         status_message=status_message,
         current_ph=current_ph,
         relay=relay,
-        boluses=boluses,
+        doses=doses,
         sigma=sigma,
         cycles=cycles,
         dose=dose,
@@ -483,8 +483,8 @@ def _build_elements(
 
     for control in (
         setpoint,
-        base_bolus,
-        acid_bolus,
+        base_dose,
+        acid_dose,
         hysteresis,
         max_minutes,
         phosphate,
@@ -697,8 +697,8 @@ def _read_form(elements: _Elements) -> FormState:
         base_id=str(elements.base.value or ""),
         acid_id=str(elements.acid.value or ""),
         setpoint=_value(elements.setpoint.value),
-        base_bolus_ml=_value(elements.base_bolus.value),
-        acid_bolus_ml=_value(elements.acid_bolus.value),
+        base_dose_ml=_value(elements.base_dose.value),
+        acid_dose_ml=_value(elements.acid_dose.value),
         hysteresis_ph=_value(elements.hysteresis.value),
         max_minutes=_value(elements.max_minutes.value),
         phosphate_mm=_value(elements.phosphate.value),
@@ -848,8 +848,8 @@ def _render(
         f"Current pH: {_format(view.current_ph, 3)}",
     )
     elements.relay.set_text(f"Relay direction: {view.relay_direction}")
-    elements.boluses.set_text(
-        "Adjusted boluses: base "
+    elements.doses.set_text(
+        "Adjusted doses: base "
         f"{_format(view.adjusted_base_ml, 3)} mL, acid "
         f"{_format(view.adjusted_acid_ml, 3)} mL",
     )

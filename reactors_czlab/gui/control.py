@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import math
+from dataclasses import dataclass
+
 from reactors_czlab.core.data import ControlMethod
 
 #: Which fields each strategy consumes. The server receives one complete
@@ -41,6 +44,131 @@ CONFIG_FIELDS = (
     "auto_integral_band",
     "backwards",
 )
+
+
+@dataclass(frozen=True)
+class DosePreview:
+    """Pure volume-policy preview rendered by the control dialog."""
+
+    pid: bool
+    duty: float
+    flow: float
+    max_duration: float
+    max_volume: float
+    requested: float | None
+    effective: float | None
+    duration: float | None
+    capped: bool
+
+
+def dose_preview(
+    method: str,
+    output_unit: str,
+    requested: object,
+    limits: object,
+) -> DosePreview | None:
+    """Build a preview from server-calculated dose metadata.
+
+    PID demand is calculated live from sensor feedback, so its preview is
+    the maximum one decision can request. Other methods preview the edited
+    volume and the authoritative finite-request cap.
+    """
+    if output_unit != "volume" or not isinstance(limits, dict):
+        return None
+    pid = method == ControlMethod.pid
+    policy = limits.get("pid" if pid else "non_pid")
+    if not isinstance(policy, dict):
+        return None
+    try:
+        duty = float(policy["duty"])
+        flow = float(policy["flow"])
+        max_duration = float(policy["max_duration"])
+        max_volume = float(policy["max_volume"])
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
+    if not all(
+        math.isfinite(value)
+        for value in (duty, flow, max_duration, max_volume)
+    ):
+        return None
+    if pid:
+        return DosePreview(
+            True,
+            duty,
+            flow,
+            max_duration,
+            max_volume,
+            None,
+            None,
+            None,
+            False,
+        )
+    if isinstance(requested, bool) or not isinstance(requested, int | float):
+        return DosePreview(
+            False,
+            duty,
+            flow,
+            max_duration,
+            max_volume,
+            None,
+            None,
+            None,
+            False,
+        )
+    requested_number = float(requested)
+    if not math.isfinite(requested_number):
+        return DosePreview(
+            False,
+            duty,
+            flow,
+            max_duration,
+            max_volume,
+            requested_number,
+            None,
+            None,
+            False,
+        )
+    effective = max(0.0, min(requested_number, max_volume))
+    duration = 0.0 if effective == 0.0 else 60.0 * effective / flow
+    return DosePreview(
+        False,
+        duty,
+        flow,
+        max_duration,
+        max_volume,
+        requested_number,
+        effective,
+        duration,
+        requested_number > max_volume,
+    )
+
+
+def dose_preview_text(preview: DosePreview | None) -> tuple[str, bool]:
+    """Format a concise preview and whether it represents a cap."""
+    if preview is None:
+        return ("", False)
+    if preview.pid:
+        return (
+            (
+                f"PID maximum: {preview.max_volume:.4g} mL per decision at "
+                f"duty {preview.duty:.0f} "
+                f"(up to {preview.max_duration:.3g} s)"
+            ),
+            False,
+        )
+    if preview.effective is None or preview.duration is None:
+        return (
+            "Enter a finite volume to preview its effective dose and duration",
+            False,
+        )
+    text = (
+        f"Requested {preview.requested:.4g} mL; effective "
+        f"{preview.effective:.4g} mL at duty {preview.duty:.0f}; "
+        f"estimated {preview.duration:.3g} s"
+    )
+    if preview.capped:
+        text += " — request will be capped by the server"
+    return (text, preview.capped)
 
 
 def fields_for(method: str) -> tuple[str, ...]:

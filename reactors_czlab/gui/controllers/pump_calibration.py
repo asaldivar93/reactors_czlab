@@ -67,11 +67,10 @@ class RunView:
 
     @property
     def can_fit(self) -> bool:
-        """Whether there is enough to fit a line.
+        """Whether there is enough to fit both candidate models.
 
-        Two *distinct* duties, not just two points: fit_line refuses a
-        pair at the same duty, and finding that out through a rejected
-        fit wastes the operator's run.
+        Four *distinct* duties, not just four points: the fitter needs
+        residual degrees of freedom to qualify prediction uncertainty.
         """
         if not self.has_slot or self.state is not RunState.idle:
             return False
@@ -149,3 +148,95 @@ def volume_error(volume: float | None) -> str | None:
     if volume < 0:
         return "Volume cannot be negative"
     return None
+
+
+def calibration_chart(calibration: dict) -> tuple[dict, bool]:
+    """Build a Plotly figure and report whether uncertainty is available."""
+    measured = calibration.get("points", [])
+    series = calibration.get("fit_series", {})
+    duties = list(series.get("duty", [])) if isinstance(series, dict) else []
+    fitted = list(series.get("flow", [])) if isinstance(series, dict) else []
+    lower = list(series.get("lower", [])) if isinstance(series, dict) else []
+    upper = list(series.get("upper", [])) if isinstance(series, dict) else []
+    has_band = bool(duties) and all(
+        len(values) == len(duties) for values in (fitted, lower, upper)
+    )
+    traces: list[dict] = [
+        {
+            "type": "scatter",
+            "mode": "markers",
+            "name": "Measurements",
+            "x": [point[0] for point in measured],
+            "y": [point[1] for point in measured],
+            "marker": {"size": 9, "color": "#1f77b4"},
+        },
+    ]
+    if has_band:
+        traces.extend(
+            [
+                {
+                    "type": "scatter",
+                    "mode": "lines",
+                    "name": "95% lower",
+                    "x": duties,
+                    "y": lower,
+                    "line": {"width": 0},
+                    "hoverinfo": "skip",
+                    "showlegend": False,
+                },
+                {
+                    "type": "scatter",
+                    "mode": "lines",
+                    "name": "95% prediction band",
+                    "x": duties,
+                    "y": upper,
+                    "line": {"width": 0},
+                    "fill": "tonexty",
+                    "fillcolor": "rgba(31, 119, 180, 0.18)",
+                },
+                {
+                    "type": "scatter",
+                    "mode": "lines",
+                    "name": f"{calibration.get('model', 'linear')} fit",
+                    "x": duties,
+                    "y": fitted,
+                    "line": {"color": "#1f77b4", "width": 2},
+                },
+            ],
+        )
+    markers = (
+        ("min", calibration["min_duty"], "#d62728"),
+        ("dispense", calibration["dispense_duty"], "#ff7f0e"),
+        ("max", calibration["max_duty"], "#2ca02c"),
+    )
+    layout = {
+        "height": 420,
+        "margin": {"l": 55, "r": 20, "t": 35, "b": 50},
+        "xaxis": {"title": "Duty (counts)"},
+        "yaxis": {"title": "Flow (mL/min)"},
+        "legend": {"orientation": "h"},
+        "shapes": [
+            {
+                "type": "line",
+                "x0": duty,
+                "x1": duty,
+                "y0": 0,
+                "y1": 1,
+                "yref": "paper",
+                "line": {"color": color, "dash": "dot"},
+            }
+            for _, duty, color in markers
+        ],
+        "annotations": [
+            {
+                "x": duty,
+                "y": 1,
+                "yref": "paper",
+                "text": name,
+                "showarrow": False,
+                "font": {"color": color, "size": 10},
+            }
+            for name, duty, color in markers
+        ],
+    }
+    return ({"data": traces, "layout": layout}, has_band)
