@@ -62,5 +62,5 @@ addopts = "-p nicegui.testing.user_plugin"
 main_file = "tests/gui_main.py"
 
 [tool.ruff]
-line-length = 79
+line-length = 150
 target-version = "py311"
