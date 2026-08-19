@@ -10,7 +10,7 @@ from reactors_czlab.core.data import PhysicalInfo, PlcOutput
 
 _logger = logging.getLogger("server.actuator")
 
-PWM_FREQUENCY_HZ = 100
+PWM_FREQUENCY_HZ = 24
 
 
 class PlcActuator(Actuator):

@@ -7,6 +7,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
+from math import isfinite
 from time import perf_counter
 from typing import TYPE_CHECKING
 
@@ -190,6 +191,72 @@ class CalibrationRun:
             f"duty {duty} -> {flow:.4f} mL/min "
             f"({len(self.points)} points collected)"
         )
+
+    def import_points(self, points: list[tuple[float, float]]) -> str:
+        """Replace this run's measurements with previously recorded flows.
+
+        Positive-flow rows become fitted measurements. A zero-flow row is
+        retained only as stall evidence, with the highest such duty winning.
+        This is intended for importing a run from a CSV at server startup;
+        it never drives the pump.
+
+        Parameters
+        ----------
+        points:
+            ``(duty, flow_ml_min)`` measurements to import.
+
+        Returns
+        -------
+        str
+            An operator-readable import summary.
+
+        Raises
+        ------
+        ValueError
+            If a row contains an out-of-range duty, a non-finite value, or a
+            negative flow.
+
+        """
+        if self._running:
+            error_message = f"{self.actuator.id} is still calibrating"
+            raise ValueError(error_message)
+        if self._pending is not None:
+            error_message = (
+                f"{self.actuator.id} has a point awaiting a measurement"
+            )
+            raise ValueError(error_message)
+
+        positive: list[tuple[float, float]] = []
+        zero_flow_duty: float | None = None
+        for duty, flow in points:
+            if not isfinite(duty) or not 0 <= duty <= MAX_OUTPUT:
+                error_message = (
+                    f"imported duty must be finite and within 0 - "
+                    f"{MAX_OUTPUT:.0f}, got {duty}"
+                )
+                raise ValueError(error_message)
+            if not isfinite(flow) or flow < 0.0:
+                error_message = (
+                    "imported flow must be a finite number of mL/min, zero "
+                    f"or more, got {flow} at duty {duty}"
+                )
+                raise ValueError(error_message)
+            if flow == 0.0:
+                zero_flow_duty = max(
+                    duty,
+                    zero_flow_duty if zero_flow_duty is not None else 0.0,
+                )
+            else:
+                positive.append((duty, flow))
+
+        self.points = positive
+        self.zero_flow_duty = zero_flow_duty
+        zero_summary = (
+            f", zero-flow evidence at duty {zero_flow_duty:.0f}"
+            if zero_flow_duty is not None
+            else ""
+        )
+        return f"imported {len(positive)} positive-flow points{zero_summary}"
 
     def fit(self, zero_flow_duty: float | None = None) -> str:
         """Fit, store and install the collected positive-flow points.

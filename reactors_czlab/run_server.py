@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import csv
 import logging
 import signal
 from pathlib import Path
@@ -36,6 +37,99 @@ MODBUS_BAUDRATE = 19200
 MODBUS_TIMEOUT = 0.1
 REACTOR_VOLUME = 5
 SAMPLE_PERIOD = 10
+
+
+def read_calibration_points(path: Path) -> list[tuple[float, float]]:
+    """Read headerless ``duty,flow_ml_min`` calibration measurements.
+
+    Parameters
+    ----------
+    path:
+        CSV file with exactly two numeric columns per non-blank row.
+
+    Returns
+    -------
+    list[tuple[float, float]]
+        The rows in file order. Range and finite-value validation is done by
+        ``CalibrationRun.import_points`` because it owns calibration rules.
+
+    Raises
+    ------
+    ValueError
+        If the file cannot be read or any non-blank row is not exactly two
+        numeric columns.
+
+    """
+    try:
+        with path.open(newline="", encoding="utf-8") as source:
+            rows: list[tuple[float, float]] = []
+            for line_number, row in enumerate(csv.reader(source), start=1):
+                if not row:
+                    continue
+                if len(row) != 2:
+                    error_message = (
+                        f"{path}:{line_number} must contain exactly duty and "
+                        "flow_ml_min"
+                    )
+                    raise ValueError(error_message)
+                try:
+                    rows.append((float(row[0]), float(row[1])))
+                except ValueError as exc:
+                    error_message = (
+                        f"{path}:{line_number} must contain numeric duty and "
+                        "flow_ml_min values"
+                    )
+                    raise ValueError(error_message) from exc
+    except OSError as exc:
+        error_message = f"could not read calibration CSV {path}: {exc}"
+        raise ValueError(error_message) from exc
+
+    if not rows:
+        error_message = f"calibration CSV {path} contains no measurements"
+        raise ValueError(error_message)
+    return rows
+
+
+def import_calibration_points(
+    reactors: list[ReactorOpc],
+    imports: list[tuple[str, Path]],
+) -> None:
+    """Load one-shot CSV imports into named pump calibration runs.
+
+    Parameters
+    ----------
+    reactors:
+        Newly constructed reactor OPC objects.
+    imports:
+        Pairs of full actuator ids and headerless CSV paths.
+
+    Raises
+    ------
+    ValueError
+        If an actuator id is duplicated, unknown, or does not have a
+        calibration slot, or if its CSV is invalid.
+
+    """
+    nodes = {
+        node.id: node
+        for reactor in reactors
+        for node in reactor.actuator_nodes
+    }
+    seen: set[str] = set()
+    for actuator_id, path in imports:
+        if actuator_id in seen:
+            error_message = f"calibration CSV specified more than once for {actuator_id}"
+            raise ValueError(error_message)
+        seen.add(actuator_id)
+        node = nodes.get(actuator_id)
+        if node is None:
+            error_message = f"unknown actuator for calibration CSV: {actuator_id}"
+            raise ValueError(error_message)
+        if node.actuator.channel.calibration is None:
+            error_message = f"{actuator_id} does not support pump calibration"
+            raise ValueError(error_message)
+        summary = node.run.import_points(read_calibration_points(path))
+        _logger.info("Imported calibration CSV for %s: %s", actuator_id, summary)
 
 
 def setup_logging(verbose: bool = True) -> None:
@@ -159,11 +253,14 @@ async def main(
     simulated: bool = False,
     state_file: Path | None = None,
     use_state: bool = True,
+    calibration_imports: list[tuple[str, Path]] | None = None,
 ) -> None:
     """Run the server until interrupted, restoring durable state first."""
     from asyncua import Server
 
     reactors = build_reactors(simulated=simulated)
+    if calibration_imports:
+        import_calibration_points(reactors, calibration_imports)
     core_reactors = [reactor_opc.reactor for reactor_opc in reactors]
     state_store = (
         StateStore(default_state_file() if state_file is None else state_file)
@@ -282,6 +379,17 @@ def cli() -> None:
         action="store_true",
         help="Start manual/zero without reading or writing a checkpoint",
     )
+    parser.add_argument(
+        "--import-calibration-points",
+        action="append",
+        nargs=2,
+        metavar=("ACTUATOR", "CSV"),
+        default=[],
+        help=(
+            "one-shot import of a headerless duty,flow_ml_min CSV into an "
+            "actuator calibration run; may be repeated"
+        ),
+    )
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args()
 
@@ -293,8 +401,15 @@ def cli() -> None:
                 simulated=args.simulated,
                 state_file=args.state_file,
                 use_state=not args.no_state,
+                calibration_imports=[
+                    (actuator_id, Path(csv_path))
+                    for actuator_id, csv_path in args.import_calibration_points
+                ],
             ),
         )
+    except ValueError as exc:
+        _logger.error("Could not import calibration points: %s", exc)
+        raise SystemExit(1) from None
     except ModbusError:
         _logger.exception("Could not start: the RS485 bus is unavailable")
         raise SystemExit(1) from None

@@ -455,14 +455,13 @@ class HamiltonSensor(Sensor):
                 debug_msg.append([chn.description, chn.value])
             _logger.debug("In %s - %s", self.id, debug_msg)
 
-        except ModbusError:
+        except ModbusError as err:
             # A sensor dropping off the bus is an operational problem, not a
             # debug detail: it must show up in record.log.
             _logger.warning(
-                "Error during read of unit %s, channels set to %s",
+                "Error during read of unit %s:\n %s",
                 self.id,
-                ERROR_VALUE,
-                exc_info=True,
+                err,
             )
             for chn in self.channels:
                 chn.value = ERROR_VALUE

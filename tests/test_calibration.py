@@ -108,6 +108,44 @@ def test_report_data_selects_saturating_exponential_without_zero_evidence() -> N
     assert fitted.aic == pytest.approx(34.3916, rel=1e-4)
 
 
+def test_imported_points_keep_zero_flow_as_separate_stall_evidence(
+    make_calibrated_actuator,
+    clock,
+) -> None:
+    """A CSV import is equivalent to recording the same physical outcomes."""
+    run = CalibrationRun(make_calibrated_actuator(fitted=False), clock=clock)
+
+    status = run.import_points(
+        [
+            (700.0, 0.0),
+            (800.0, 26.4),
+            (1600.0, 65.0),
+            (3000.0, 90.0),
+            (4000.0, 100.0),
+        ],
+    )
+
+    assert "4 positive-flow points" in status
+    assert run.points == [
+        (800.0, 26.4),
+        (1600.0, 65.0),
+        (3000.0, 90.0),
+        (4000.0, 100.0),
+    ]
+    assert run.zero_flow_duty == 700.0
+
+
+def test_imported_points_reject_an_unsafe_measurement(
+    make_calibrated_actuator,
+    clock,
+) -> None:
+    """The startup importer applies the same physical output limits."""
+    run = CalibrationRun(make_calibrated_actuator(fitted=False), clock=clock)
+
+    with pytest.raises(ValueError, match="within 0"):
+        run.import_points([(MAX_OUTPUT + 1.0, 1.0)])
+
+
 def test_report_data_installs_zero_flow_as_a_separate_stall_floor(
     make_calibrated_actuator,
     clock,
