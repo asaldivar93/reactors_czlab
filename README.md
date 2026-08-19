@@ -60,11 +60,73 @@ process hosts the archiver itself, so running both against one database
 inserts every reading twice.
 
 The server publishes one sampling period for every reactor. It starts at
-10 seconds after each server restart and can be changed to 1--30 seconds
-from **Settings** in the GUI header. The server applies an accepted change
-to every reactor and actuator control guard; changes are not persisted and
-are rejected while PID autotuning is active. The GUI reads the published
-value to decide when a reading has gone stale.
+10 seconds on a new installation and can be changed to 1--30 seconds from
+**Settings** in the GUI header. The server applies an accepted change to
+every reactor and actuator control guard and checkpoints it for restart;
+changes are rejected while PID autotuning is active. The GUI reads the
+published value to decide when a reading has gone stale.
+
+## Raspberry Pi power-outage recovery
+
+The server checkpoints its sampling period, exact device topology, pairings,
+complete control configurations, and accumulated dispenser totals. The default
+file is `~/.reactors_czlab/server-state.json`; set `REACTORS_STATE_FILE` or pass
+`--state-file PATH` to put it elsewhere. Accepted configuration, pairing, and
+period changes are saved immediately. Changed totals are saved at most once a
+minute and again during graceful shutdown.
+
+Recovery is deliberately fail-safe. Outputs and sensor readings are never
+replayed, in-flight doses and calibration/autotune runs are cancelled, manual
+outputs restart at zero, and PID/timer runtime memory is fresh. Paired automatic
+controllers wait for a successful new sensor read. An unpaired timer begins a
+new ON phase only after its reactor completes its first sampling cycle;
+unpaired boundary and PID configurations restart as manual/zero. A malformed or
+hardware-incompatible checkpoint is renamed with a `.rejected-<timestamp>`
+suffix and the complete server starts manual/zero instead of restoring a subset.
+Pump calibration files remain authoritative, and Hamilton calibration remains
+owned by each sensor; neither calibration workflow is duplicated in this file.
+
+Use `--no-state` for a diagnostic safe start that neither reads nor writes the
+checkpoint:
+
+```bash
+reactors-server --no-state --endpoint opc.tcp://10.10.10.20:55488/
+```
+
+An editable systemd template is provided at
+[`deploy/reactors-server.service`](deploy/reactors-server.service). Copy it to a
+temporary file and replace every `@...@` placeholder:
+
+- `@SERVICE_USER@`: the dedicated Linux account that runs the server.
+- `@HARDWARE_GROUPS@`: space-separated Raspberry Pi device groups required by
+  the PLC, I2C, GPIO, and serial devices (for example `gpio i2c dialout spi`).
+- `@WORKING_DIRECTORY@`: the absolute repository/install directory; `record.log`
+  is written here.
+- `@EXECUTABLE@`: the absolute path printed by `command -v reactors-server`.
+- `@ENDPOINT@`: the OPC UA endpoint, normally
+  `opc.tcp://10.10.10.20:55488/`.
+
+Install and enable the edited unit:
+
+```bash
+sudo install -m 0644 /path/to/edited-reactors-server.service /etc/systemd/system/reactors-server.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now reactors-server.service
+```
+
+systemd creates the dedicated writable state directory at
+`/var/lib/reactors-czlab`; the template stores the checkpoint there. Inspect the
+service and its logs with:
+
+```bash
+systemctl status reactors-server.service
+journalctl -u reactors-server.service -f
+```
+
+Verify recovery before relying on it: apply a harmless sampling-period or
+control change, confirm `/var/lib/reactors-czlab/server-state.json` exists,
+reboot the Pi, then check the OPC read-backs and zero physical outputs before
+allowing the first new sample to arm automatic control.
 
 There is **no authentication**. Pump control is reachable from a
 browser URL by anyone who can route to the port. That is acceptable on
@@ -108,7 +170,6 @@ The suite under `tests/` runs without hardware and without pymodbus.
 ## To do
 
 - Mass Flow Controller Modbus
-- Restore server from power out
 - Restore client from power out
 - Exercise the experiment interface against a real PostgreSQL
 - Authentication, before the GUI is on a routable network

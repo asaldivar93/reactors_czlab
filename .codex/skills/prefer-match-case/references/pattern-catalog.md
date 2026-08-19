@@ -14,6 +14,16 @@ Use these patterns as adaptation guides, not templates to copy blindly.
 
 ## Tagged mapping payloads
 
+The match statement
+
+```python
+match <expression>:
+    case <pattern 1> [<if guard>]:
+        <handle pattern 1>
+    case <pattern n> [<if guard>]:
+        <handle pattern n>
+```
+
 Replace repeated mapping, key, and tag interrogation:
 
 ```python
@@ -132,6 +142,40 @@ def transition(state: State, event: Event) -> State:
 ```
 
 Use qualified enum members. Bare `IDLE` or `RUNNING` would be capture patterns, not constant comparisons.
+
+## AS Patterns
+
+```python
+def as_pattern(p):
+    match p:
+        case int() as number:
+            print(f"You said a {number=}")
+        case str() as string:
+            print(f"Here is your {string=}")
+```
+
+### Guards
+
+```python
+def greet_person(p):
+    """Let's greet a person"""
+    match p:
+        # ... etc ...
+        case str() as person if person.isupper():
+            print("No need to shout - I'm not deaf")
+        case str() as person:
+            print(f"Nice to meet you, {person}.")
+```
+
+```python
+match json.loads(record):
+    case {"user_id": user_id, "name": name} if not has_user(user_id):
+        return create_user(user_id=user_id, name=name)
+    case {"user_id": user_id}:
+        return get_user(user_id)
+    case _:
+        raise ValueError('Record is invalid')
+```
 
 ## Cases to leave as if statements
 

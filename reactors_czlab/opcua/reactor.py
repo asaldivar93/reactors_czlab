@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from asyncua import ua, uamethod
@@ -61,6 +62,7 @@ class ReactorOpc:
         #: Orders snapshot-and-write in publish_pairings. Always taken
         #: before sampling.lock, never inside it.
         self._publish_lock = asyncio.Lock()
+        self.on_state_changed: Callable[[], None] | None = None
 
     def __repr__(self) -> str:
         """Print the reactor id."""
@@ -218,7 +220,11 @@ class ReactorOpc:
                 except ValueError:
                     _logger.warning("%s was not in the unpaired loop", aid)
 
+            self.reactor.reclassify_recovery_gate(aid, paired=True)
+
             _logger.info("Current pairings: %s", dict(sampling.pairings))
+            if self.on_state_changed is not None:
+                self.on_state_changed()
             await self.publish_pairings()
             return True
 
@@ -263,7 +269,11 @@ class ReactorOpc:
                 if aid not in unpaired.actuators:
                     unpaired.actuators.append(aid)
 
+            self.reactor.reclassify_recovery_gate(aid, paired=False)
+
             _logger.info("Current pairings: %s", dict(sampling.pairings))
+            if self.on_state_changed is not None:
+                self.on_state_changed()
             await self.publish_pairings()
             return True
 

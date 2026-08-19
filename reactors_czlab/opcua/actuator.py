@@ -13,11 +13,11 @@ from asyncua import ua, uamethod
 
 from reactors_czlab.core.calibration import CalibrationRun
 from reactors_czlab.core.data import (
-    MAX_OUTPUT,
     ControlConfig,
     ControlMethod,
     OutputUnit,
 )
+from reactors_czlab.core.server_state import control_config_from_actuator
 
 if TYPE_CHECKING:
     from asyncua import Server
@@ -59,6 +59,7 @@ class ActuatorOpc:
         self.run = CalibrationRun(actuator)
         self._config_lock = asyncio.Lock()
         self.on_control_config_changed: Callable[[str], None] | None = None
+        self.on_state_changed: Callable[[], None] | None = None
 
     def __repr__(self) -> str:
         """Print actuator id."""
@@ -245,17 +246,17 @@ class ActuatorOpc:
         # live dose. Abort synchronously before the first awaited readback
         # write so cleanup cannot be delayed behind OPC I/O. An identical
         # complete config remains the historical no-op.
-        if (
-            before != self._control_configuration_signature()
-            and self.on_control_config_changed is not None
-        ):
+        changed = before != self._control_configuration_signature()
+        if changed and self.on_control_config_changed is not None:
             try:
                 self.on_control_config_changed(self.id)
             except Exception:
-                _logger.exception(
-                    "Control-change callback failed for %s",
-                    self.id,
-                )
+                _logger.exception("Control-change callback failed for %s", self.id)
+        if changed and self.on_state_changed is not None:
+            try:
+                self.on_state_changed()
+            except Exception:
+                _logger.exception("State-change callback failed for %s", self.id)
 
         # Publish only after the actuator accepted the whole object. These
         # variables are now a read-back model, never a command surface.
@@ -300,6 +301,14 @@ class ActuatorOpc:
         server updates them as a read-back model after an atomic
         ``apply_control_config`` call succeeds.
         """
+        config = control_config_from_actuator(self.actuator)
+        method_index = next(
+            index for index, method in control_method.items() if method is config.method
+        )
+        unit_index = next(
+            index for index, unit in output_unit_map.items() if unit is config.output_unit
+        )
+
         # Add Node to store the control settings
         self.control_method = await self.node.add_object(
             idx,
@@ -310,7 +319,7 @@ class ActuatorOpc:
         self.value = await self.control_method.add_variable(
             idx,
             f"{self.id}:value",
-            0.0,
+            config.value,
         )
 
         # Add variable to record the current status
@@ -326,7 +335,7 @@ class ActuatorOpc:
         self.total_volume = await self.node.add_variable(
             idx,
             f"{self.id}:total_volume",
-            0.0,
+            self.actuator.dispenser.total_volume,
         )
         self.cal_a = await self.node.add_variable(idx, f"{self.id}:cal_a", 0.0)
         self.cal_b = await self.node.add_variable(idx, f"{self.id}:cal_b", 0.0)
@@ -340,7 +349,7 @@ class ActuatorOpc:
         self.method = await self.control_method.add_variable(
             idx,
             f"{self.id}:method",
-            0,
+            method_index,
             varianttype=ua.VariantType.UInt32,
         )
         enum_strings_variant = ua.Variant(
@@ -357,7 +366,7 @@ class ActuatorOpc:
         self.output_unit = await self.control_method.add_variable(
             idx,
             f"{self.id}:output_unit",
-            0,
+            unit_index,
             varianttype=ua.VariantType.UInt32,
         )
         unit_strings_variant = ua.Variant(
@@ -374,24 +383,24 @@ class ActuatorOpc:
         self.time_on = await self.control_method.add_variable(
             idx,
             f"{self.id}:time_on",
-            0.0,
+            config.time_on,
         )
         self.time_off = await self.control_method.add_variable(
             idx,
             f"{self.id}:time_off",
-            0.0,
+            config.time_off,
         )
 
         # OnBoundariesControl
         self.lb = await self.control_method.add_variable(
             idx,
             f"{self.id}:lb",
-            0.0,
+            config.lb,
         )
         self.ub = await self.control_method.add_variable(
             idx,
             f"{self.id}:ub",
-            0.0,
+            config.ub,
         )
 
         # PidControl. Seeded with the _PidControl / ControlConfig defaults
@@ -399,37 +408,37 @@ class ActuatorOpc:
         self.setpoint = await self.control_method.add_variable(
             idx,
             f"{self.id}:setpoint",
-            0.0,
+            config.setpoint,
         )
         self.kp = await self.control_method.add_variable(
             idx,
             f"{self.id}:kp",
-            100.0,
+            config.kp,
         )
         self.ki = await self.control_method.add_variable(
             idx,
             f"{self.id}:ki",
-            0.01,
+            config.ki,
         )
         self.kd = await self.control_method.add_variable(
             idx,
             f"{self.id}:kd",
-            0.0,
+            config.kd,
         )
         self.min_integral = await self.control_method.add_variable(
             idx,
             f"{self.id}:min_integral",
-            0.0,
+            config.min_integral,
         )
         self.max_integral = await self.control_method.add_variable(
             idx,
             f"{self.id}:max_integral",
-            MAX_OUTPUT,
+            config.max_integral,
         )
         self.auto_integral_band = await self.control_method.add_variable(
             idx,
             f"{self.id}:auto_integral_band",
-            True,
+            config.auto_integral_band,
         )
 
         # Shared by PID and on_boundaries: reverses the controller's sense
@@ -438,7 +447,7 @@ class ActuatorOpc:
         self.backwards = await self.control_method.add_variable(
             idx,
             f"{self.id}:backwards",
-            False,
+            config.backwards,
         )
 
     async def init_control_methods(self, idx: int) -> None:
@@ -541,34 +550,7 @@ class ActuatorOpc:
         """
         controller = self.actuator.controller
         method = controller.method
-        config = ControlConfig(
-            method=method,
-            output_unit=self.actuator.dispenser.unit,
-        )
-
-        match method:
-            case ControlMethod.manual:
-                config.value = controller.value
-            case ControlMethod.timer:
-                config.time_on = controller.time_on
-                config.time_off = controller.time_off
-                config.value = controller.value_on
-            case ControlMethod.on_boundaries:
-                config.lb = controller.lower_bound
-                config.ub = controller.upper_bound
-                config.value = controller.value_on
-                config.backwards = controller.backwards
-            case ControlMethod.pid:
-                config.setpoint = controller.setpoint
-                config.kp = controller.kp
-                config.ki = controller.ki
-                config.kd = controller.kd
-                config.backwards = controller.backwards
-                config.min_integral = controller.min_integral
-                config.max_integral = controller.max_integral
-                config.auto_integral_band = (
-                    controller._integral_band_is_default
-                )
+        config = control_config_from_actuator(self.actuator)
 
         payload = {
             "method": method.value,

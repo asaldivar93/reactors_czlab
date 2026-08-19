@@ -221,6 +221,29 @@ async def test_bad_field_type_leaves_the_controller_unchanged(
     assert actuator.controller is before
 
 
+async def test_only_an_accepted_changed_config_triggers_checkpoint(
+    make_calibrated_actuator,
+) -> None:
+    """Rejected and identical OPC calls must not write server state."""
+    actuator = make_calibrated_actuator()
+    node = ActuatorOpc(actuator)
+    _attach_readback(node)
+    checkpoints: list[str] = []
+    node.on_state_changed = lambda: checkpoints.append("saved")
+
+    accepted, _ = await _apply(node, method=1, time_on=2.0, time_off=3.0)
+    assert accepted is True
+    assert checkpoints == ["saved"]
+
+    accepted, _ = await _apply(node, method=1, time_on=2.0, time_off=3.0)
+    assert accepted is True
+    assert checkpoints == ["saved"]
+
+    accepted, _ = await _apply(node, method=99)
+    assert accepted is False
+    assert checkpoints == ["saved"]
+
+
 async def test_same_method_pid_tuning_preserves_runtime_state(
     make_calibrated_actuator,
 ) -> None:

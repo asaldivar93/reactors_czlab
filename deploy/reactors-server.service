@@ -1,0 +1,21 @@
+[Unit]
+Description=reactors_czlab OPC UA bioreactor server
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=@SERVICE_USER@
+SupplementaryGroups=@HARDWARE_GROUPS@
+WorkingDirectory=@WORKING_DIRECTORY@
+StateDirectory=reactors-czlab
+StateDirectoryMode=0750
+UMask=0027
+ExecStart=@EXECUTABLE@ --endpoint @ENDPOINT@ --state-file /var/lib/reactors-czlab/server-state.json
+Restart=always
+RestartSec=3s
+KillSignal=SIGTERM
+TimeoutStopSec=30s
+
+[Install]
+WantedBy=multi-user.target

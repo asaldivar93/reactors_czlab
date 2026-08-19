@@ -73,7 +73,7 @@ class ReactorAutotuneOpc:
         self.reactor.autotune = self.coordinator
         for actuator_node in self.actuator_nodes.values():
             actuator_node.on_control_config_changed = (
-                reactor.abort_autotune_for_config_change
+                reactor.control_config_changed
             )
 
     async def init_methods(self, idx: int) -> None:
@@ -425,6 +425,17 @@ class ReactorAutotuneOpc:
                         rollback_errors,
                     )
                 return (False, message)
+
+        callbacks = {
+            id(node.on_state_changed): node.on_state_changed
+            for node in nodes
+            if node.on_state_changed is not None
+        }
+        for callback in callbacks.values():
+            try:
+                callback()
+            except Exception:
+                _logger.exception("Autotune-gain checkpoint callback failed")
 
         gains = parsed["gains"]
         return (

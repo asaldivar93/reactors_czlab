@@ -94,6 +94,15 @@ class _Control(ABC):
         ``_PidControl``'s anti-windup band) picks up the new one too.
         """
 
+    def reset_runtime(self) -> None:
+        """Reset transient state before a recovered controller may run.
+
+        Controllers are normally rebuilt during recovery, which already gives
+        them fresh runtime memory. Timers additionally wait for a post-restart
+        sensor cycle; their override restarts the first ON phase at that gate
+        instead of counting time spent constructing the OPC address space.
+        """
+
     def adopt_config(self, other: _Control) -> None:
         """Copy ``other``'s configuration onto this live controller.
 
@@ -178,6 +187,13 @@ class _TimerControl(_Control):
             f"_TimerControl(on: {self.time_on!r}s, "
             f"off: {self.time_off!r}s, {self.value_on!r})"
         )
+
+    def reset_runtime(self) -> None:
+        """Start a fresh ON phase without retaining elapsed timer state."""
+        self.value = self.value_on
+        self._is_on = True
+        self._interval = self.time_on
+        self._last_time = perf_counter()
 
     def get_value(self, sens_value: float) -> float:
         """Flip the output when the current phase has elapsed."""

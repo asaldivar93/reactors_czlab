@@ -9,6 +9,8 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from reactors_czlab.core.data import ERROR_VALUE
+
 if TYPE_CHECKING:
     from reactors_czlab.core.actuator import Actuator
     from reactors_czlab.core.autotune import AutotuneCoordinator, AutotuneRun
@@ -97,6 +99,12 @@ class Reactor:
         self.actuators = actuators
         self.sampling = SamplingState()
         self.unpaired = UnpairedState()
+        # Restored timers are held at zero until a fresh process cycle makes
+        # their reference context valid. Paired timers arm on their first
+        # successful channel read; unpaired timers arm after this reactor's
+        # first complete sampling cycle.
+        self._recovery_paired_timers: set[str] = set()
+        self._recovery_unpaired_timers: set[str] = set()
         # Installed by ReactorOpc after every actuator OPC node exists. Core
         # reactors used by tests or non-OPC callers remain perfectly valid
         # without an autotune coordinator.
@@ -157,7 +165,44 @@ class Reactor:
                 except IndexError:
                     _logger.error("%s is not a channel in %s", chn, sensor.id)
                 else:
+                    if value != ERROR_VALUE and aid in self._recovery_paired_timers:
+                        actuator.controller.reset_runtime()
+                        self._recovery_paired_timers.remove(aid)
                     actuator.write_output(value)
+
+    def defer_recovered_timer(self, actuator_id: str, *, paired: bool) -> None:
+        """Hold one restored timer until its post-restart safety gate."""
+        timers = (
+            self._recovery_paired_timers
+            if paired
+            else self._recovery_unpaired_timers
+        )
+        timers.add(actuator_id)
+
+    def clear_recovery_gates(self) -> None:
+        """Clear all one-shot restart gates when recovery is abandoned."""
+        self._recovery_paired_timers.clear()
+        self._recovery_unpaired_timers.clear()
+
+    def clear_recovery_gate(self, actuator_id: str) -> None:
+        """Release one gate after an operator replaces its restored config."""
+        self._recovery_paired_timers.discard(actuator_id)
+        self._recovery_unpaired_timers.discard(actuator_id)
+
+    def reclassify_recovery_gate(self, actuator_id: str, *, paired: bool) -> None:
+        """Move a pending timer gate when its pairing changes before arming."""
+        pending = actuator_id in (
+            self._recovery_paired_timers | self._recovery_unpaired_timers
+        )
+        self.clear_recovery_gate(actuator_id)
+        if pending:
+            self.defer_recovered_timer(actuator_id, paired=paired)
+
+    def _arm_recovered_unpaired_timers(self) -> None:
+        """Start restored unpaired timers after the first sampling cycle."""
+        for actuator_id in self._recovery_unpaired_timers:
+            self.actuators[actuator_id].controller.reset_runtime()
+        self._recovery_unpaired_timers.clear()
 
     def update_period(self, period: float) -> None:
         """Change the sampling and actuator control periods together.
@@ -215,6 +260,11 @@ class Reactor:
             return
         run.abort(f"configuration changed for selected actuator {actuator_id}")
 
+    def control_config_changed(self, actuator_id: str) -> None:
+        """Release restart gates and abort an affected autotune run."""
+        self.clear_recovery_gate(actuator_id)
+        self.abort_autotune_for_config_change(actuator_id)
+
     def update_autotune(self) -> None:
         """Feed the selected pH reading to the active run.
 
@@ -262,6 +312,8 @@ class Reactor:
             async with self.sampling.lock:
                 self.update_paired_actuators()
 
+            self._arm_recovered_unpaired_timers()
+
             # Flag that the sensing loop finished
             sample_ready.set()
 
@@ -293,6 +345,8 @@ class Reactor:
         while True:
             async with self.unpaired.lock:
                 for aid in self.unpaired.actuators:
+                    if aid in self._recovery_unpaired_timers:
+                        continue
                     self.actuators[aid].write_output(UNPAIRED_INPUT)
 
             run = self.active_autotune_run()

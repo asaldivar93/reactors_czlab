@@ -161,6 +161,22 @@ async def test_invalid_period_is_rejected_without_publication(
     assert {reactor.period for reactor in reactors} == {10.0}
 
 
+async def test_only_an_accepted_period_triggers_checkpoint(config) -> None:
+    """Persistence follows the same acceptance boundary as live mutation."""
+    server_config, _ = config
+    checkpoints: list[str] = []
+    server_config.on_state_changed = lambda: checkpoints.append("saved")
+
+    assert (await server_config.set_sampling_period(0.5))[0] is False
+    assert checkpoints == []
+
+    assert (await server_config.set_sampling_period(11.0))[0] is True
+    assert checkpoints == ["saved"]
+
+    assert (await server_config.set_sampling_period(11.0))[0] is True
+    assert checkpoints == ["saved"]
+
+
 async def test_active_autotune_rejects_the_global_change(
     config,
     reactors,

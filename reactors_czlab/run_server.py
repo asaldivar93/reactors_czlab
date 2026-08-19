@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import signal
+from pathlib import Path
 
 from reactors_czlab.core.actuator import PlcActuator, RandomActuator
 from reactors_czlab.core.calibration import load_into
@@ -15,6 +17,7 @@ from reactors_czlab.core.sensor import (
     RandomSensor,
     SpectralSensor,
 )
+from reactors_czlab.core.server_state import StateStore, default_state_file
 from reactors_czlab.opcua import ReactorOpc, ServerConfigOpc
 from reactors_czlab.server_info import (
     ANALOG_ACTUATORS,
@@ -155,50 +158,110 @@ def build_reactors(*, simulated: bool = False) -> list[ReactorOpc]:
     return reactors
 
 
-async def main(endpoint: str, *, simulated: bool = False) -> None:
-    """Run the server until interrupted."""
+async def main(
+    endpoint: str,
+    *,
+    simulated: bool = False,
+    state_file: Path | None = None,
+    use_state: bool = True,
+) -> None:
+    """Run the server until interrupted, restoring durable state first."""
     from asyncua import Server
 
     reactors = build_reactors(simulated=simulated)
+    core_reactors = [reactor_opc.reactor for reactor_opc in reactors]
+    state_store = (
+        StateStore(default_state_file() if state_file is None else state_file)
+        if use_state
+        else None
+    )
+    recovered_period = (
+        state_store.restore(core_reactors) if state_store is not None else None
+    )
+    sampling_period = SAMPLE_PERIOD if recovered_period is None else recovered_period
 
     server = Server()
     await server.init()
     server.set_endpoint(endpoint)
     idx = await server.register_namespace(NAMESPACE_URI)
 
-    tasks = []
     for r_i in reactors:
         await r_i.init_node(server, idx)
-        tasks.extend(
-            [
-                asyncio.create_task(
-                    r_i.reactor.sampling_loop(r_i.sample_ready),
-                ),
-                asyncio.create_task(r_i.reactor.actuator_loop()),
-                asyncio.create_task(r_i.update()),
-            ],
-        )
 
     server_config = ServerConfigOpc(
-        [reactor_opc.reactor for reactor_opc in reactors],
-        SAMPLE_PERIOD,
+        core_reactors,
+        sampling_period,
     )
     await server_config.init_node(server, idx)
 
+    if state_store is not None:
+        def checkpoint() -> None:
+            state_store.checkpoint(core_reactors, server_config.period)
+
+        server_config.on_state_changed = checkpoint
+        for reactor_opc in reactors:
+            reactor_opc.on_state_changed = checkpoint
+            for actuator_opc in reactor_opc.actuator_nodes:
+                actuator_opc.on_state_changed = checkpoint
+
+    shutdown = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    signal_installed = False
+    try:
+        loop.add_signal_handler(signal.SIGTERM, shutdown.set)
+        signal_installed = True
+    except NotImplementedError:
+        pass
+
     await server.start()
     _logger.info("Server started on %s", endpoint)
+    tasks: list[asyncio.Task[None]] = []
+    for reactor_opc in reactors:
+        tasks.extend(
+            [
+                asyncio.create_task(
+                    reactor_opc.reactor.sampling_loop(reactor_opc.sample_ready),
+                ),
+                asyncio.create_task(reactor_opc.reactor.actuator_loop()),
+                asyncio.create_task(reactor_opc.update()),
+            ],
+        )
+    if state_store is not None:
+        tasks.append(
+            asyncio.create_task(
+                state_store.checkpoint_loop(
+                    core_reactors,
+                    lambda: server_config.period,
+                ),
+            ),
+        )
+
+    task_group = asyncio.gather(*tasks)
+    shutdown_waiter = asyncio.create_task(shutdown.wait())
     try:
-        await asyncio.gather(*tasks)
+        done, _ = await asyncio.wait(
+            {task_group, shutdown_waiter},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if task_group in done:
+            await task_group
+        else:
+            _logger.info("SIGTERM received; shutting down")
     except (asyncio.CancelledError, KeyboardInterrupt):
         _logger.info("Shutting down")
     finally:
+        shutdown_waiter.cancel()
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         # Leave the hardware in a safe state before dropping the server.
         for r_i in reactors:
             r_i.stop()
+        if state_store is not None:
+            state_store.checkpoint(core_reactors, server_config.period)
         await server.stop()
+        if signal_installed:
+            loop.remove_signal_handler(signal.SIGTERM)
 
 
 def cli() -> None:
@@ -210,12 +273,33 @@ def cli() -> None:
         action="store_true",
         help="Run with simulated devices instead of the PLC hardware",
     )
+    parser.add_argument(
+        "--state-file",
+        type=Path,
+        default=default_state_file(),
+        help=(
+            "Checkpoint path (default: REACTORS_STATE_FILE or "
+            "~/.reactors_czlab/server-state.json)"
+        ),
+    )
+    parser.add_argument(
+        "--no-state",
+        action="store_true",
+        help="Start manual/zero without reading or writing a checkpoint",
+    )
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args()
 
     setup_logging(verbose=not args.quiet)
     try:
-        asyncio.run(main(args.endpoint, simulated=args.simulated))
+        asyncio.run(
+            main(
+                args.endpoint,
+                simulated=args.simulated,
+                state_file=args.state_file,
+                use_state=not args.no_state,
+            ),
+        )
     except ModbusError:
         _logger.exception("Could not start: the RS485 bus is unavailable")
         raise SystemExit(1) from None

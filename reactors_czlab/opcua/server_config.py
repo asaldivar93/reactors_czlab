@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from asyncua import ua, uamethod
@@ -37,6 +38,7 @@ class ServerConfigOpc:
         self._config_lock = asyncio.Lock()
         self.node: Node | None = None
         self.sampling_period_node: Node | None = None
+        self.on_state_changed: Callable[[], None] | None = None
 
     async def init_node(self, server: Server, idx: int) -> None:
         """Create the read-only variable and validated mutation method."""
@@ -99,7 +101,13 @@ class ServerConfigOpc:
                 _logger.warning("Rejected sampling-period change: %s", message)
                 return (False, message)
 
+            changed = period != self.period
             self.period = period
+            if changed and self.on_state_changed is not None:
+                try:
+                    self.on_state_changed()
+                except Exception:
+                    _logger.exception("Sampling-period checkpoint callback failed")
             if self.sampling_period_node is not None:
                 await self.sampling_period_node.write_value(
                     ua.Variant(period, ua.VariantType.Double),

@@ -212,6 +212,20 @@ async def test_a_refused_pairing_publishes_nothing(published) -> None:
     assert node.values == []
 
 
+async def test_only_successful_pairing_mutations_trigger_checkpoint(published) -> None:
+    """Rejected calls do not rewrite state; pair and unpair each do once."""
+    reactor_opc, set_pairing, unpair, _ = published
+    checkpoints: list[str] = []
+    reactor_opc.on_state_changed = lambda: checkpoints.append("saved")
+
+    assert await _call(set_pairing, "R9:ph", "R0:pwm0", 0) is False
+    assert checkpoints == []
+
+    assert await _call(set_pairing, "R0:ph", "R0:pwm0", 0) is True
+    assert await _call(unpair, "R0:ph", "R0:pwm0", 0) is True
+    assert checkpoints == ["saved", "saved"]
+
+
 async def test_published_pairings_are_sorted(published) -> None:
     """A client can compare two reads without minding dict order."""
     _, set_pairing, _, node = published
