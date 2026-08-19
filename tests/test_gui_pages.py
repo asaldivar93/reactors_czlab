@@ -147,6 +147,7 @@ class FakeClient:
                         "file": "R0_pwm0",
                         "a": 0.001,
                         "b": 0.0,
+                        "numeric_equation": "flow = 0.001 * duty + 0",
                         "r2": 1.0,
                         "min_duty": 0.0,
                         "max_duty": 4095.0,
@@ -358,6 +359,7 @@ class TestCalibrationPages:
         await user.open("/reactor/R0/calibration/pumps")
         await user.should_see("Collected points")
         await user.should_see("Duty limits")
+        await user.should_see("flow = 0.001 * duty + 0")
 
 
 class TestExperimentsPage:

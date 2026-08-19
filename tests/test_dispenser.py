@@ -12,7 +12,7 @@ from reactors_czlab.core.data import (
     Channel,
     OutputUnit,
 )
-from reactors_czlab.core.dispenser import Dispenser, check_unit
+from reactors_czlab.core.dispenser import Dispenser, DosePlan, check_unit
 
 
 @pytest.fixture
@@ -414,6 +414,71 @@ def test_pid_dose_uses_max_duty_and_cannot_outlive_one_period(
     clock.advance(10.0)
     assert disp.tick() == 0.0
     assert disp.total_volume == pytest.approx(40.0 * 10.0 / 60.0)
+
+
+def test_pid_plan_selects_and_quantizes_duty_for_the_target_duration(
+    channel: Channel,
+    clock,
+) -> None:
+    """Duty is coarse and the recomputed duration absorbs its rounding."""
+    disp = Dispenser(OutputUnit.volume, channel, control_period=10.0, clock=clock)
+
+    plan = disp.plan_dose(1.0, pid=True)
+
+    assert isinstance(plan, DosePlan)
+    assert plan.duty == 1091
+    assert isinstance(plan.duty, int)
+    assert plan.time_s == pytest.approx(60.0 / 10.91)
+    assert plan.delivered == pytest.approx(1.0)
+    assert plan.saturated is False
+
+
+def test_pid_plan_delivers_the_one_second_minimum_with_a_warning(
+    channel: Channel,
+    clock,
+    caplog,
+) -> None:
+    """An unreachably small request reports its predicted overdelivery."""
+    disp = Dispenser(OutputUnit.volume, channel, control_period=10.0, clock=clock)
+
+    with caplog.at_level("WARNING", logger="server.dispenser"):
+        plan = disp.plan_dose(0.001, pid=True)
+
+    assert plan.time_s == 1.0
+    assert plan.delivered > 0.001
+    assert plan.saturated is True
+    assert "0.001" in caplog.text
+    assert "predicted volume" in caplog.text
+
+
+def test_pid_plan_caps_an_oversized_dose_to_the_live_period(
+    channel: Channel,
+    clock,
+) -> None:
+    """Changing the sampling period immediately changes the planning cap."""
+    disp = Dispenser(OutputUnit.volume, channel, control_period=10.0, clock=clock)
+    first = disp.plan_dose(100.0, pid=True)
+
+    disp.control_period = 5.0
+    changed = disp.plan_dose(100.0, pid=True)
+
+    assert first.duty == changed.duty == 4000
+    assert first.time_s == 10.0
+    assert changed.time_s == 5.0
+    assert changed.delivered == pytest.approx(first.delivered / 2.0)
+
+
+def test_non_pid_plan_retains_the_configured_fixed_duty(
+    channel: Channel,
+    clock,
+) -> None:
+    """Dynamic duty selection is limited to PID volume output."""
+    disp = Dispenser(OutputUnit.volume, channel, control_period=10.0, clock=clock)
+
+    plan = disp.plan_dose(1.0, pid=False)
+
+    assert plan.duty == channel.calibration.dispense_duty
+    assert plan.time_s == 3.0
 
 
 def test_stop_demand_is_immediate_even_while_rate_limit_is_holding(

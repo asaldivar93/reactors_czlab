@@ -613,14 +613,31 @@ class ActuatorOpc:
             "running": self.run.is_running,
             "pending": list(self.run.pending) if self.run.pending else None,
             "run_points": [list(point) for point in self.run.points],
+            "zero_flow_duty": self.run.zero_flow_duty,
             "calibration": None,
         }
         if cal is not None:
-            equation = (
-                "a * duty + b"
-                if cal.model == "linear"
-                else "a * duty ** b"
-            )
+            try:
+                numeric_equation = cal.numeric_equation
+                parameter_names = list(cal.named_parameters)
+                named_parameters = cal.named_parameters
+            except (KeyError, ValueError):
+                numeric_equation = "unsupported calibration model"
+                parameter_names = ["a", "b", "c"]
+                named_parameters = {"a": cal.a, "b": cal.b, "c": cal.c}
+            match cal.model:
+                case "linear":
+                    equation = "a * duty + b"
+                case "dead-zone linear":
+                    equation = "max(0, a * (duty - b))"
+                case "saturating exponential":
+                    equation = "a * (1 - exp(-b * (duty - c)))"
+                case "logistic":
+                    equation = "a / (1 + exp(-b * (duty - c)))"
+                case "power":
+                    equation = "a * duty ** b"
+                case _:
+                    equation = "unsupported"
             fit_series = {
                 "duty": [point[0] for point in cal.fit_points],
                 "flow": [point[1] for point in cal.fit_points],
@@ -632,17 +649,23 @@ class ActuatorOpc:
                 "model": cal.model,
                 "a": cal.a,
                 "b": cal.b,
+                "c": cal.c,
                 "r2": cal.r2,
                 "residual": cal.residual,
+                "aic": cal.aic,
                 "equation": equation,
+                "numeric_equation": numeric_equation,
+                "parameter_names": parameter_names,
+                "named_parameters": named_parameters,
                 "equation_metadata": {
                     "dependent": "flow_ml_min",
                     "independent": "duty",
-                    "parameters": {"a": cal.a, "b": cal.b},
+                    "parameters": {"a": cal.a, "b": cal.b, "c": cal.c},
                 },
                 "min_duty": cal.min_duty,
                 "max_duty": cal.max_duty,
                 "dispense_duty": cal.dispense_duty,
+                "zero_flow_duty": cal.zero_flow_duty,
                 "fitted_at": cal.fitted_at,
                 "is_fitted": cal.is_fitted,
                 "points": [list(point) for point in cal.points],
@@ -684,9 +707,22 @@ class ActuatorOpc:
             return run.fit()
 
         @uamethod
+        def fit_calibration_with_zero_flow(
+            parent: Node,
+            zero_flow_duty: float,
+        ) -> str:
+            """Fit while supplying separately held stall evidence."""
+            return run.fit(zero_flow_duty=zero_flow_duty)
+
+        @uamethod
         def clear_points(parent: Node) -> str:
             """Throw the collected points away."""
             return run.clear_points()
+
+        @uamethod
+        def discard_pending_point(parent: Node) -> str:
+            """Discard a completed point awaiting its measurement."""
+            return run.discard_pending_point()
 
         @uamethod
         def reload_calibration(parent: Node) -> str:
@@ -737,6 +773,13 @@ class ActuatorOpc:
             Text="Duty used for non-PID volume doses",
         )
 
+        inarg_zero_flow = ua.Argument()
+        inarg_zero_flow.Name = "Zero_flow_duty"
+        inarg_zero_flow.DataType = ua.NodeId(ua.ObjectIds.Float)
+        inarg_zero_flow.Description = ua.LocalizedText(
+            Text="Stall evidence excluded from model fitting",
+        )
+
         @uamethod
         def get_calibration(parent: Node) -> str:
             """Report the whole calibration state as JSON."""
@@ -762,6 +805,12 @@ class ActuatorOpc:
             ("calibrate_point", calibrate_point, [inarg_duty, inarg_seconds]),
             ("record_point", record_point, [inarg_volume]),
             ("fit_calibration", fit_calibration, []),
+            (
+                "fit_calibration_with_zero_flow",
+                fit_calibration_with_zero_flow,
+                [inarg_zero_flow],
+            ),
+            ("discard_pending_point", discard_pending_point, []),
             ("clear_points", clear_points, []),
             ("reload_calibration", reload_calibration, []),
             ("set_duties", set_duties, [inarg_min_duty, inarg_dispense]),

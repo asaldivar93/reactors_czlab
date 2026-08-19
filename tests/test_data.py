@@ -43,6 +43,16 @@ def test_the_line_converts_both_ways() -> None:
     assert cal.duty_for(8.0) == 1000.0
 
 
+def test_new_calibration_fields_do_not_shift_legacy_positional_arguments() -> None:
+    """Adding the third coefficient keeps the old constructor order."""
+    cal = Calibration("pump_0", 0.01, -2.0, 400.0, 4000.0, 2000.0)
+
+    assert cal.min_duty == 400.0
+    assert cal.max_duty == 4000.0
+    assert cal.dispense_duty == 2000.0
+    assert cal.c == 0.0
+
+
 def test_a_fitted_calibration_reports_itself_fitted() -> None:
     """A non-empty fitted_at is what makes a calibration usable."""
     cal = Calibration("pump_0", fitted_at="2026-07-27T10:00:00+00:00")

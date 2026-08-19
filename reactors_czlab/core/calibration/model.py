@@ -16,8 +16,10 @@ class CalibrationFit:
     model: str
     a: float
     b: float
+    c: float
     r2: float
     residual: float
+    aic: float
     max_duty: float
     fit_points: list[tuple[float, float, float, float]]
 
@@ -30,4 +32,6 @@ class _Candidate:
     result: ModelResult
     a: float
     b: float
+    c: float
     r2: float
+    aic: float

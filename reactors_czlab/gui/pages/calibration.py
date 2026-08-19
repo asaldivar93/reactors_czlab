@@ -32,6 +32,7 @@ from reactors_czlab.gui.controllers.pump_calibration import (
     seconds_error,
     view_from_payload,
     volume_error,
+    zero_flow_duty_error,
 )
 from reactors_czlab.gui.format import render_value
 from reactors_czlab.gui.state import STATE
@@ -369,12 +370,17 @@ def _installed_line(view) -> None:
     cal = view.calibration
     with ui.card().classes("w-full"):
         if view.fitted:
-            equation = cal.get("equation", "a * duty + b")
+            equation = cal.get(
+                "numeric_equation",
+                f"flow = {cal['a']:.6g} * duty + {cal['b']:.6g}",
+            )
             ui.label(
-                f"{cal.get('model', 'linear')}: flow = {equation}  "
-                f"(a={cal['a']:.6g}, b={cal['b']:.6g}, "
-                f"r2={cal['r2']:.4f}, residual={cal.get('residual')})",
+                f"{cal.get('model', 'linear')}: {equation}",
             ).classes("font-mono text-sm")
+            ui.label(
+                f"r2={cal['r2']:.4f}, AIC={cal.get('aic')}, "
+                f"residual={cal.get('residual')}",
+            ).classes("font-mono text-xs text-gray-500")
             ui.label(f"fitted at {cal['fitted_at']}").classes(
                 "text-xs text-gray-500",
             )
@@ -391,6 +397,10 @@ def _installed_line(view) -> None:
             f"min duty {cal['min_duty']:.0f}, dispense duty "
             f"{cal['dispense_duty']:.0f}, max duty {cal['max_duty']:.0f}",
         ).classes("text-xs text-gray-500 font-mono")
+        if cal.get("zero_flow_duty") is not None:
+            ui.label(
+                f"installed zero-flow evidence: {cal['zero_flow_duty']:.0f} counts",
+            ).classes("text-xs text-gray-500 font-mono")
 
         if cal.get("installable_reason"):
             # The single authority on whether this may be installed,
@@ -547,10 +557,48 @@ async def _run_controls(reactor: str, pump: str, view, reload) -> None:
             else:
                 disable_when_read_only(record_button)
 
-    with ui.row().classes("flex-wrap").style("gap: 0.5rem"):
+            async def discard() -> None:
+                with in_flight(discard_button):
+                    changed = await call("discard_pending_point")
+                if changed:
+                    await reload()
+
+            discard_button = ui.button("Discard pending", on_click=discard).props(
+                "outline",
+            )
+            if not view.can_discard:
+                discard_button.disable()
+            else:
+                disable_when_read_only(discard_button)
+
+    ui.label(
+        "Zero-flow duty is optional stall evidence. It sets the installed "
+        "floor but is excluded from coefficients, residuals, AIC and the chart.",
+    ).classes("text-xs text-gray-500")
+    with ui.row().classes("items-end flex-wrap").style("gap: 0.5rem"):
+        zero_flow = ui.number(
+            "Zero-flow duty",
+            value=view.zero_flow_duty,
+            format="%.0f",
+        )
+
         async def fit() -> None:
+            problem = zero_flow_duty_error(zero_flow.value)
+            if problem:
+                ui.notify(problem, type="warning")
+                return
+            method = (
+                "fit_calibration_with_zero_flow"
+                if zero_flow.value is not None
+                else "fit_calibration"
+            )
+            args = (
+                (float(zero_flow.value),)
+                if zero_flow.value is not None
+                else ()
+            )
             with in_flight(fit_button):
-                changed = await call("fit_calibration")
+                changed = await call(method, *args)
             if changed:
                 await reload()
 
@@ -597,7 +645,7 @@ def _calibration_method_button(
     async def invoke() -> None:
         if danger and not await confirm(
             "Clear calibration points?",
-            "All collected run points will be discarded.",
+            "All collected run points and run-level zero-flow evidence will be discarded.",
             danger=True,
         ):
             return
@@ -620,7 +668,8 @@ def _set_duties_card(view, call, reload) -> None:
         ui.label("Duty limits").classes("text-sm font-semibold")
         ui.label(
             "Changes the stall floor and the duty used for volume "
-            "doses. PID volume doses use max duty. Does not refit the model.",
+            "doses. PID volume doses select duty dynamically. Does not "
+            "refit the model.",
         ).classes("text-xs text-gray-500")
         with ui.row().classes("items-end flex-wrap").style("gap: 0.5rem"):
             min_duty = ui.number(

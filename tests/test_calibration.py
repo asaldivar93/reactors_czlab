@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import csv
 import json
 from pathlib import Path
 from time import perf_counter
@@ -86,6 +87,72 @@ def test_fit_selects_a_power_law_when_it_has_the_lower_residual() -> None:
     assert fitted.a == pytest.approx(1e-6)
     assert fitted.b == pytest.approx(2.0)
     assert fitted.max_duty == 2500.0
+
+
+def test_report_data_selects_saturating_exponential_without_zero_evidence() -> None:
+    """The report's stall observation is not allowed to bias the curve fit."""
+    path = Path("scripts/pid-autotuning/duty_vs_flow.csv")
+    with path.open(newline="", encoding="utf-8") as source:
+        measurements = [tuple(map(float, row)) for row in csv.reader(source)]
+    zero_flow = max(duty for duty, flow in measurements if flow == 0.0)
+    positive = [(duty, flow) for duty, flow in measurements if flow > 0.0]
+
+    fitted = fit_models(positive)
+
+    assert zero_flow == 700.0
+    assert len(positive) == 18
+    assert fitted.model == "saturating exponential"
+    assert fitted.a == pytest.approx(106.05, rel=1e-4)
+    assert fitted.b == pytest.approx(7.286e-4, rel=1e-4)
+    assert fitted.c == pytest.approx(363.66, rel=1e-4)
+    assert fitted.aic == pytest.approx(34.3916, rel=1e-4)
+
+
+def test_report_data_installs_zero_flow_as_a_separate_stall_floor(
+    make_calibrated_actuator,
+    clock,
+) -> None:
+    """The report's 700-count observation affects only the installed floor."""
+    with Path("scripts/pid-autotuning/duty_vs_flow.csv").open(
+        newline="",
+        encoding="utf-8",
+    ) as source:
+        measurements = [tuple(map(float, row)) for row in csv.reader(source)]
+    run = CalibrationRun(make_calibrated_actuator(fitted=False), clock=clock)
+    run.points = [(duty, flow) for duty, flow in measurements if flow > 0.0]
+
+    result = run.fit(zero_flow_duty=700.0)
+    calibration = run.actuator.channel.calibration
+
+    assert "saturating exponential" in result
+    assert calibration.min_duty == 700.0
+    assert calibration.zero_flow_duty == 700.0
+    assert all(flow > 0.0 for _, flow in calibration.points)
+
+
+@pytest.mark.parametrize(
+    ("model", "a", "b", "c", "duty"),
+    [
+        ("linear", 0.02, -2.0, 0.0, 1000.0),
+        ("dead-zone linear", 0.02, 200.0, 0.0, 1000.0),
+        ("saturating exponential", 100.0, 0.001, 200.0, 1000.0),
+        ("logistic", 100.0, 0.002, 1500.0, 2000.0),
+        ("power", 1e-5, 1.5, 0.0, 1000.0),
+    ],
+)
+def test_every_supported_model_round_trips_and_formats_an_equation(
+    model: str,
+    a: float,
+    b: float,
+    c: float,
+    duty: float,
+) -> None:
+    """Every selected model has the safe closed-form inverse it promises."""
+    calibration = Calibration("model", model=model, a=a, b=b, c=c)
+    flow = calibration.flow_at(duty)
+
+    assert calibration.duty_for(flow) == pytest.approx(duty)
+    assert str(a)[:3] in calibration.numeric_equation
 
 
 def test_power_calibration_converts_and_inverts_flow() -> None:
@@ -752,6 +819,7 @@ async def test_stall_floor_is_bounded_by_max_duty(
     for duty, volume in (
         (500.0, 5.5),
         (2000.0, 22.0),
+        (3000.0, 33.0),
         (3900.0, 42.9),
         (4050.0, 0.0),
     ):
@@ -760,8 +828,11 @@ async def test_stall_floor_is_bounded_by_max_duty(
 
     result = run.fit()
 
-    assert "uncertainty" in result
-    assert actuator.channel.calibration is old_cal
+    assert "fitted flow" in result
+    assert actuator.channel.calibration is not old_cal
+    assert actuator.channel.calibration.min_duty == 3900.0
+    assert actuator.channel.calibration.max_duty == 3900.0
+    assert actuator.channel.calibration.zero_flow_duty == 4050.0
 
 
 async def test_stall_floor_uses_a_measured_zero_reading_as_evidence(
@@ -1622,7 +1693,82 @@ async def test_record_point_accepts_a_zero_volume(
 
     run.record_point(0.0)
 
-    assert run.points == [(300.0, 0.0)]
+    assert run.points == []
+    assert run.zero_flow_duty == 300.0
+
+
+async def test_zero_flow_observations_keep_the_highest_and_clear_separately(
+    make_calibrated_actuator,
+    clock,
+) -> None:
+    """Repeated generic-client observations remain separate stall evidence."""
+    run = CalibrationRun(
+        make_calibrated_actuator(),
+        clock=clock,
+        sleep=_FakeSleep(clock),
+    )
+    for duty in (700.0, 500.0, 800.0):
+        await run.calibrate_point(duty, 60.0)
+        run.record_point(0.0)
+
+    assert run.points == []
+    assert run.zero_flow_duty == 800.0
+
+    run.clear_points()
+
+    assert run.zero_flow_duty is None
+
+
+async def test_discard_pending_preserves_recorded_points(
+    make_calibrated_actuator,
+    clock,
+) -> None:
+    """A mistaken physical run can be discarded without restarting the run."""
+    run = CalibrationRun(
+        make_calibrated_actuator(),
+        clock=clock,
+        sleep=_FakeSleep(clock),
+    )
+    run.points = [(1000.0, 10.0)]
+    await run.calibrate_point(2000.0, 60.0)
+
+    status = run.discard_pending_point()
+
+    assert "discarded" in status
+    assert run.pending is None
+    assert run.points == [(1000.0, 10.0)]
+
+
+def test_three_parameter_calibration_and_zero_evidence_round_trip() -> None:
+    """New metadata persists while legacy defaults remain optional."""
+    calibration = Calibration(
+        "R0_pwm0",
+        model="saturating exponential",
+        a=106.05,
+        b=7.286e-4,
+        c=363.66,
+        min_duty=700.0,
+        max_duty=4094.0,
+        dispense_duty=2000.0,
+        points=[(800.0, 26.4), (1600.0, 65.0), (4094.0, 100.0)],
+        fitted_at="2026-08-19T00:00:00+00:00",
+        r2=0.99,
+        residual=87.15,
+        aic=34.39,
+        zero_flow_duty=700.0,
+        fit_points=[
+            (700.0, 23.0, 20.0, 26.0),
+            (4094.0, 100.0, 90.0, 110.0),
+        ],
+    )
+
+    save_calibration(calibration)
+    loaded = load_calibration(calibration.file)
+
+    assert loaded is not None
+    assert loaded.c == pytest.approx(363.66)
+    assert loaded.aic == pytest.approx(34.39)
+    assert loaded.zero_flow_duty == 700.0
 
 
 async def test_a_non_finite_calibration_never_reaches_the_channel(

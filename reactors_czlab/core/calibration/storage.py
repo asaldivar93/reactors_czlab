@@ -50,11 +50,13 @@ def save_calibration(cal: Calibration) -> None:
     )
     tmp.replace(path)
     _logger.info(
-        "Saved %s calibration %s: a=%s b=%s residual=%s",
+        "Saved %s calibration %s: a=%s b=%s c=%s AIC=%s residual=%s",
         cal.model,
         cal.file,
         cal.a,
         cal.b,
+        cal.c,
+        cal.aic,
         cal.residual,
     )
 
@@ -99,12 +101,17 @@ def load_calibration(name: str) -> Calibration | None:
         cal = Calibration(**raw)
         cal.a = float(cal.a)
         cal.b = float(cal.b)
+        cal.c = float(cal.c)
         cal.min_duty = float(cal.min_duty)
         cal.max_duty = float(cal.max_duty)
         cal.dispense_duty = float(cal.dispense_duty)
         cal.r2 = float(cal.r2)
         if cal.residual is not None:
             cal.residual = float(cal.residual)
+        if cal.aic is not None:
+            cal.aic = float(cal.aic)
+        if cal.zero_flow_duty is not None:
+            cal.zero_flow_duty = float(cal.zero_flow_duty)
         cal.points = [(float(d), float(f)) for d, f in cal.points]
         cal.fit_points = [
             tuple(float(value) for value in point)

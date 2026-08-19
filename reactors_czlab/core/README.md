@@ -29,9 +29,17 @@ converts between raw duty counts and mL/min. To fit one from the OPC client:
 3. `record_point(volume_ml)` — attach that measurement to the point just run.
 4. Repeat steps 1-3 for at least four different duties spanning the range
    you intend to use.
-5. `fit_calibration()` — fit both `flow = a*duty + b` and
-   `flow = a*duty**b` with LMFit, then install the valid model with the
-   lowest residual (linear wins an effective tie).
+5. `fit_calibration()` — fit linear, dead-zone linear, saturating
+   exponential, logistic, and power models with LMFit, then install the
+   uncertainty-qualified model with the lowest AIC (simpler models win an
+   effective tie).
+
+`record_point(0)` records the pending duty as zero-flow stall evidence instead
+of a fitted point. `fit_calibration_with_zero_flow(zero_flow_duty)` supplies
+the same evidence directly. The highest observation is retained, sets the
+stall floor after fitting, and is excluded from coefficients, residuals, AIC,
+prediction bands, and chart measurements. `discard_pending_point()` throws
+away only an already-completed run awaiting a measurement.
 
 The fit persists a 95% prediction band. `max_duty` is the highest measured
 integer duty whose lower bound is positive and whose band half-width is at
@@ -55,10 +63,13 @@ Each returns a status string, and each refuses a change that would leave
 the pump unsafe to drive: the reason comes back in that string rather
 than in the log.
 
-Finite manual, timer, and boundary volume requests are silently capped to
-what `dispense_duty` can deliver in one hour. PID volume output uses the
-uncertainty-qualified `max_duty` and is capped just below what it can deliver
-in one sampling period. Zero and negative volume demands stop the pump;
+Finite manual, timer, and boundary volume requests retain `dispense_duty` and
+are silently capped to what it can deliver in one hour. PID volume output
+selects an integer duty dynamically, targets the midpoint between a one-second
+minimum and the live sampling period, and recomputes duration after duty
+quantization. Oversized requests are capped to one sampling period; requests
+below the minimum deliver one second and log the predicted overdelivery. Zero
+and negative volume demands stop the pump;
 non-finite demands are rejected with the pump safely off. Relay autotuning
 keeps its exact-dose preflight at `dispense_duty` and refuses an experiment
 that cannot deliver the requested relay doses.

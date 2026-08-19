@@ -50,10 +50,13 @@ Then open `http://<host>:8080`. It listens on all interfaces, so the Pi
 can serve it to a laptop on the same network.
 
 Pump calibration is available under each reactor's Calibration tab. Collect
-at least four distinct duty measurements; the server fits linear and power
-models, qualifies the usable maximum from a 95% prediction band, and shows
-the selected fit in the GUI. Volume-control dialogs preview the server's
-effective dose cap and estimated duration before Apply.
+at least four distinct positive-flow duty measurements; the server fits five
+safe monotone, invertible models, qualifies the usable maximum from a 95%
+prediction band, and selects by AIC. A zero-flow duty can be recorded
+separately as stall evidence and never changes the curve fit. The GUI shows
+the fitted numeric equation and evidence. PID volume doses choose duty
+dynamically to target the middle of their one-second-to-sampling-period timing
+window; other volume controls retain their configured fixed dispense duty.
 
 **It replaces `reactors-client`, it does not run beside it.** The GUI
 process hosts the archiver itself, so running both against one database

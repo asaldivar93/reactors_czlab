@@ -175,6 +175,7 @@ cython_debug/
 
 # Other files
 *.csv
+!scripts/pid-autotuning/duty_vs_flow.csv
 
 # Agent scratch: worktrees and subagent-driven-development ledgers
 .claude/worktrees/

@@ -12,6 +12,7 @@ from reactors_czlab.gui.controllers.pump_calibration import (
     seconds_error,
     view_from_payload,
     volume_error,
+    zero_flow_duty_error,
 )
 
 
@@ -58,6 +59,7 @@ class TestRunState:
         view = view_from_payload(_payload(pending=[1000.0, 60.0]))
         assert view.state is RunState.awaiting
         assert view.can_record
+        assert view.can_discard
         assert view.pending_duty == 1000.0
         assert view.pending_seconds == 60.0
 
@@ -185,6 +187,11 @@ class TestFieldValidation:
     def test_negative_volume_is_refused(self) -> None:
         """A pump cannot deliver a negative volume."""
         assert volume_error(-1.0) is not None
+
+    def test_optional_zero_flow_duty_uses_the_output_bounds(self) -> None:
+        assert zero_flow_duty_error(None) is None
+        assert zero_flow_duty_error(700.0) is None
+        assert zero_flow_duty_error(MAX_OUTPUT + 1.0) is not None
 
 
 def test_calibration_chart_contains_fit_band_and_duty_markers() -> None:

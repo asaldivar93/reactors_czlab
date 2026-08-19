@@ -42,6 +42,7 @@ class RunView:
     points: list[tuple[float, float]]
     pending_duty: float | None
     pending_seconds: float | None
+    zero_flow_duty: float | None
     calibration: dict | None
 
     @property
@@ -64,6 +65,11 @@ class RunView:
     def can_record(self) -> bool:
         """Whether a measured volume may be entered."""
         return self.state is RunState.awaiting
+
+    @property
+    def can_discard(self) -> bool:
+        """Whether a completed, unmeasured point can be discarded."""
+        return self.has_slot and self.state is RunState.awaiting
 
     @property
     def can_fit(self) -> bool:
@@ -107,6 +113,7 @@ def view_from_payload(payload: dict) -> RunView:
         points=[tuple(point) for point in payload.get("run_points", [])],
         pending_duty=pending[0] if pending else None,
         pending_seconds=pending[1] if pending else None,
+        zero_flow_duty=payload.get("zero_flow_duty"),
         calibration=payload.get("calibration"),
     )
 
@@ -140,14 +147,21 @@ def volume_error(volume: float | None) -> str | None:
     """Why a measured volume is not acceptable, if it is not.
 
     Zero is allowed deliberately: it is how an operator records that a
-    duty is below the pump's stall floor, which is evidence the fit
-    uses.
+    duty is below the pump's stall floor. The server stores that evidence
+    separately from the curve fit.
     """
     if volume is None:
         return "Enter the measured volume"
-    if volume < 0:
-        return "Volume cannot be negative"
+    if not 0 <= volume < float("inf"):
+        return "Volume must be finite and cannot be negative"
     return None
+
+
+def zero_flow_duty_error(duty: float | None) -> str | None:
+    """Why optional zero-flow stall evidence is invalid, if supplied."""
+    if duty is None:
+        return None
+    return duty_error(duty)
 
 
 def calibration_chart(calibration: dict) -> tuple[dict, bool]:

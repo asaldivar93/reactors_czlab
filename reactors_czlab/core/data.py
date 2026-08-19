@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum, auto
+from math import exp, log
 
 #: Written to a channel when the underlying device could not be read.
 #: It is a real float, so consumers must compare against this constant
@@ -44,9 +45,23 @@ _INFINITY = float("inf")
 
 #: Calibration fields the pump path does arithmetic with. A non-finite
 #: value in any of them poisons every comparison downstream of it.
-_DRIVING_FIELDS = ("a", "b", "min_duty", "max_duty", "dispense_duty")
+_DRIVING_FIELDS = ("a", "b", "c", "min_duty", "max_duty", "dispense_duty")
 
-CALIBRATION_MODELS = ("linear", "power")
+CALIBRATION_MODELS = (
+    "linear",
+    "dead-zone linear",
+    "saturating exponential",
+    "logistic",
+    "power",
+)
+
+MODEL_PARAMETER_NAMES = {
+    "linear": ("slope", "intercept"),
+    "dead-zone linear": ("k", "d0"),
+    "saturating exponential": ("Qmax", "k", "d0"),
+    "logistic": ("Qmax", "k", "d50"),
+    "power": ("amplitude", "exponent"),
+}
 
 
 def _is_finite(value: float) -> bool:
@@ -58,6 +73,197 @@ def _is_finite(value: float) -> bool:
     makes a ``nan`` invisible to an ordinary range check.
     """
     return -_INFINITY < value < _INFINITY
+
+
+def calibration_parameter_reason(
+    model: str,
+    a: float,
+    b: float,
+    c: float = 0.0,
+) -> str | None:
+    """Return why model coefficients do not define a safe inverse."""
+    if model not in CALIBRATION_MODELS:
+        return (
+            f"model {model!r} is unsupported; expected one of "
+            f"{', '.join(CALIBRATION_MODELS)}"
+        )
+    if not all(_is_finite(value) for value in (a, b, c)):
+        return "calibration model coefficients must be finite"
+    if a <= 0:
+        return (
+            f"coefficient a={a:.6g} is not positive; a higher duty "
+            "would not mean more flow"
+        )
+    if model == "linear":
+        return None
+    if model == "power" and b <= 0:
+        return (
+            f"power exponent b={b:.6g} is not positive; a higher duty "
+            "would not mean more flow"
+        )
+    if model == "dead-zone linear" and not 0 <= b <= MAX_OUTPUT:
+        return (
+            f"coefficient b={b:.6g} is outside the 0 - "
+            f"{MAX_OUTPUT:.0f} duty range"
+        )
+    if model in {"saturating exponential", "logistic"}:
+        if b <= 0:
+            return f"coefficient b={b:.6g} is not positive"
+        if not 0 <= c <= MAX_OUTPUT:
+            return (
+                f"coefficient c={c:.6g} is outside the 0 - "
+                f"{MAX_OUTPUT:.0f} duty range"
+            )
+    return None
+
+
+def calibration_flow(
+    model: str,
+    a: float,
+    b: float,
+    c: float,
+    duty: float,
+) -> float:
+    """Evaluate one supported calibration model at ``duty``."""
+    match model:
+        case "linear":
+            return a * duty + b
+        case "dead-zone linear":
+            return max(0.0, a * (duty - b))
+        case "saturating exponential":
+            exponent = -b * (duty - c)
+            if exponent > 709.0:
+                return -_INFINITY
+            return a * (1.0 - exp(exponent))
+        case "logistic":
+            scaled = b * (duty - c)
+            if scaled >= 0:
+                return a / (1.0 + exp(-scaled))
+            factor = exp(scaled)
+            return a * factor / (1.0 + factor)
+        case "power":
+            try:
+                return a * duty**b
+            except OverflowError:
+                return _INFINITY
+        case _:
+            error_message = f"unsupported calibration model {model!r}"
+            raise ValueError(error_message)
+
+
+def calibration_duty(
+    model: str,
+    a: float,
+    b: float,
+    c: float,
+    flow: float,
+) -> float:
+    """Invert one supported calibration model for ``flow``."""
+    match model:
+        case "linear":
+            return (flow - b) / a
+        case "dead-zone linear" if flow < 0:
+            error_message = "a dead-zone linear calibration cannot invert negative flow"
+            raise ValueError(error_message)
+        case "dead-zone linear":
+            return b + flow / a
+        case "saturating exponential" if not 0 <= flow < a:
+            error_message = f"saturating exponential flow must be within [0, {a:.6g})"
+            raise ValueError(error_message)
+        case "saturating exponential":
+            return c - log(1.0 - flow / a) / b
+        case "logistic" if not 0 < flow < a:
+            error_message = f"logistic flow must be within (0, {a:.6g})"
+            raise ValueError(error_message)
+        case "logistic":
+            return c - log(a / flow - 1.0) / b
+        case "power" if flow < 0:
+            error_message = "a power calibration cannot invert negative flow"
+            raise ValueError(error_message)
+        case "power":
+            return (flow / a) ** (1.0 / b)
+        case _:
+            error_message = f"unsupported calibration model {model!r}"
+            raise ValueError(error_message)
+
+
+def calibration_jacobian(
+    model: str,
+    a: float,
+    b: float,
+    c: float,
+    duty: float,
+) -> tuple[float, ...]:
+    """Derivative of fitted flow with respect to active coefficients."""
+    match model:
+        case "linear":
+            return (duty, 1.0)
+        case "dead-zone linear" if duty <= b:
+            return (0.0, 0.0)
+        case "dead-zone linear":
+            return (duty - b, -a)
+        case "saturating exponential":
+            exponent = -b * (duty - c)
+            factor = _INFINITY if exponent > 709.0 else exp(exponent)
+            return (
+                1.0 - factor,
+                a * (duty - c) * factor,
+                -a * b * factor,
+            )
+        case "logistic":
+            fraction = calibration_flow(model, a, b, c, duty) / a
+            common = a * fraction * (1.0 - fraction)
+            return (
+                fraction,
+                common * (duty - c),
+                -common * b,
+            )
+        case "power":
+            first = duty**b
+            second = 0.0 if duty == 0 else a * first * log(duty)
+            return (first, second)
+        case _:
+            error_message = f"unsupported calibration model {model!r}"
+            raise ValueError(error_message)
+
+
+def calibration_zero_threshold(model: str, a: float, b: float, c: float) -> float:
+    """Return the model-implied zero-flow threshold in duty counts."""
+    match model:
+        case "linear":
+            return max(0.0, -b / a)
+        case "dead-zone linear":
+            return b
+        case "saturating exponential":
+            return c
+        case "power" | "logistic":
+            return 0.0
+        case _:
+            error_message = f"unsupported calibration model {model!r}"
+            raise ValueError(error_message)
+
+
+def calibration_equation(
+    model: str,
+    a: float,
+    b: float,
+    c: float = 0.0,
+) -> str:
+    """Format a numeric model equation for an operator."""
+    match model:
+        case "linear":
+            return f"flow = {a:.6g} * duty + {b:.6g}"
+        case "dead-zone linear":
+            return f"flow = max(0, {a:.6g} * (duty - {b:.6g}))"
+        case "saturating exponential":
+            return f"flow = {a:.6g} * (1 - exp(-{b:.6g} * (duty - {c:.6g})))"
+        case "logistic":
+            return f"flow = {a:.6g} / (1 + exp(-{b:.6g} * (duty - {c:.6g})))"
+        case "power":
+            return f"flow = {a:.6g} * duty ** {b:.6g}"
+        case _:
+            error_message = f"unsupported calibration model {model!r}"
+            raise ValueError(error_message)
 
 
 class PlcOutput(StrEnum):
@@ -100,7 +306,7 @@ class Channel:
 
 @dataclass
 class Calibration:
-    """Calibration of a pump selected from linear and power-law models.
+    """Calibration of a pump selected from safe monotone models.
 
     Flow is mL/min and duty is raw PLC counts. ``fitted_at`` empty means the
     calibration has never been fitted and must not be used to convert.
@@ -109,13 +315,19 @@ class Calibration:
     ----------
     file:
         File stem the calibration is stored under, e.g. ``R0_pwm0``.
-    a, b:
-        Model coefficients. Linear uses ``a * duty + b``; power uses
-        ``a * duty**b``.
+    a, b, c:
+        Model coefficients. ``c`` defaults to zero for legacy two-parameter
+        files.
     model:
-        ``"linear"`` (the backwards-compatible default) or ``"power"``.
+        One of ``CALIBRATION_MODELS``; ``"linear"`` remains the
+        backwards-compatible default.
     residual:
         Unweighted fit chi-square, or ``None`` for a legacy linear file.
+    aic:
+        Akaike information criterion used for model selection, or ``None``
+        for a legacy file.
+    zero_flow_duty:
+        Optional stall evidence kept separate from ``points`` and the fit.
     fit_points:
         Plotting samples as ``(duty, fitted_flow, lower_95, upper_95)``.
         Legacy linear files have no samples until they are refitted.
@@ -148,6 +360,10 @@ class Calibration:
     fit_points: list[tuple[float, float, float, float]] = field(
         default_factory=list,
     )
+    # Appended so the positional order of every legacy field remains intact.
+    c: float = 0.0
+    aic: float | None = None
+    zero_flow_duty: float | None = None
 
     @property
     def is_fitted(self) -> bool:
@@ -156,14 +372,7 @@ class Calibration:
 
     def flow_at(self, duty: float) -> float:
         """Flow in mL/min produced at ``duty`` counts."""
-        match self.model:
-            case "linear":
-                return self.a * duty + self.b
-            case "power":
-                return self.a * duty**self.b
-            case _:
-                error_message = f"unsupported calibration model {self.model!r}"
-                raise ValueError(error_message)
+        return calibration_flow(self.model, self.a, self.b, self.c, duty)
 
     def duty_for(self, flow: float) -> float:
         """Duty counts needed for ``flow`` mL/min.
@@ -179,17 +388,18 @@ class Calibration:
             object.
 
         """
-        match self.model:
-            case "linear":
-                return (flow - self.b) / self.a
-            case "power" if flow < 0:
-                error_message = "a power calibration cannot invert negative flow"
-                raise ValueError(error_message)
-            case "power":
-                return (flow / self.a) ** (1.0 / self.b)
-            case _:
-                error_message = f"unsupported calibration model {self.model!r}"
-                raise ValueError(error_message)
+        return calibration_duty(self.model, self.a, self.b, self.c, flow)
+
+    @property
+    def numeric_equation(self) -> str:
+        """Fitted equation with the numeric coefficients substituted."""
+        return calibration_equation(self.model, self.a, self.b, self.c)
+
+    @property
+    def named_parameters(self) -> dict[str, float]:
+        """Model coefficients keyed by their domain-specific names."""
+        values = (self.a, self.b, self.c)
+        return dict(zip(MODEL_PARAMETER_NAMES[self.model], values, strict=False))
 
     def installable_reason(self) -> str | None:
         """Why this calibration may not replace what is on a channel.
@@ -265,11 +475,14 @@ class Calibration:
                     "check here or clamp in a controller can catch it, "
                     "and the duty it produces cannot be written to a pin"
                 )
-        if self.model not in CALIBRATION_MODELS:
-            return (
-                f"model {self.model!r} is unsupported; expected one of "
-                f"{', '.join(CALIBRATION_MODELS)}"
-            )
+        parameter_reason = calibration_parameter_reason(
+            self.model,
+            self.a,
+            self.b,
+            self.c,
+        )
+        if parameter_reason is not None:
+            return parameter_reason
         if not _is_finite(self.r2):
             return (
                 f"fit quality r2 is {self.r2}, not a finite number; a "
@@ -283,25 +496,24 @@ class Calibration:
                 f"fit residual {self.residual} is not a finite, non-negative "
                 "chi-square"
             )
+        if self.aic is not None and not _is_finite(self.aic):
+            return f"fit AIC {self.aic} is not a finite number"
+        if self.zero_flow_duty is not None and (
+            not _is_finite(self.zero_flow_duty)
+            or not 0 <= self.zero_flow_duty <= MAX_OUTPUT
+        ):
+            return (
+                f"zero-flow duty {self.zero_flow_duty} must be a finite duty "
+                f"within 0 - {MAX_OUTPUT:.0f}"
+            )
         has_uncertainty = bool(self.fit_points)
         if (self.residual is None) != (not has_uncertainty):
             return (
                 "fit residual and 95% prediction samples must either both "
                 "be present or both be absent"
             )
-        if self.model == "power" and not has_uncertainty:
-            return "a power calibration requires 95% prediction samples"
-        if self.a <= 0:
-            return (
-                f"coefficient a={self.a:.6g} is not positive; a higher duty "
-                "would not mean more flow, so no flow or volume demand "
-                "can be turned into a duty"
-            )
-        if self.model == "power" and self.b <= 0:
-            return (
-                f"power exponent b={self.b:.6g} is not positive; a higher "
-                "duty would not mean more flow"
-            )
+        if self.model != "linear" and not has_uncertainty:
+            return f"a {self.model} calibration requires 95% prediction samples"
         for point in self.points:
             if not isinstance(point, list | tuple) or len(point) != 2:
                 return "each measured calibration point must contain duty and flow"

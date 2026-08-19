@@ -16,7 +16,13 @@ from reactors_czlab.core.calibration.storage import (
     replacement_reason,
     save_calibration,
 )
-from reactors_czlab.core.data import MAX_OUTPUT, MIN_DISPENSE_FLOW, Calibration
+from reactors_czlab.core.data import (
+    MAX_OUTPUT,
+    MIN_DISPENSE_FLOW,
+    Calibration,
+    calibration_flow,
+    calibration_zero_threshold,
+)
 
 if TYPE_CHECKING:
     from reactors_czlab.core.actuator import Actuator
@@ -55,6 +61,7 @@ class CalibrationRun:
         """
         self.actuator = actuator
         self.points: list[tuple[float, float]] = []
+        self.zero_flow_duty: float | None = None
         # Public so a test - or a bench script - can swap them after
         # construction; ActuatorOpc builds the run itself.
         self.clock = clock
@@ -141,9 +148,9 @@ class CalibrationRun:
         ``Calibration.installable_reason()`` are comparisons, and a
         comparison against ``nan`` is false. A single bad argument
         therefore used to reach the calibration file and reload from it
-        at every boot. Zero is accepted - a point that measured no
-        volume is direct evidence of the stall floor, which
-        ``_stall_floor`` reads.
+        at every boot. Zero is accepted as direct stall evidence and is
+        retained in ``zero_flow_duty`` rather than appended to the fitted
+        points.
 
         The derived flow is checked as well as the argument: a finite
         but enormous volume over the shortest allowed run still
@@ -169,19 +176,47 @@ class CalibrationRun:
             )
 
         self._pending = None
+        if flow == 0.0:
+            self.zero_flow_duty = max(
+                duty,
+                self.zero_flow_duty if self.zero_flow_duty is not None else 0.0,
+            )
+            return (
+                f"duty {duty} recorded as zero-flow stall evidence "
+                "(excluded from curve fitting)"
+            )
         self.points.append((duty, flow))
         return (
             f"duty {duty} -> {flow:.4f} mL/min "
             f"({len(self.points)} points collected)"
         )
 
-    def fit(self) -> str:
-        """Fit, store and install the collected points."""
+    def fit(self, zero_flow_duty: float | None = None) -> str:
+        """Fit, store and install the collected positive-flow points.
+
+        Parameters
+        ----------
+        zero_flow_duty:
+            Optional stall evidence. It is retained separately and never
+            participates in coefficients, residuals, AIC or uncertainty.
+
+        """
         current = self.actuator.channel.calibration
         if current is None:
             return (
                 f"{self.actuator.id} has no calibration slot on its "
                 "channel; give it one in server_info.py"
+            )
+
+        if zero_flow_duty is not None:
+            if not 0 <= zero_flow_duty < float("inf") or zero_flow_duty > MAX_OUTPUT:
+                return (
+                    f"zero-flow duty must be a finite duty within 0 - "
+                    f"{MAX_OUTPUT:.0f}, got {zero_flow_duty}"
+                )
+            self.zero_flow_duty = max(
+                zero_flow_duty,
+                self.zero_flow_duty if self.zero_flow_duty is not None else 0.0,
             )
 
         try:
@@ -194,6 +229,7 @@ class CalibrationRun:
             fitted.model,
             fitted.a,
             fitted.b,
+            fitted.c,
             fitted.max_duty,
         )
         dispense_duty = current.dispense_duty
@@ -203,6 +239,7 @@ class CalibrationRun:
                 fitted.model,
                 fitted.a,
                 fitted.b,
+                fitted.c,
                 dispense_duty,
             )
             >= MIN_DISPENSE_FLOW
@@ -212,6 +249,7 @@ class CalibrationRun:
             file=current.file,
             a=fitted.a,
             b=fitted.b,
+            c=fitted.c,
             min_duty=min_duty,
             max_duty=fitted.max_duty,
             dispense_duty=dispense_duty,
@@ -220,6 +258,8 @@ class CalibrationRun:
             r2=fitted.r2,
             model=fitted.model,
             residual=fitted.residual,
+            aic=fitted.aic,
+            zero_flow_duty=self.zero_flow_duty,
             fit_points=fitted.fit_points,
         )
         reason = cal.installable_reason()
@@ -232,15 +272,27 @@ class CalibrationRun:
         self.actuator.refresh_controller_limits()
         return (
             f"fitted flow using {cal.model} model: {self._equation(cal)} "
-            f"(r2 {cal.r2:.4f}, residual {cal.residual:.6g}), stall floor "
+            f"(r2 {cal.r2:.4f}, AIC {cal.aic:.6g}, residual "
+            f"{cal.residual:.6g}), stall floor "
             f"{cal.min_duty:.0f}, qualified max duty {cal.max_duty:.0f}"
         )
 
     def clear_points(self) -> str:
         """Throw the collected points away, keeping the installed line."""
         self.points = []
+        self.zero_flow_duty = None
         self._pending = None
         return f"cleared the collected points for {self.actuator.id}"
+
+    def discard_pending_point(self) -> str:
+        """Discard only the completed run awaiting a measurement."""
+        if self._running:
+            return f"{self.actuator.id} is still running a calibration point"
+        if self._pending is None:
+            return "no point is waiting for a measurement"
+        duty, _ = self._pending
+        self._pending = None
+        return f"discarded the pending point at duty {duty}"
 
     def reload(self) -> str:
         """Re-read the stored calibration from disk."""
@@ -307,6 +359,7 @@ class CalibrationRun:
         model: str,
         a: float,
         b: float,
+        c: float,
         max_duty: float,
     ) -> float:
         """Lowest duty the pump is believed to actually turn at.
@@ -318,20 +371,23 @@ class CalibrationRun:
         there, but adopting it verbatim could push the floor past the
         ceiling and invert the usable band.
         """
-        floor = max(0.0, -b / a) if model == "linear" else 0.0
-        measured = [duty for duty, flow in self.points if flow <= 0]
-        if measured:
-            floor = max(floor, max(measured))
+        floor = calibration_zero_threshold(model, a, b, c)
+        if self.zero_flow_duty is not None:
+            floor = max(floor, self.zero_flow_duty)
         return min(floor, max_duty)
 
     @staticmethod
-    def _flow_at(model: str, a: float, b: float, duty: float) -> float:
+    def _flow_at(
+        model: str,
+        a: float,
+        b: float,
+        c: float,
+        duty: float,
+    ) -> float:
         """Evaluate fitted parameters before a Calibration exists."""
-        return a * duty + b if model == "linear" else a * duty**b
+        return calibration_flow(model, a, b, c, duty)
 
     @staticmethod
     def _equation(calibration: Calibration) -> str:
         """Human-readable equation for a fitted calibration."""
-        if calibration.model == "linear":
-            return f"flow = {calibration.a:.6g} * duty + {calibration.b:.6g}"
-        return f"flow = {calibration.a:.6g} * duty ** {calibration.b:.6g}"
+        return calibration.numeric_equation

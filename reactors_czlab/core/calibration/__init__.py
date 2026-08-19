@@ -1,4 +1,4 @@
-"""Fit, store and reload linear or power-law pump calibrations."""
+"""Fit, store and reload safe monotone pump calibrations."""
 
 from reactors_czlab.core.calibration.fitting import (
     MAX_RELATIVE_UNCERTAINTY,

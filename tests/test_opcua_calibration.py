@@ -90,6 +90,8 @@ async def test_the_workflow_methods_are_registered(calibrating) -> None:
         "calibrate_point",
         "record_point",
         "fit_calibration",
+        "fit_calibration_with_zero_flow",
+        "discard_pending_point",
         "clear_points",
         "reload_calibration",
         "set_duties",
@@ -140,6 +142,33 @@ async def test_clear_points_and_set_duties_status_strings_come_back(
     # set_duties can still adjust it without a fit.
     status = await _call(methods["set_duties"], 500.0, 2000.0)
     assert status == "min duty 500.0, dispense duty 2000.0"
+
+
+async def test_zero_flow_fit_and_pending_discard_round_trip(calibrating) -> None:
+    """Both new run operations are usable from a generic OPC client."""
+    node_opc, methods = calibrating
+    await _call(methods["calibrate_point"], 700.0, 60.0)
+    await _call(methods["record_point"], 0.0)
+    state = json.loads(await _call(methods["get_calibration"]))
+    assert state["zero_flow_duty"] == 700.0
+    assert state["run_points"] == []
+
+    node_opc.run.points = [
+        (1000.0, 10.0),
+        (2000.0, 20.0),
+        (3000.0, 30.0),
+        (4000.0, 40.0),
+    ]
+    await _call(methods["fit_calibration_with_zero_flow"], 800.0)
+    state = json.loads(await _call(methods["get_calibration"]))
+    assert state["calibration"]["zero_flow_duty"] == 800.0
+    assert state["calibration"]["numeric_equation"].startswith("flow =")
+
+    await _call(methods["calibrate_point"], 1500.0, 60.0)
+    await _call(methods["discard_pending_point"])
+    state = json.loads(await _call(methods["get_calibration"]))
+    assert state["pending"] is None
+    assert len(state["run_points"]) == 4
 
 
 async def test_calibrate_point_holds_the_interlock_while_running(
@@ -263,9 +292,9 @@ class TestGetCalibration:
             [3000.0, 30.0],
             [4000.0, 40.0],
         ]
-        # The exact through-origin data leaves LMFit's linear covariance
-        # unavailable, so the valid power candidate (exponent 1) wins.
-        assert cal["model"] == "power"
+        # Equivalent exact fits resolve deterministically to the simpler,
+        # first-listed linear model.
+        assert cal["model"] == "linear"
         assert cal["residual"] == pytest.approx(0.0, abs=1e-20)
         assert cal["fit_series"]["duty"]
         assert cal["max_duty"] == pytest.approx(4000.0)

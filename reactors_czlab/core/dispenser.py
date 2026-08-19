@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from time import perf_counter
 from typing import TYPE_CHECKING
 
-from reactors_czlab.core.data import MAX_OUTPUT, OutputUnit
+from reactors_czlab.core.data import MAX_OUTPUT, MIN_DISPENSE_FLOW, OutputUnit
 
 if TYPE_CHECKING:
     from reactors_czlab.core.data import Channel
@@ -44,6 +44,28 @@ class DosePolicy:
     flow: float
     max_duration: float
     max_volume: float
+
+
+@dataclass(frozen=True)
+class DosePlan:
+    """One volume request translated into a quantized pump run."""
+
+    duty: float | int
+    time_s: float
+    flow: float
+    delivered: float
+    residual: float
+    saturated: bool
+
+    @property
+    def duration(self) -> float:
+        """Alias spelling out that ``time_s`` is a duration."""
+        return self.time_s
+
+    @property
+    def predicted_volume(self) -> float:
+        """Alias for the volume expected from this plan."""
+        return self.delivered
 
 
 def check_unit(unit: OutputUnit, channel: Channel) -> str | None:
@@ -222,6 +244,101 @@ class Dispenser:
             max_volume = math.nextafter(max_volume, 0.0)
         return DosePolicy(duty, flow, max_duration, max_volume)
 
+    def plan_dose(self, volume: float, *, pid: bool) -> DosePlan:
+        """Choose the duty and duration for a requested volume.
+
+        Non-PID requests keep the configured fixed dispense duty. PID
+        requests use duty as the coarse control, target the midpoint between
+        one second and the live sampling period, quantize to integer counts,
+        then recompute duration from the achieved flow.
+
+        Parameters
+        ----------
+        volume:
+            Requested volume in mL.
+        pid:
+            Whether the request came from a PID controller.
+
+        Returns
+        -------
+        DosePlan
+            Quantized duty, duration and predicted delivery.
+
+        Raises
+        ------
+        ValueError
+            If ``volume`` is negative or non-finite.
+
+        """
+        if not math.isfinite(volume) or volume < 0:
+            error_message = f"requested volume must be finite and non-negative, got {volume}"
+            raise ValueError(error_message)
+        if volume == 0:
+            return DosePlan(0, 0.0, 0.0, 0.0, 0.0, False)
+
+        cal = self.channel.calibration
+        if not pid:
+            policy = self.dose_policy(pid=False)
+            effective = min(volume, policy.max_volume)
+            duration = _SECONDS_PER_MINUTE * effective / policy.flow
+            return DosePlan(
+                policy.duty,
+                duration,
+                policy.flow,
+                effective,
+                volume - effective,
+                effective != volume,
+            )
+
+        minimum_duration = 1.0
+        maximum_duration = self.control_period
+        if maximum_duration < minimum_duration:
+            error_message = (
+                "PID dose planning requires a control period of at least "
+                f"one second, got {maximum_duration}"
+            )
+            raise ValueError(error_message)
+        target_duration = (minimum_duration + maximum_duration) / 2.0
+        wanted_flow = _SECONDS_PER_MINUTE * volume / target_duration
+        minimum_duty = math.ceil(cal.min_duty)
+        maximum_duty = math.floor(cal.max_duty)
+        minimum_flow = cal.flow_at(minimum_duty)
+        if minimum_flow <= 0.0 and minimum_duty < maximum_duty:
+            minimum_duty = min(
+                maximum_duty,
+                max(
+                    minimum_duty + 1,
+                    math.ceil(cal.duty_for(MIN_DISPENSE_FLOW)),
+                ),
+            )
+            minimum_flow = cal.flow_at(minimum_duty)
+        maximum_flow = cal.flow_at(maximum_duty)
+        if wanted_flow <= minimum_flow:
+            duty = minimum_duty
+        elif wanted_flow >= maximum_flow:
+            duty = maximum_duty
+        else:
+            duty = min(
+                maximum_duty,
+                max(minimum_duty, round(cal.duty_for(wanted_flow))),
+            )
+        achieved_flow = cal.flow_at(duty)
+        unconstrained_duration = _SECONDS_PER_MINUTE * volume / achieved_flow
+        duration = min(
+            maximum_duration,
+            max(minimum_duration, unconstrained_duration),
+        )
+        delivered = achieved_flow * duration / _SECONDS_PER_MINUTE
+        residual = volume - delivered
+        saturated = not math.isclose(duration, unconstrained_duration, rel_tol=1e-12, abs_tol=1e-12)
+        if duration == minimum_duration and delivered > volume:
+            _logger.warning(
+                "Requested PID dose %.6g mL is below the one-second minimum; predicted volume is %.6g mL",
+                volume,
+                delivered,
+            )
+        return DosePlan(duty, duration, achieved_flow, delivered, residual, saturated)
+
     def reset(self) -> None:
         """Forget any delivery in flight. Totals are kept.
 
@@ -287,17 +404,15 @@ class Dispenser:
             return self._current_duty
         self._last_decision = now
 
-        policy = self.dose_policy(pid=pid)
-        effective = min(demand, policy.max_volume)
-        seconds = _SECONDS_PER_MINUTE * effective / policy.flow
-        self._dose_until = now + seconds
+        plan = self.plan_dose(demand, pid=pid)
+        self._dose_until = now + plan.time_s
         _logger.debug(
             "Dispensing requested dose %s mL, effective %s mL over %.3fs",
             demand,
-            effective,
-            seconds,
+            plan.delivered,
+            plan.time_s,
         )
-        return self._apply(policy.duty, now)
+        return self._apply(plan.duty, now)
 
     def _apply(self, value: float, now: float) -> float:
         """Account for the duty that was running, then take the new one."""
