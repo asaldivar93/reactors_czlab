@@ -10,13 +10,12 @@ from dataclasses import replace
 import pytest
 from asyncua import ua
 
-from reactors_czlab.core.autotune import (
-    AutotunePhase,
-    AutotuneResult,
+from reactors_czlab.autotune.audit import AutotuneAudit
+from reactors_czlab.autotune.relay import (
     RelayIdentification,
     RelayTuneConfig,
 )
-from reactors_czlab.core.autotune_audit import AutotuneAudit
+from reactors_czlab.autotune.runtime import AutotunePhase, AutotuneResult
 from reactors_czlab.core.data import ControlConfig, ControlMethod, OutputUnit
 from reactors_czlab.opcua.reactor import ReactorOpc
 

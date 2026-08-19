@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from reactors_czlab.core.ph_model import (
+from reactors_czlab.autotune.model import (
     Chemistry,
     PhPlant,
     PlantParams,

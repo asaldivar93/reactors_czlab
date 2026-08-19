@@ -3,23 +3,23 @@
 import numpy as np
 import pytest
 
-from reactors_czlab.core.autotune import (
+from reactors_czlab.autotune.model import (
+    Chemistry,
+    PhPlant,
+    PlantParams,
+    buffering_intensity,
+)
+from reactors_czlab.autotune.relay import (
     RelayTuneConfig,
     from_code_gains,
     identify_ku_pu,
-    run_relay_experiment,
     scale_gains,
     scale_gains_to_setpoint,
     simc_pid,
     to_code_gains,
     tuning_rules,
 )
-from reactors_czlab.core.ph_model import (
-    Chemistry,
-    PhPlant,
-    PlantParams,
-    buffering_intensity,
-)
+from reactors_czlab.autotune.simulation import run_relay_experiment
 
 
 def test_identify_ku_pu_for_analytic_triangle_wave() -> None:

@@ -77,15 +77,12 @@ The implementer must hook into these existing structures; file paths are relativ
 
 Create these; mirror the existing calibration feature's structure and style.
 
-1. **`core/autotune.py`** — a new module with:
-   - `RelayTuneConfig` dataclass (all knobs in §4, with defaults).
-   - `AutotuneRun` class — the run-state object, analogous to `CalibrationRun`, that executes the
-     relay experiment on a **split-range actuator pair** and returns status strings. This is the
-     algorithmic core; it must be unit-testable with injected `clock`/`sleep` and a fake plant.
-   - Pure helper functions (no I/O): `identify_ku_pu(pH_trace, u_trace, dt, relay_amp, hysteresis)`,
-     `tuning_rules(Ku, Pu) -> {rule: (Kc, Ti, Td)}`, `to_code_gains(Kc, Ti, Td) -> (kp, ki, kd)`,
-     `scale_gains(kp, ki, kd, beta_ratio)`. Port these verbatim (behaviour-for-behaviour) from
-     `scripts/relay_autotune.py`; they are already validated.
+1. **`autotune/`** — the package containing the OPC-independent implementation:
+   - `relay.py` owns `RelayTuneConfig`, relay identification, tuning rules, and gain conversion/scaling.
+   - `runtime.py` owns `AutotuneRun`, its state/status types, safety validation, and the coordinator.
+   - `model.py` and `simulation.py` own the validated pH model and scientific simulation helpers.
+   - `audit.py` owns versioned persistence and gain-candidate preparation.
+   `core/reactor.py` interacts with a run through a private structural interface and does not import this package.
 2. **`opcua/autotune.py`** (or extend `opcua/actuator.py`) — `init_autotune_methods(idx)` exposing
    the workflow (§5) as `@uamethod`s on the **base** actuator's control node (the base pump is the
    canonical owner of the pH loop; it drives the pair).

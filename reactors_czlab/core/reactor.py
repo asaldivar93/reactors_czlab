@@ -7,13 +7,12 @@ import logging
 import math
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 from reactors_czlab.core.data import ERROR_VALUE
 
 if TYPE_CHECKING:
     from reactors_czlab.core.actuator import Actuator
-    from reactors_czlab.core.autotune import AutotuneCoordinator, AutotuneRun
     from reactors_czlab.core.sensor import Sensor
 
 _logger = logging.getLogger("server.reactor")
@@ -30,6 +29,27 @@ UNPAIRED_PERIOD = 0.05
 #: Operator-configurable bounds for the server-wide sampling period.
 MIN_SAMPLE_PERIOD = 1.0
 MAX_SAMPLE_PERIOD = 30.0
+
+
+class _AutotuneRunLike(Protocol):
+    """Structural surface used by a reactor without importing autotuning."""
+
+    is_active: bool
+    sensor_id: str
+    base_id: str
+    acid_id: str
+
+    def sample(self, ph: float) -> object: ...
+
+    def tick(self) -> object: ...
+
+    def abort(self, reason: str = "operator aborted autotune") -> object: ...
+
+
+class _AutotuneCoordinatorLike(Protocol):
+    """Structural coordinator surface installed by the OPC integration."""
+
+    run: _AutotuneRunLike | None
 
 
 @dataclass
@@ -108,7 +128,7 @@ class Reactor:
         # Installed by ReactorOpc after every actuator OPC node exists. Core
         # reactors used by tests or non-OPC callers remain perfectly valid
         # without an autotune coordinator.
-        self.autotune: AutotuneCoordinator | None = None
+        self.autotune: _AutotuneCoordinatorLike | None = None
 
         self.sampling.sensors = [s.id for s in self.sensors.values()]
         self.sampling.actuators = [a.id for a in self.actuators.values()]
@@ -241,7 +261,7 @@ class Reactor:
         for actuator in self.actuators.values():
             actuator.control_period = period
 
-    def active_autotune_run(self) -> AutotuneRun | None:
+    def active_autotune_run(self) -> _AutotuneRunLike | None:
         """Return the run that currently owns a pump pair, if any."""
         if self.autotune is None or self.autotune.run is None:
             return None

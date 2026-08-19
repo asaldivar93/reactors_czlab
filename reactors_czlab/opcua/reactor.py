@@ -19,8 +19,8 @@ if TYPE_CHECKING:
     from asyncua import Server
     from asyncua.common import Node
 
+    from reactors_czlab.autotune.audit import AutotuneAudit
     from reactors_czlab.core.actuator import Actuator
-    from reactors_czlab.core.autotune_audit import AutotuneAudit
     from reactors_czlab.core.sensor import Sensor
 
 _logger = logging.getLogger("server.opcreactor")

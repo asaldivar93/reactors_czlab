@@ -18,11 +18,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+from reactors_czlab.autotune.model import Chemistry, buffering_intensity
+from reactors_czlab.autotune.relay import simc_pid, to_code_gains, tuning_rules
+from reactors_czlab.autotune.runtime import validate_autotune_selection
 from reactors_czlab.core.calibration import calibration_dir
-from reactors_czlab.core.ph_model import Chemistry, buffering_intensity
 
 if TYPE_CHECKING:
-    from reactors_czlab.core.autotune import AutotuneContext, AutotuneRun
+    from reactors_czlab.autotune.runtime import AutotuneContext, AutotuneRun
 
 _logger = logging.getLogger("server.autotune_audit")
 
@@ -207,15 +209,8 @@ class AutotuneAudit:
             if run.result is None:
                 error_message = "autotune has no identified gains to apply"
                 raise ValueError(error_message)
-            from reactors_czlab.core.autotune import (
-                to_code_gains,
-                tuning_rules,
-            )
-
             continuous = tuning_rules(run.result.identification.Ku, run.result.identification.Pu)
             if rule == "SIMC":
-                from reactors_czlab.core.autotune import simc_pid
-
                 selected = simc_pid(run.result.identification.Ku, run.result.identification.Pu)
             else:
                 selected = continuous[rule]
@@ -385,12 +380,6 @@ class AutotuneAudit:
                 "mean_ph": identification.mean_ph,
                 "cycles_used": identification.cycles_used,
             }
-            from reactors_czlab.core.autotune import (
-                simc_pid,
-                to_code_gains,
-                tuning_rules,
-            )
-
             candidates = {name: to_code_gains(*values) for name, values in tuning_rules(identification.Ku, identification.Pu).items()}
             candidates["SIMC"] = to_code_gains(*simc_pid(identification.Ku, identification.Pu))
             record["candidates"] = {name: {"kp": values[0], "ki": values[1], "kd": values[2]} for name, values in candidates.items()}
@@ -410,8 +399,6 @@ class AutotuneAudit:
 
     @staticmethod
     def _validate_selection(context: AutotuneContext, sensor_id: str, base_id: str, acid_id: str, setpoint: float) -> int:
-        from reactors_czlab.core.autotune import validate_autotune_selection
-
         return validate_autotune_selection(context, sensor_id, base_id, acid_id, setpoint)
 
     def _latest(self) -> Mapping[str, Any]:

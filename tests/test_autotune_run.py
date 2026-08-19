@@ -8,12 +8,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from reactors_czlab.core.autotune import (
+from reactors_czlab.autotune.model import Chemistry, state_from_ph
+from reactors_czlab.autotune.relay import RelayTuneConfig
+from reactors_czlab.autotune.runtime import (
     AutotuneContext,
     AutotuneCoordinator,
     AutotunePhase,
     CycleSummary,
-    RelayTuneConfig,
     cycle_quality_reason,
     default_dose_budget_ml,
     period_quality_reason,
@@ -28,7 +29,6 @@ from reactors_czlab.core.data import (
     OutputUnit,
 )
 from reactors_czlab.core.dispenser import Dispenser
-from reactors_czlab.core.ph_model import Chemistry, state_from_ph
 
 NOISY_BASELINE = [7.0, 7.006, 6.994, 7.006, 6.994, 7.006, 6.994]
 

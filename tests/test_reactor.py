@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from types import SimpleNamespace
 
 import pytest
 
+from reactors_czlab.core import reactor as reactor_module
 from reactors_czlab.core.data import ControlConfig, ControlMethod, OutputUnit
 from reactors_czlab.core.reactor import Reactor
 
@@ -27,6 +29,35 @@ def test_collections_are_keyed_by_id(reactor: Reactor) -> None:
     """Sensors and actuators are exposed as dicts keyed by id."""
     assert set(reactor.sensors) == {"R0:ph"}
     assert set(reactor.actuators) == {"R0:pwm0", "R0:pwm1"}
+
+
+def test_reactor_uses_only_the_structural_autotune_surface(reactor: Reactor) -> None:
+    """A fake coordinator/run works without importing the autotune package."""
+    aborts: list[str] = []
+
+    class Run:
+        is_active = True
+        sensor_id = "R0:ph"
+        base_id = "R0:pwm0"
+        acid_id = "R0:pwm1"
+
+        def sample(self, ph: float) -> None:
+            pass
+
+        def tick(self) -> None:
+            pass
+
+        def abort(self, reason: str = "operator aborted autotune") -> None:
+            aborts.append(reason)
+
+    run = Run()
+    reactor.autotune = SimpleNamespace(run=run)
+
+    assert reactor.active_autotune_run() is run
+    assert reactor.autotune_involves_actuator("R0:pwm1")
+    reactor.abort_autotune_for_config_change("R0:pwm0")
+    assert aborts == ["configuration changed for selected actuator R0:pwm0"]
+    assert "reactors_czlab.autotune" not in inspect.getsource(reactor_module)
 
 
 def test_every_actuator_starts_unpaired(reactor: Reactor) -> None:

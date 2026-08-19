@@ -8,15 +8,15 @@ from types import SimpleNamespace
 
 import pytest
 
-from reactors_czlab.core.autotune import (
+from reactors_czlab.autotune.audit import AutotuneAudit, audit_path
+from reactors_czlab.autotune.model import Chemistry, buffering_intensity
+from reactors_czlab.autotune.relay import RelayTuneConfig
+from reactors_czlab.autotune.runtime import (
     AutotuneContext,
     AutotuneCoordinator,
-    RelayTuneConfig,
 )
-from reactors_czlab.core.autotune_audit import AutotuneAudit, audit_path
 from reactors_czlab.core.data import ControlConfig, ControlMethod, OutputUnit
 from reactors_czlab.core.dispenser import Dispenser
-from reactors_czlab.core.ph_model import Chemistry, buffering_intensity
 
 
 def _context(make_calibrated_actuator, clock):

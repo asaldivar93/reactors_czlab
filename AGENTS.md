@@ -55,6 +55,8 @@ the client.
 uv sync --extra dev --no-build-package scipy && uv run pytest
 ```
 
+If uv is not available search for it in PATH="$HOME/miniforge3/bin:$HOME/miniforge3/condabin:$PATH"/
+
 `tests/` deliberately avoids importing `core.sensor` (it pulls in pymodbus).
 `tests/conftest.py` provides a `FakeSensor` duck type plus `make_sensor` /
 `make_actuator` factory fixtures. `RandomActuator` is used directly since

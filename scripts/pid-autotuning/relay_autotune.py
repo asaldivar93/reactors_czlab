@@ -10,14 +10,14 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from reactors_czlab.core.autotune import (
+from reactors_czlab.autotune.model import Chemistry, PhPlant, PlantParams
+from reactors_czlab.autotune.relay import (
     RelayTuneConfig,
-    run_relay_experiment,
     simc_pid,
     to_code_gains,
     tuning_rules,
 )
-from reactors_czlab.core.ph_model import Chemistry, PhPlant, PlantParams
+from reactors_czlab.autotune.simulation import run_relay_experiment
 
 
 def main(outdir: str = "figures", seed: int = 0) -> None:

@@ -10,23 +10,28 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from reactors_czlab.core.actuator import RandomActuator
-from reactors_czlab.core.autotune import (
-    AutotuneContext,
-    AutotuneCoordinator,
-    AutotunePhase,
-    Pump,
+from reactors_czlab.autotune.audit import AutotuneAudit
+from reactors_czlab.autotune.model import PhPlant, PlantParams
+from reactors_czlab.autotune.relay import (
     RelayTuneConfig,
-    SplitRangeConfig,
-    SplitRangeController,
-    run_relay_experiment,
     scale_gains_to_setpoint,
-    simulate,
-    simulation_metrics,
     to_code_gains,
     tuning_rules,
 )
-from reactors_czlab.core.autotune_audit import AutotuneAudit
+from reactors_czlab.autotune.runtime import (
+    AutotuneContext,
+    AutotuneCoordinator,
+    AutotunePhase,
+)
+from reactors_czlab.autotune.simulation import (
+    Pump,
+    SplitRangeConfig,
+    SplitRangeController,
+    run_relay_experiment,
+    simulate,
+    simulation_metrics,
+)
+from reactors_czlab.core.actuator import RandomActuator
 from reactors_czlab.core.calibration import CalibrationRun
 from reactors_czlab.core.data import (
     Calibration,
@@ -38,7 +43,6 @@ from reactors_czlab.core.data import (
     PlcOutput,
 )
 from reactors_czlab.core.dispenser import Dispenser
-from reactors_czlab.core.ph_model import PhPlant, PlantParams
 from reactors_czlab.core.reactor import Reactor
 from reactors_czlab.gui.address import AddressBook
 from reactors_czlab.gui.controllers.autotune import ViewMode, run_from_payload

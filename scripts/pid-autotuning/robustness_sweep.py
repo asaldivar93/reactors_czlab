@@ -29,7 +29,15 @@ import numpy as np
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from reactors_czlab.core.autotune import (
+from reactors_czlab.autotune.model import Chemistry, PhPlant, PlantParams
+from reactors_czlab.autotune.relay import (
+    RelayTuneConfig as RelayConfig,
+)
+from reactors_czlab.autotune.relay import (
+    to_code_gains,
+    tuning_rules,
+)
+from reactors_czlab.autotune.simulation import (
     Pump,
     SplitRangeConfig,
     SplitRangeController,
@@ -37,13 +45,7 @@ from reactors_czlab.core.autotune import (
     run_relay_experiment,
     settling_time,
     simulate,
-    to_code_gains,
-    tuning_rules,
 )
-from reactors_czlab.core.autotune import (
-    RelayTuneConfig as RelayConfig,
-)
-from reactors_czlab.core.ph_model import Chemistry, PhPlant, PlantParams
 
 DT = 10.0
 CHEM = Chemistry()

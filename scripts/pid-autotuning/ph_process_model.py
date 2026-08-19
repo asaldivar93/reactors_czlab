@@ -11,7 +11,7 @@ import numpy as np
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from reactors_czlab.core.ph_model import (
+from reactors_czlab.autotune.model import (
     Chemistry,
     analytic_titration_volume,
     buffering_intensity,
