@@ -35,7 +35,8 @@ NAMESPACE_URI = "http://czlab/biocontroller"
 MODBUS_PORT = "/dev/ttySC2"
 MODBUS_BAUDRATE = 19200
 MODBUS_TIMEOUT = 0.1
-REACTOR_VOLUME = 5
+MODBUS_RETRIES = 3
+REACTOR_VOLUME = 1.5
 SAMPLE_PERIOD = 10
 
 
@@ -202,7 +203,13 @@ def build_reactors(*, simulated: bool = False) -> list[ReactorOpc]:
 
     init_hardware()
 
-    modbus_client = ModbusHandler(ModbusConfig())
+    modbusconfig = ModbusConfig(
+        port=MODBUS_PORT,
+        baudrate=MODBUS_BAUDRATE,
+        timeout=MODBUS_TIMEOUT,
+        retries=MODBUS_RETRIES,
+    )
+    modbus_client = ModbusHandler(modbusconfig)
 
     reactors = []
     for r in REACTORS:
