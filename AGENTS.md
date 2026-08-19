@@ -14,8 +14,8 @@ install, including a headless Pi server, to carry `nicegui` and `plotly`.
 ## Hard constraints — breaking these breaks a deployment
 
 - **Python >= 3.11.** `asyncio.TaskGroup` and `enum.StrEnum` are used.
-- `sql/` must not import `core.sensor` or `core.modbus`.
-- **`core/hardware.py` is the only module that may import `librpiplc`, `board`, `busio` or `adafruit_tlc59711`**, and it does no hardware work at import time. Entry points call `init_hardware()` explicitly. Never move hardware setup back to module scope — it was there before and made the package untestable. `core/sensor.py` imports `adafruit_as7341` under `if IN_RASPBERRYPI` only.
+- `sql/` must not import `core.sensor` or any module in `drivers`.
+- **`core/hardware.py` is the only module that may import `librpiplc`, `board`, `busio`, `adafruit_tca9548a` or `adafruit_tlc59711`**, and it does no hardware work at import time. Entry points call `init_hardware()` explicitly. Never move hardware setup back to module scope — it was there before and made the package untestable. `drivers/spectral.py` imports `adafruit_as7341` under `if IN_RASPBERRYPI` only.
 
 ## Model you need to hold
 
@@ -57,7 +57,6 @@ uv sync --extra dev --no-build-package scipy && uv run pytest
 
 If uv is not available search for it in PATH="$HOME/miniforge3/bin:$HOME/miniforge3/condabin:$PATH"/
 
-`tests/` deliberately avoids importing `core.sensor` (it pulls in pymodbus).
 `tests/conftest.py` provides a `FakeSensor` duck type plus `make_sensor` /
 `make_actuator` factory fixtures. `RandomActuator` is used directly since
 `core.actuator` has no third-party deps.
@@ -96,8 +95,8 @@ uv run reactors-server --simulated --endpoint opc.tcp://localhost:4840/
 uv run reactors-gui --endpoint opc.tcp://localhost:4840/ --port 8080
 
 That command needs `--extra server`, not just `--extra dev`, even
-though it touches no hardware: `run_server.py` imports `core.modbus`
-unconditionally at module scope, and `core.modbus` imports `pymodbus`,
+though it touches no hardware: `run_server.py` imports `drivers.modbus`
+unconditionally at module scope, and `drivers.modbus` imports `pymodbus`,
 which lives only in the `server` extra. `--simulated` changes what
 `init_hardware()` does at runtime; it changes nothing about what the
 module needs to import to be loaded at all. `uv sync --extra dev` alone

@@ -1,5 +1,5 @@
 """Sensors, actuators, control strategies and the reactor loops.
 
-``core.sensor`` and ``core.modbus`` require pymodbus, so they are not
-re-exported here: import them directly from their modules.
+Concrete hardware adapters live in ``reactors_czlab.drivers`` and are not
+re-exported here.
 """

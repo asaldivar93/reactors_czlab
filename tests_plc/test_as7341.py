@@ -3,7 +3,7 @@ import asyncio
 import adafruit_tca9548a
 import board
 
-from reactors_czlab.core.sensor import SpectralSensor
+from reactors_czlab.drivers.spectral import SpectralSensor
 from reactors_czlab.server_info import BIOMASS_SENSORS
 
 

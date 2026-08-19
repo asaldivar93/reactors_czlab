@@ -3,8 +3,8 @@ import asyncio
 import platform
 
 from reactors_czlab.core.hardware import IN_RASPBERRYPI
-from reactors_czlab.core.modbus import ModbusConfig, ModbusHandler
-from reactors_czlab.core.sensor import HamiltonSensor
+from reactors_czlab.drivers.hamilton import HamiltonSensor
+from reactors_czlab.drivers.modbus import ModbusConfig, ModbusHandler
 from reactors_czlab.server_info import HAMILTON_SENSORS
 
 port = "/dev/ttySC2"

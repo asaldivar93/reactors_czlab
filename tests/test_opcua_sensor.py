@@ -3,7 +3,7 @@
 Driven through a stub node that captures what init_node registers, the
 way test_opcua_pairing.py does - only asyncua is needed, not a running
 server. This matters here because ``tests/`` deliberately does not
-import ``core.sensor``, so the sensor itself is a duck type.
+import concrete sensor drivers, so the sensor itself is a duck type.
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 from asyncua import ua
 
-from reactors_czlab.core.hamilton import CalibrationStatus
+from reactors_czlab.drivers.hamilton_model import CalibrationStatus
 from reactors_czlab.opcua.sensor import UNSUPPORTED_STATUS, SensorOpc
 
 

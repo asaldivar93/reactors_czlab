@@ -3,7 +3,7 @@
 ``reactors_czlab.opcua.client`` imports ``reactors_czlab.sql.operations``,
 which needs polars and psycopg - the PC-side ``client`` extra, which this
 environment deliberately does not install (the same reason ``conftest``
-avoids ``core.sensor`` and its pymodbus). The module is stubbed below
+avoids importing concrete sensor drivers). The module is stubbed below
 when it cannot be imported, so the subscription filter is testable with
 nothing installed but pytest, and the real one is used when it is there.
 The client module is imported through a fixture rather than at the top of

@@ -12,21 +12,17 @@ from reactors_czlab.core.data import (
     ControlConfig,
     ControlMethod,
     OutputUnit,
-    PlcOutput,
 )
 from reactors_czlab.core.dispenser import (
     DEFAULT_CONTROL_PERIOD,
     Dispenser,
     check_unit,
 )
-from reactors_czlab.core.hardware import IN_RASPBERRYPI, rpiplc
 
 if TYPE_CHECKING:
     from reactors_czlab.core.data import PhysicalInfo
 
 _logger = logging.getLogger("server.actuator")
-
-PWM_FREQUENCY_HZ = 100
 
 
 class Actuator(ABC):
@@ -422,37 +418,3 @@ class RandomActuator(Actuator):
     def write(self, value: float) -> None:
         """Record the value in the channel."""
         self.channel.value = value
-
-
-class PlcActuator(Actuator):
-    """Class to interface with the RaspberryPi PLC pins."""
-
-    def __init__(
-        self,
-        identifier: str,
-        config: PhysicalInfo,
-    ) -> None:
-        """Interface a pin as an actuator class.
-
-        Parameters
-        ----------
-        identifier:
-            A unique identifier for the actuator
-        config:
-            A data class with config parameters for the actuator
-
-        """
-        super().__init__(identifier, config)
-        if IN_RASPBERRYPI:
-            chn = self.channel
-            rpiplc.pin_mode(chn.pin, rpiplc.OUTPUT)
-            if chn.type == PlcOutput.pwm:
-                rpiplc.analog_write_set_frequency(chn.pin, PWM_FREQUENCY_HZ)
-
-    def write(self, value: float) -> None:
-        """Write to physical pin."""
-        if IN_RASPBERRYPI:
-            chn = self.channel
-            rpiplc.analog_write(chn.pin, int(value))
-            chn.value = value
-            _logger.debug("Actuator %s - %s", self.id, value)

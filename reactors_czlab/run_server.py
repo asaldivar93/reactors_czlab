@@ -8,16 +8,15 @@ import logging
 import signal
 from pathlib import Path
 
-from reactors_czlab.core.actuator import PlcActuator, RandomActuator
+from reactors_czlab.core.actuator import RandomActuator
 from reactors_czlab.core.calibration import load_into
-from reactors_czlab.core.hardware import init_hardware
-from reactors_czlab.core.modbus import ModbusConfig, ModbusError, ModbusHandler
-from reactors_czlab.core.sensor import (
-    HamiltonSensor,
-    RandomSensor,
-    SpectralSensor,
-)
+from reactors_czlab.core.hardware import get_i2c_channel, init_hardware
+from reactors_czlab.core.sensor import RandomSensor
 from reactors_czlab.core.server_state import StateStore, default_state_file
+from reactors_czlab.drivers.hamilton import HamiltonSensor
+from reactors_czlab.drivers.modbus import ModbusConfig, ModbusError, ModbusHandler
+from reactors_czlab.drivers.plc import PlcActuator
+from reactors_czlab.drivers.spectral import SpectralSensor
 from reactors_czlab.opcua import ReactorOpc, ServerConfigOpc
 from reactors_czlab.server_info import (
     ANALOG_ACTUATORS,
@@ -107,13 +106,9 @@ def build_reactors(*, simulated: bool = False) -> list[ReactorOpc]:
             )
         return reactors
 
-    import adafruit_tca9548a
-    import board
-
     init_hardware()
 
     modbus_client = ModbusHandler(ModbusConfig())
-    tca = adafruit_tca9548a.TCA9548A(board.I2C())
 
     reactors = []
     for r in REACTORS:
@@ -124,8 +119,8 @@ def build_reactors(*, simulated: bool = False) -> list[ReactorOpc]:
         for k, cfg in BIOMASS_SENSORS[r].items():
             spectral = SpectralSensor(k, cfg)
             try:
-                spectral.set_i2c(tca[I2C_PORTS[r]])
-            except (ValueError, OSError):
+                spectral.set_i2c(get_i2c_channel(I2C_PORTS[r]))
+            except (RuntimeError, ValueError, OSError):
                 _logger.warning(
                     "No spectral sensor on i2c channel %s for %s",
                     I2C_PORTS[r],

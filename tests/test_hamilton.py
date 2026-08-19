@@ -1,6 +1,6 @@
 """Tests for the Hamilton calibration interpretation layer.
 
-These deliberately import ``core.hamilton`` and never ``core.sensor``:
+These deliberately import ``drivers.hamilton_model`` and never the transport:
 the point of the split is that what the registers mean can be covered
 without pymodbus, on a machine with no RS485 bus.
 """
@@ -11,7 +11,7 @@ import math
 
 import pytest
 
-from reactors_czlab.core.hamilton import (
+from reactors_czlab.drivers.hamilton_model import (
     CALIBRATION_OK,
     CALIBRATION_POINTS,
     PROCESS_VALUE_WORDS,

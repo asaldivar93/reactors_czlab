@@ -1,6 +1,6 @@
 import time
 
-from reactors_czlab.core.actuator import PlcActuator
+from reactors_czlab.drivers.plc import PlcActuator
 from reactors_czlab.core.data import ControlConfig, ControlMethod
 from reactors_czlab.server_info import ANALOG_ACTUATORS
 

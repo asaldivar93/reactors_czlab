@@ -14,7 +14,7 @@ import logging
 
 from nicegui import ui
 
-from reactors_czlab.core.hamilton import (
+from reactors_czlab.drivers.hamilton_model import (
     CALIBRATION_OK,
     CALIBRATION_POINTS,
     status_text,
@@ -41,7 +41,7 @@ _logger = logging.getLogger("gui")
 #: Reported by the server for a sensor with no calibration points.
 UNSUPPORTED = "unsupported"
 
-#: What core.hamilton.status_text() renders for an accepted point.
+#: What drivers.hamilton_model.status_text() renders for an accepted point.
 CALIBRATION_OK_TEXT = status_text(CALIBRATION_OK)
 
 #: Actuators that are not pumps and have no calibration slot.

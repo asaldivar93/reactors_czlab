@@ -1,7 +1,7 @@
 """Shared fixtures.
 
-These tests deliberately avoid importing ``reactors_czlab.core.sensor``,
-which pulls in pymodbus. FakeSensor implements the same duck type the
+These tests use a small sensor duck type so generic fixtures stay lightweight.
+FakeSensor implements the same interface the
 Reactor loops rely on, so the control and pairing logic can be tested with
 nothing installed but pytest.
 """

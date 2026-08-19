@@ -1,11 +1,11 @@
 """Bus orchestration around a Hamilton calibration point.
 
-``core.hamilton`` covers what the registers mean; this covers the order
+``drivers.hamilton_model`` covers what registers mean; this covers the order
 of operations around them - raising the operator level, reading the
 three blocks, and always dropping back down.
 
 Skipped where pymodbus is absent. ``tests/`` deliberately does not
-import ``core.sensor`` in the ordinary case (CLAUDE.md), and the client
+import the Hamilton driver in the ordinary case, and the client
 extra carries no pymodbus, so this runs on the Pi and anywhere the
 server extra is installed and stays out of the way elsewhere.
 """
@@ -16,12 +16,12 @@ import pytest
 
 pytest.importorskip(
     "pymodbus",
-    reason="core.sensor imports pymodbus; install the server extra",
+    reason="the Hamilton driver imports pymodbus; install the server extra",
 )
 
 from reactors_czlab.core.data import PhysicalInfo, PlcOutput
-from reactors_czlab.core.modbus import ModbusError
-from reactors_czlab.core.sensor import HamiltonSensor
+from reactors_czlab.drivers.hamilton import HamiltonSensor
+from reactors_czlab.drivers.modbus import ModbusError
 
 #: CP status blocks: status words, unit words, value words. The fake
 #: decode below is hundredths, so 700 reads back as 7.00.
