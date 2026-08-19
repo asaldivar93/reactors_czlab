@@ -49,6 +49,16 @@ uv run reactors-gui --endpoint opc.tcp://localhost:4840/ --port 8080
 Then open `http://<host>:8080`. It listens on all interfaces, so the Pi
 can serve it to a laptop on the same network.
 
+To recover an incomplete calibration run. If you are lucky and saved your points to a csv
+
+```bash
+reactors-server \
+    --endpoint opc.tcp://10.10.10.20:55488/ \
+    --import-calibration-points Rn:pwmn /absolute/path/to/calibration.csv 
+```
+
+## Pumps calibration
+
 Pump calibration is available under each reactor's Calibration tab. Collect
 at least four distinct positive-flow duty measurements; the server fits five
 safe monotone, invertible models, qualifies the usable maximum from a 95%
@@ -62,12 +72,11 @@ window; other volume controls retain their configured fixed dispense duty.
 process hosts the archiver itself, so running both against one database
 inserts every reading twice.
 
+## Sampling time
+
 The server publishes one sampling period for every reactor. It starts at
 10 seconds on a new installation and can be changed to 1--30 seconds from
-**Settings** in the GUI header. The server applies an accepted change to
-every reactor and actuator control guard and checkpoints it for restart;
-changes are rejected while PID autotuning is active. The GUI reads the
-published value to decide when a reading has gone stale.
+**Settings** in the GUI header.
 
 ## Raspberry Pi power-outage recovery
 
@@ -173,7 +182,7 @@ The suite under `tests/` runs without hardware and without pymodbus.
 ## To do
 
 - Mass Flow Controller Modbus
-- Restore client from power out
+- Test client from power out
 - Exercise the experiment interface against a real PostgreSQL
 - Authentication, before the GUI is on a routable network
 
