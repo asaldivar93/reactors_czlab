@@ -32,9 +32,8 @@ from reactors_czlab.autotune.simulation import (
     simulation_metrics,
 )
 from reactors_czlab.core.actuator import RandomActuator
-from reactors_czlab.core.calibration import CalibrationRun
+from reactors_czlab.core.calibration import Calibration, CalibrationRun
 from reactors_czlab.core.data import (
-    Calibration,
     Channel,
     ControlConfig,
     ControlMethod,

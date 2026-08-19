@@ -6,9 +6,9 @@ import math
 
 import pytest
 
+from reactors_czlab.core.calibration import Calibration
 from reactors_czlab.core.data import (
     MAX_OUTPUT,
-    Calibration,
     Channel,
     OutputUnit,
 )

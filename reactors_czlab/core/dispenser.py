@@ -17,7 +17,8 @@ from dataclasses import dataclass
 from time import perf_counter
 from typing import TYPE_CHECKING
 
-from reactors_czlab.core.data import MAX_OUTPUT, MIN_DISPENSE_FLOW, OutputUnit
+from reactors_czlab.core.calibration.models import MIN_DISPENSE_FLOW
+from reactors_czlab.core.data import MAX_OUTPUT, OutputUnit
 
 if TYPE_CHECKING:
     from reactors_czlab.core.data import Channel

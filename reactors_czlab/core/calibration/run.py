@@ -11,18 +11,18 @@ from time import perf_counter
 from typing import TYPE_CHECKING
 
 from reactors_czlab.core.calibration.fitting import fit_models
-from reactors_czlab.core.calibration.storage import (
-    load_calibration,
-    replacement_reason,
-    save_calibration,
-)
-from reactors_czlab.core.data import (
-    MAX_OUTPUT,
+from reactors_czlab.core.calibration.models import (
     MIN_DISPENSE_FLOW,
     Calibration,
     calibration_flow,
     calibration_zero_threshold,
 )
+from reactors_czlab.core.calibration.storage import (
+    load_calibration,
+    replacement_reason,
+    save_calibration,
+)
+from reactors_czlab.core.data import MAX_OUTPUT
 
 if TYPE_CHECKING:
     from reactors_czlab.core.actuator import Actuator

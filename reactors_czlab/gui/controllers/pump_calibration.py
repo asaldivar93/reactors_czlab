@@ -15,11 +15,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
-from reactors_czlab.core.calibration import (
-    MAX_RUN_SECONDS,
-    MIN_POINTS,
-    MIN_RUN_SECONDS,
-)
+from reactors_czlab.core.calibration.fitting import MIN_POINTS
+from reactors_czlab.core.calibration.run import MAX_RUN_SECONDS, MIN_RUN_SECONDS
 from reactors_czlab.core.data import MAX_OUTPUT
 
 

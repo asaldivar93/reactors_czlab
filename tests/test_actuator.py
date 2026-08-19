@@ -7,6 +7,7 @@ import time
 import pytest
 
 from reactors_czlab.core.actuator import RandomActuator
+from reactors_czlab.core.calibration import Calibration
 from reactors_czlab.core.control import (
     _ManualControl,
     _OnBoundariesControl,
@@ -15,7 +16,6 @@ from reactors_czlab.core.control import (
 )
 from reactors_czlab.core.data import (
     ERROR_VALUE,
-    Calibration,
     ControlConfig,
     ControlMethod,
     OutputUnit,

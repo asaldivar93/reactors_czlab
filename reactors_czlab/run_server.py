@@ -9,7 +9,7 @@ import signal
 from pathlib import Path
 
 from reactors_czlab.core.actuator import RandomActuator
-from reactors_czlab.core.calibration import load_into
+from reactors_czlab.core.calibration.storage import load_into
 from reactors_czlab.core.hardware import get_i2c_channel, init_hardware
 from reactors_czlab.core.sensor import RandomSensor
 from reactors_czlab.core.server_state import StateStore, default_state_file

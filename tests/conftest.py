@@ -13,8 +13,8 @@ from collections.abc import Callable
 import pytest
 
 from reactors_czlab.core.actuator import RandomActuator
+from reactors_czlab.core.calibration import Calibration
 from reactors_czlab.core.data import (
-    Calibration,
     Channel,
     PhysicalInfo,
     PlcOutput,

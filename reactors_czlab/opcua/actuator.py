@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 
 from asyncua import ua, uamethod
 
-from reactors_czlab.core.calibration import CalibrationRun
+from reactors_czlab.core.calibration.run import CalibrationRun
 from reactors_czlab.core.data import (
     ControlConfig,
     ControlMethod,

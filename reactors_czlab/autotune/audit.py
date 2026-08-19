@@ -21,7 +21,7 @@ from uuid import uuid4
 from reactors_czlab.autotune.model import Chemistry, buffering_intensity
 from reactors_czlab.autotune.relay import simc_pid, to_code_gains, tuning_rules
 from reactors_czlab.autotune.runtime import validate_autotune_selection
-from reactors_czlab.core.calibration import calibration_dir
+from reactors_czlab.core.calibration.storage import calibration_dir
 
 if TYPE_CHECKING:
     from reactors_czlab.autotune.runtime import AutotuneContext, AutotuneRun

@@ -1,7 +1,7 @@
 """Define the variables in the server."""
 
+from reactors_czlab.core.calibration.models import Calibration
 from reactors_czlab.core.data import (
-    Calibration,
     Channel,
     PhysicalInfo,
     PlcOutput,

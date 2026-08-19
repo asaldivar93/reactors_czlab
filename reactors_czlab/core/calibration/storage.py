@@ -9,7 +9,7 @@ from os import environ
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from reactors_czlab.core.data import Calibration
+from reactors_czlab.core.calibration.models import Calibration
 
 if TYPE_CHECKING:
     from reactors_czlab.core.data import Channel

@@ -13,6 +13,7 @@ import pytest
 
 from reactors_czlab.core.calibration import (
     CALIBRATION_ENV,
+    Calibration,
     CalibrationRun,
     calibration_path,
     fit_models,
@@ -20,11 +21,10 @@ from reactors_czlab.core.calibration import (
     load_into,
     save_calibration,
 )
+from reactors_czlab.core.calibration.models import MAX_DOSE_SECONDS
 from reactors_czlab.core.control import _PidControl
 from reactors_czlab.core.data import (
-    MAX_DOSE_SECONDS,
     MAX_OUTPUT,
-    Calibration,
     Channel,
     ControlConfig,
     ControlMethod,

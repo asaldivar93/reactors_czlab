@@ -9,14 +9,15 @@ import numpy as np
 from lmfit import Model
 from scipy.stats import t as student_t
 
-from reactors_czlab.core.calibration.model import CalibrationFit, _Candidate
-from reactors_czlab.core.data import (
+from reactors_czlab.core.calibration.models import (
     CALIBRATION_MODELS,
-    MAX_OUTPUT,
+    CalibrationFit,
+    _Candidate,
     calibration_flow,
     calibration_jacobian,
     calibration_parameter_reason,
 )
+from reactors_czlab.core.data import MAX_OUTPUT
 
 MIN_POINTS = 4
 MAX_RELATIVE_UNCERTAINTY = 0.20
