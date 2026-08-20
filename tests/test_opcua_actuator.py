@@ -350,6 +350,43 @@ async def test_update_value_publishes_the_pump_totals(
     assert node.cal_r2.value == 1.0
 
 
+async def test_reset_total_volume_zeroes_and_publishes_without_checkpoint(
+    make_calibrated_actuator,
+) -> None:
+    """The reset banks and zeroes, publishes at once, and never checkpoints."""
+    actuator = make_calibrated_actuator()
+    actuator.dispenser.total_volume = 4.5
+    node = ActuatorOpc(actuator)
+    node.total_volume = _StubVariable(4.5)
+    checkpoints: list[str] = []
+    node.on_state_changed = lambda: checkpoints.append("saved")
+
+    accepted, _ = await node.reset_total_volume()
+
+    assert accepted is True
+    assert actuator.dispenser.total_volume == 0.0
+    assert node.total_volume.value == 0.0
+    assert checkpoints == []
+
+
+async def test_reset_total_volume_refuses_a_calibration_owned_pump(
+    make_calibrated_actuator,
+) -> None:
+    """A pump a calibration run owns keeps its counter and is not published."""
+    actuator = make_calibrated_actuator()
+    actuator.dispenser.total_volume = 4.5
+    actuator.calibrating = True
+    node = ActuatorOpc(actuator)
+    node.total_volume = _StubVariable(4.5)
+
+    accepted, message = await node.reset_total_volume()
+
+    assert accepted is False
+    assert "calibration or autotune" in message
+    assert actuator.dispenser.total_volume == 4.5
+    assert node.total_volume.writes == []
+
+
 async def test_update_value_skips_unchanged_pump_values(
     make_calibrated_actuator,
 ) -> None:

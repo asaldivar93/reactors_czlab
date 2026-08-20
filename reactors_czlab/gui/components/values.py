@@ -18,8 +18,10 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import datetime
 
+from asyncua import ua
 from nicegui import ui
 
+from reactors_czlab.gui.components.confirm import confirm, in_flight
 from reactors_czlab.gui.components.control_form import open_control_dialog
 from reactors_czlab.gui.components.shell import disable_when_read_only
 from reactors_czlab.gui.format import is_stale, render_value
@@ -178,24 +180,84 @@ def _actuator_card(
             def update_config(latest: dict) -> None:
                 config_label.set_text(control_summary(latest))
 
-            configure = ui.button(
-                "Configure",
-                on_click=lambda: open_control_dialog(
-                    reactor,
-                    name,
-                    update_config,
-                ),
-            ).props("outline size=sm")
-            if calibrating:
-                configure.disable()
-                configure.tooltip("Calibration currently owns this actuator")
-            else:
-                disable_when_read_only(configure)
+            # Configure and Reset are built once, outside the refreshable
+            # readings subtree, so a periodic refresh cannot destroy a
+            # button under the operator's pointer.
+            with ui.row().classes("items-center").style("gap: 0.5rem"):
+                configure = ui.button(
+                    "Configure",
+                    on_click=lambda: open_control_dialog(
+                        reactor,
+                        name,
+                        update_config,
+                    ),
+                ).props("outline size=sm")
+                if calibrating:
+                    configure.disable()
+                    configure.tooltip(
+                        "Calibration currently owns this actuator",
+                    )
+                else:
+                    disable_when_read_only(configure)
+                _reset_delivered_button(reactor, name, calibrating)
         pairing_label = ui.label(pairing_summary(name, pairings)).classes(
             "text-xs text-gray-500",
         )
         actuator_readings(reactor, name)
     return pairing_label
+
+
+def _reset_delivered_button(
+    reactor: str,
+    name: str,
+    calibrating: bool,
+) -> None:
+    """Add a confirmed 'Reset delivered' action for a calibrated pump.
+
+    Only offered when the server publishes the reset method - MFCs and
+    other actuators without a calibration slot never do. The counter is
+    live memory backed only by PostgreSQL, so the confirmation says the
+    running total, not any stored history, is what is cleared.
+    """
+    if STATE.book is None or not STATE.book.has_method(
+        reactor,
+        name,
+        "reset_total_volume",
+    ):
+        return
+
+    async def reset_delivered() -> None:
+        if not await confirm(
+            f"Reset delivered volume for {name}?",
+            "The running mL counter returns to zero. Delivery is not "
+            "interrupted, and the durable history in the database is "
+            "unaffected.",
+        ):
+            return
+        with in_flight(button):
+            try:
+                accepted, message = await STATE.call(
+                    reactor,
+                    name,
+                    "reset_total_volume",
+                )
+            except (LookupError, OSError, ValueError, ua.UaError) as err:
+                ui.notify(
+                    f"Could not reset delivered volume: {err}",
+                    type="negative",
+                )
+                return
+        ui.notify(message, type="positive" if accepted else "negative")
+
+    button = ui.button(
+        "Reset delivered",
+        on_click=reset_delivered,
+    ).props("outline size=sm")
+    if calibrating:
+        button.disable()
+        button.tooltip("Calibration currently owns this actuator")
+    else:
+        disable_when_read_only(button)
 
 
 @ui.refreshable

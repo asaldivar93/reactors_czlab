@@ -340,6 +340,19 @@ class Dispenser:
             )
         return DosePlan(duty, duration, achieved_flow, delivered, residual, saturated)
 
+    def reset_total_volume(self) -> None:
+        """Bank delivery through now, then zero the accrued total.
+
+        Unlike ``reset()``, the active duty and the dose deadline are
+        left untouched: an in-flight delivery goes on exactly as it
+        would have, and subsequent accrual starts from this instant. The
+        counter alone is zeroed, so this is what an operator's "reset
+        delivered" action calls to restart the mL total without
+        interrupting the pump.
+        """
+        self._accrue(self._clock())
+        self.total_volume = 0.0
+
     def reset(self) -> None:
         """Forget any delivery in flight. Totals are kept.
 

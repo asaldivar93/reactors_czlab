@@ -325,16 +325,6 @@ async def main(
                 asyncio.create_task(reactor_opc.update()),
             ],
         )
-    if state_store is not None:
-        tasks.append(
-            asyncio.create_task(
-                state_store.checkpoint_loop(
-                    core_reactors,
-                    lambda: server_config.period,
-                ),
-            ),
-        )
-
     task_group = asyncio.gather(*tasks)
     shutdown_waiter = asyncio.create_task(shutdown.wait())
     try:
@@ -356,8 +346,6 @@ async def main(
         # Leave the hardware in a safe state before dropping the server.
         for r_i in reactors:
             r_i.stop()
-        if state_store is not None:
-            state_store.checkpoint(core_reactors, server_config.period)
         await server.stop()
         if signal_installed:
             loop.remove_signal_handler(signal.SIGTERM)

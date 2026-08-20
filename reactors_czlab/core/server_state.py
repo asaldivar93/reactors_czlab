@@ -1,9 +1,11 @@
 """Durable, fail-safe checkpoints for the Raspberry Pi server.
 
-The snapshot contains operator configuration and accumulated dispenser totals,
-not live process state. Sensor values, physical outputs, controller memory,
-delivery deadlines, calibration runs, and autotune ownership deliberately never
-cross a process boundary.
+The snapshot contains operator configuration only, not live process state.
+Sensor values, physical outputs, controller memory, delivery deadlines,
+accrued dispenser totals, calibration runs, and autotune ownership
+deliberately never cross a process boundary: the accrued volume is live
+memory whose only durable history is PostgreSQL, so a restart always starts
+its counters at zero.
 """
 
 from __future__ import annotations
@@ -13,7 +15,7 @@ import logging
 import math
 import os
 from collections import defaultdict
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -26,8 +28,11 @@ from reactors_czlab.core.reactor import MAX_SAMPLE_PERIOD, MIN_SAMPLE_PERIOD, Re
 
 _logger = logging.getLogger("server.state")
 
-SCHEMA_VERSION = 1
-CHECKPOINT_INTERVAL = 60.0
+#: Current snapshot schema. v2 dropped the per-actuator ``total_volume``
+#: field; v1 files still restore configuration, their totals ignored.
+SCHEMA_VERSION = 2
+#: Schema versions this server can still read for configuration recovery.
+SUPPORTED_SCHEMA_VERSIONS = (1, 2)
 
 _CONTROL_NUMERIC_FIELDS = (
     "time_on",
@@ -57,11 +62,13 @@ class StateValidationError(ValueError):
 
 @dataclass(frozen=True)
 class _ActuatorRecovery:
-    """Validated state for one live actuator."""
+    """Validated configuration for one live actuator.
+
+    No accrued total is carried: restored counters always start at zero.
+    """
 
     actuator_id: str
     config: ControlConfig
-    total_volume: float
     paired: bool
 
 
@@ -170,7 +177,6 @@ def snapshot(reactors: list[Reactor], sampling_period: float) -> dict[str, objec
                         "id": actuator.id,
                         "channels": _channels_payload(actuator.info.channels),
                         "control": _control_payload(actuator),
-                        "total_volume": actuator.dispenser.total_volume,
                     }
                     for actuator in sorted(reactor.actuators.values(), key=lambda item: item.id)
                 ],
@@ -319,10 +325,22 @@ def _validate_device_rows(
     context: str,
     *,
     actuator: bool,
+    legacy_totals: bool = False,
 ) -> dict[str, dict[str, object]]:
-    """Validate unique device IDs and return rows keyed by live ID."""
+    """Validate unique device IDs and return rows keyed by live ID.
+
+    ``legacy_totals`` marks a schema-v1 actuator row, which still carries
+    a ``total_volume`` field. The field must be present to match the
+    exact-key shape, but its value is never read: restored counters start
+    at zero regardless.
+    """
     rows: dict[str, dict[str, object]] = {}
-    expected_keys = {"id", "channels", "control", "total_volume"} if actuator else {"id", "channels"}
+    if not actuator:
+        expected_keys = {"id", "channels"}
+    elif legacy_totals:
+        expected_keys = {"id", "channels", "control", "total_volume"}
+    else:
+        expected_keys = {"id", "channels", "control"}
     for position, value in enumerate(_list(raw, context)):
         row_context = f"{context}[{position}]"
         row = _exact_mapping(value, expected_keys, row_context)
@@ -391,8 +409,12 @@ def validate_snapshot(raw: object, reactors: list[Reactor]) -> _RecoveryPlan:
         "checkpoint",
     )
     version = _integer(root["schema_version"], "checkpoint.schema_version")
-    if version != SCHEMA_VERSION:
-        _fail(f"unsupported schema version {version}; expected {SCHEMA_VERSION}")
+    if version not in SUPPORTED_SCHEMA_VERSIONS:
+        _fail(f"unsupported schema version {version}; expected one of {list(SUPPORTED_SCHEMA_VERSIONS)}")
+    # A schema-v1 file still carries per-actuator totals; they are read only
+    # to satisfy the exact-key shape and then discarded (counters restart at
+    # zero), so its configuration migrates forward.
+    legacy_totals = version == 1
     period = _number(root["sampling_period"], "checkpoint.sampling_period")
     if period < MIN_SAMPLE_PERIOD or period > MAX_SAMPLE_PERIOD:
         _fail(f"checkpoint.sampling_period must be between {MIN_SAMPLE_PERIOD:g} and {MAX_SAMPLE_PERIOD:g} seconds")
@@ -427,6 +449,7 @@ def validate_snapshot(raw: object, reactors: list[Reactor]) -> _RecoveryPlan:
             reactor.actuators,
             f"{context}.actuators",
             actuator=True,
+            legacy_totals=legacy_totals,
         )
         pairings = _validate_pairings(row["pairings"], reactor, f"{context}.pairings")
         paired_ids = {actuator_id for _, actuator_id, _ in pairings}
@@ -438,16 +461,10 @@ def validate_snapshot(raw: object, reactors: list[Reactor]) -> _RecoveryPlan:
                 actuator,
                 f"{context}.actuators[{actuator_id!r}].control",
             )
-            total = _number(
-                actuator_row["total_volume"],
-                f"{context}.actuators[{actuator_id!r}].total_volume",
-                nonnegative=True,
-            )
             actuator_plans.append(
                 _ActuatorRecovery(
                     actuator_id,
                     config,
-                    total,
                     actuator_id in paired_ids,
                 ),
             )
@@ -526,7 +543,9 @@ def apply_recovery(plan: _RecoveryPlan) -> None:
                 if reason is not None:
                     error_message = f"validated config for {actuator.id} was rejected: {reason}"
                     raise StateValidationError(error_message)
-                actuator.dispenser.total_volume = actuator_plan.total_volume
+                # Accrued volume is never carried across a restart: its only
+                # durable home is PostgreSQL. Restored counters start at zero.
+                actuator.dispenser.total_volume = 0.0
                 actuator.dispenser.reset()
                 actuator.write(0.0)
                 actuator.channel.old_value = 0.0
@@ -549,14 +568,6 @@ class StateStore:
     def __init__(self, path: Path) -> None:
         """Store the path without touching the filesystem."""
         self.path = path.expanduser()
-        self._last_totals: tuple[tuple[str, float], ...] | None = None
-
-    @staticmethod
-    def _totals(reactors: list[Reactor]) -> tuple[tuple[str, float], ...]:
-        """Return a stable signature used to suppress unchanged writes."""
-        return tuple(
-            sorted((actuator.id, actuator.dispenser.total_volume) for reactor in reactors for actuator in reactor.actuators.values()),
-        )
 
     def restore(self, reactors: list[Reactor]) -> float | None:
         """Restore a valid checkpoint, quarantine a rejected one, or do nothing.
@@ -568,7 +579,6 @@ class StateStore:
 
         """
         if not self.path.exists():
-            self._last_totals = self._totals(reactors)
             _logger.info("No server checkpoint at %s; starting safe", self.path)
             return None
         try:
@@ -588,9 +598,7 @@ class StateStore:
                 exc,
             )
             self._quarantine()
-            self._last_totals = self._totals(reactors)
             return None
-        self._last_totals = self._totals(reactors)
         _logger.info("Recovered server checkpoint from %s", self.path)
         return plan.sampling_period
 
@@ -612,24 +620,18 @@ class StateStore:
         self,
         reactors: list[Reactor],
         sampling_period: float,
-        *,
-        only_if_totals_changed: bool = False,
     ) -> bool:
         """Atomically write a complete checkpoint.
 
-        Write failures are logged and remain nonfatal. The totals signature is
-        advanced only after a durable replacement succeeds, so a later periodic
-        pass retries a failed write.
+        Called only from the immediate callbacks for accepted configuration
+        changes - sampling period, pairings, control config, autotune gains.
+        Write failures are logged and remain nonfatal.
         """
-        totals = self._totals(reactors)
-        if only_if_totals_changed and totals == self._last_totals:
-            return False
         try:
             self._write_snapshot(snapshot(reactors, sampling_period))
         except (OSError, TypeError, ValueError):
             _logger.exception("Could not checkpoint server state to %s", self.path)
             return False
-        self._last_totals = totals
         return True
 
     def _write_snapshot(self, payload: dict[str, object]) -> None:
@@ -653,19 +655,3 @@ class StateStore:
             os.fsync(directory_fd)
         finally:
             os.close(directory_fd)
-
-    async def checkpoint_loop(
-        self,
-        reactors: list[Reactor],
-        sampling_period: Callable[[], float],
-    ) -> None:
-        """Checkpoint changed totals no more than once per minute."""
-        import asyncio
-
-        while True:
-            await asyncio.sleep(CHECKPOINT_INTERVAL)
-            self.checkpoint(
-                reactors,
-                sampling_period(),
-                only_if_totals_changed=True,
-            )

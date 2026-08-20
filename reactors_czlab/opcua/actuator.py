@@ -97,6 +97,37 @@ class ActuatorOpc:
         await variable.write_value(value)
         return True
 
+    async def reset_total_volume(self) -> tuple[bool, str]:
+        """Zero the accrued delivered volume without stopping the pump.
+
+        Refused while a calibration run or an autotune owns the actuator:
+        both drive the pump outside the ordinary accrual path, so zeroing
+        the counter under them would race their own bookkeeping. The zero
+        is published immediately rather than waiting for the next sampling
+        cycle, and no configuration checkpoint is triggered - the total is
+        durable history in PostgreSQL, not server configuration.
+
+        Returns
+        -------
+        tuple[bool, str]
+            Whether the reset was applied and an operator-readable
+            message.
+
+        """
+        actuator = self.actuator
+        if actuator.calibrating or actuator.autotune_owner is not None:
+            message = f"{self.id}: cannot reset delivered volume while calibration or autotune owns the pump"
+            _logger.warning(message)
+            return (False, message)
+        actuator.dispenser.reset_total_volume()
+        await self._publish_if_changed(
+            self.total_volume,
+            actuator.dispenser.total_volume,
+        )
+        message = f"{self.id}: delivered volume reset to zero"
+        _logger.info(message)
+        return (True, message)
+
     async def init_node(
         self,
         server: Server,
@@ -120,6 +151,10 @@ class ActuatorOpc:
         await self.init_control_methods(idx)
         # Expose the pump calibration workflow
         await self.init_calibration_methods(idx)
+        # Only a calibrated pump accrues a mL total worth resetting; MFCs
+        # have no calibration slot, so the reset method is not offered.
+        if actuator.channel.calibration is not None:
+            await self.init_reset_method(idx)
 
     async def apply_control_config(
         self,
@@ -822,3 +857,27 @@ class ActuatorOpc:
                 inargs,
                 [outarg],
             )
+
+    async def init_reset_method(self, idx: int) -> None:
+        """Expose the accrued-volume reset on a calibrated pump node.
+
+        A short method: it banks delivery through now, zeroes the total
+        and publishes the zero synchronously, so it never goes through the
+        slow-session path the calibration run needs.
+        """
+
+        @uamethod
+        async def reset_total_volume(parent: Node) -> tuple[bool, str]:
+            """Zero the delivered-volume counter while delivery continues."""
+            return await self.reset_total_volume()
+
+        await self.node.add_method(
+            idx,
+            f"{self.id}:reset_total_volume",
+            reset_total_volume,
+            [],
+            [
+                _argument("Accepted", ua.ObjectIds.Boolean),
+                _argument("Message", ua.ObjectIds.String),
+            ],
+        )

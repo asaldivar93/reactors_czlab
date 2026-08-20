@@ -45,6 +45,7 @@ PH_STATUS_METHOD = "ns=2;i=33"
 DO_STATUS_METHOD = "ns=2;i=35"
 PWM0_CALIBRATION_METHOD = "ns=2;i=34"
 PWM0_CONTROL_METHOD = "ns=2;i=36"
+PWM0_RESET_METHOD = "ns=2;i=37"
 SERVER_PERIOD_NODE = "ns=2;i=40"
 SET_PERIOD_METHOD = "ns=2;i=41"
 
@@ -63,6 +64,10 @@ METHODS = {
     PWM0_CONTROL_METHOD: {
         "reactor": "R0",
         "name": ["pwm0", "get_control_config"],
+    },
+    PWM0_RESET_METHOD: {
+        "reactor": "R0",
+        "name": ["pwm0", "reset_total_volume"],
     },
     DO_STATUS_METHOD: {
         "reactor": "R0",
@@ -272,6 +277,15 @@ class TestReactorDashboard:
         """Modifying actuator configuration starts here."""
         await user.open("/reactor/R0")
         await user.should_see("Configure")
+
+    async def test_offers_reset_delivered_for_a_calibrated_pump(
+        self,
+        user: User,
+        connected: None,
+    ) -> None:
+        """A pump publishing the reset method gets the confirmed action."""
+        await user.open("/reactor/R0")
+        await user.should_see("Reset delivered")
 
     async def test_shows_running_control_and_experiment_state(
         self,

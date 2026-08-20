@@ -80,16 +80,21 @@ The server publishes one sampling period for every reactor. It starts at
 
 ## Raspberry Pi power-outage recovery
 
-The server checkpoints its sampling period, exact device topology, pairings,
-complete control configurations, and accumulated dispenser totals. The default
-file is `~/.reactors_czlab/server-state.json`; set `REACTORS_STATE_FILE` or pass
-`--state-file PATH` to put it elsewhere. Accepted configuration, pairing, and
-period changes are saved immediately. Changed totals are saved at most once a
-minute and again during graceful shutdown.
+The server checkpoints its sampling period, exact device topology, pairings, and
+complete control configurations. The default file is
+`~/.reactors_czlab/server-state.json`; set `REACTORS_STATE_FILE` or pass
+`--state-file PATH` to put it elsewhere. Accepted configuration, pairing, period,
+and autotune-gain changes are saved immediately; there is no periodic or
+shutdown checkpoint. Accrued dispenser volume is deliberately not in the file —
+its only durable history is PostgreSQL — so restored counters always start at
+zero. Older schema-v1 checkpoints still restore their configuration; the totals
+they recorded are ignored, and the next configuration change rewrites the file
+as schema v2.
 
 Recovery is deliberately fail-safe. Outputs and sensor readings are never
 replayed, in-flight doses and calibration/autotune runs are cancelled, manual
-outputs restart at zero, and PID/timer runtime memory is fresh. Paired automatic
+outputs restart at zero, accrued volume totals restart at zero, and PID/timer
+runtime memory is fresh. Paired automatic
 controllers wait for a successful new sensor read. An unpaired timer begins a
 new ON phase only after its reactor completes its first sampling cycle;
 unpaired boundary and PID configurations restart as manual/zero. A malformed or
@@ -188,6 +193,7 @@ The suite under `tests/` runs without hardware and without pymodbus.
 
 Non essential:
 
+- Volume per reactor should be configurable by the operator from the gui
 - Actuator traces on the plots page. The panels are a
   `(name, channel)` filter list, so this is an entry in
   `gui/controllers/plots.py`'s `PANELS`, not a rewrite.

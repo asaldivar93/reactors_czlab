@@ -96,12 +96,12 @@ def _configured_reactor(make_sensor, make_calibrated_actuator) -> Reactor:
     return reactor
 
 
-def test_round_trip_restores_configuration_pairings_period_and_totals(
+def test_round_trip_restores_configuration_pairings_and_period_zeroing_totals(
     tmp_path,
     make_sensor,
     make_calibrated_actuator,
 ) -> None:
-    """Every controller field survives while unsafe runtime state does not."""
+    """Every controller field survives; accrued totals restart at zero."""
     before = _configured_reactor(make_sensor, make_calibrated_actuator)
     store = StateStore(tmp_path / "state.json")
     assert store.checkpoint([before], 12.5) is True
@@ -114,11 +114,13 @@ def test_round_trip_restores_configuration_pairings_period_and_totals(
         "R0:ph": [("R0:boundary", 0), ("R0:pid", 0)],
     }
     assert after.unpaired.actuators == ["R0:manual", "R0:timer"]
+    # Accrued volume is durable only in PostgreSQL, never in the snapshot,
+    # so every restored counter starts at zero regardless of what ran before.
     assert {actuator_id: actuator.dispenser.total_volume for actuator_id, actuator in after.actuators.items()} == {
-        "R0:manual": 1.25,
-        "R0:timer": 2.25,
-        "R0:boundary": 3.25,
-        "R0:pid": 4.25,
+        "R0:manual": 0.0,
+        "R0:timer": 0.0,
+        "R0:boundary": 0.0,
+        "R0:pid": 0.0,
     }
 
     manual = after.actuators["R0:manual"]
@@ -254,8 +256,8 @@ def test_unpaired_timer_waits_for_first_sampling_cycle(
             "lower boundary",
         ),
         (
-            lambda payload: payload["reactors"][0]["actuators"][0].update(total_volume=-1.0),
-            "non-negative",
+            lambda payload: payload["reactors"][0]["actuators"][0].update(total_volume=1.0),
+            "fields differ",
         ),
     ],
 )
@@ -338,39 +340,38 @@ def test_interrupted_replacement_preserves_previous_checkpoint(
     assert json.loads(path.read_text(encoding="utf-8")) == previous
 
 
-def test_unchanged_totals_skip_periodic_write(
-    tmp_path,
+def test_schema_v2_snapshot_omits_actuator_totals(
     make_sensor,
     make_calibrated_actuator,
-    monkeypatch,
 ) -> None:
-    """The one-minute pass does no flash write when totals are unchanged."""
+    """A current snapshot is schema v2 and carries no per-pump total."""
     reactor = _configured_reactor(make_sensor, make_calibrated_actuator)
-    store = StateStore(tmp_path / "state.json")
-    assert store.checkpoint([reactor], 12.5) is True
-    writes: list[dict[str, object]] = []
-    monkeypatch.setattr(store, "_write_snapshot", writes.append)
+    payload = snapshot([reactor], 12.5)
 
-    assert (
-        store.checkpoint(
-            [reactor],
-            12.5,
-            only_if_totals_changed=True,
-        )
-        is False
-    )
-    assert writes == []
+    assert payload["schema_version"] == 2
+    for actuator_row in payload["reactors"][0]["actuators"]:
+        assert "total_volume" not in actuator_row
 
-    reactor.actuators["R0:pid"].dispenser.total_volume += 1.0
-    assert (
-        store.checkpoint(
-            [reactor],
-            12.5,
-            only_if_totals_changed=True,
-        )
-        is True
-    )
-    assert len(writes) == 1
+
+def test_schema_v1_configuration_restores_ignoring_its_totals(
+    make_sensor,
+    make_calibrated_actuator,
+) -> None:
+    """A legacy file still migrates its configuration; its totals are dropped."""
+    source = _configured_reactor(make_sensor, make_calibrated_actuator)
+    payload = snapshot([source], 12.5)
+    # Rewrite the current snapshot back into the schema-v1 shape: bump the
+    # version down and re-attach the per-actuator totals v1 carried.
+    payload["schema_version"] = 1
+    for actuator_row in payload["reactors"][0]["actuators"]:
+        actuator_row["total_volume"] = 7.5
+
+    restarted = _reactor(make_sensor, make_calibrated_actuator)
+    apply_recovery(validate_snapshot(payload, [restarted]))
+
+    boundary = restarted.actuators["R0:boundary"].controller
+    assert (boundary.lower_bound, boundary.upper_bound) == (6.5, 7.5)
+    assert all(actuator.dispenser.total_volume == 0.0 for actuator in restarted.actuators.values())
 
 
 def test_validation_does_not_modify_its_payload(

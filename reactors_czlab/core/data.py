@@ -53,6 +53,10 @@ class Channel:
     value: float = ERROR_VALUE
     old_value: float = ERROR_VALUE
     calibration: Calibration | None = None
+    #: PWM carrier frequency in Hz, configured per output. Required for a
+    #: PWM channel and unused by any other output kind; ``PlcActuator``
+    #: validates and installs it on the pin.
+    pwm_frequency_hz: int | None = None
 
 
 class OutputUnit(StrEnum):

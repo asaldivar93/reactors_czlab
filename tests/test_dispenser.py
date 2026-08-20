@@ -272,6 +272,33 @@ def test_volume_demand_limits_use_the_control_period(
     assert disp.demand_limits(pid=True)[1] == math.nextafter(capacity, 0.0)
 
 
+def test_reset_total_volume_banks_then_zeroes_without_stopping_delivery(
+    channel: Channel,
+    clock,
+) -> None:
+    """A reset banks delivery so far, zeroes the counter, and keeps dosing."""
+    disp = Dispenser(
+        OutputUnit.volume,
+        channel,
+        control_period=1.0,
+        clock=clock,
+    )
+    disp.duty(1.0)  # start a 3 s dose at 2000 counts -> 20 mL/min
+    clock.advance(1.5)  # 1.5 s at 20 mL/min = 0.5 mL delivered so far
+
+    disp.reset_total_volume()
+
+    assert disp.total_volume == 0.0
+    # The dose is untouched: a tick mid-dose changes nothing and keeps running.
+    clock.advance(1.0)
+    assert disp.tick() is None
+    # Subsequent delivery accrues from the reset instant, not from dose start:
+    # the 1.5 s between reset and the dose ending at 3 s is 0.5 mL.
+    clock.advance(0.5)
+    assert disp.tick() == 0.0
+    assert disp.total_volume == pytest.approx(20.0 * 1.5 / 60.0)
+
+
 def test_reset_cancels_a_dose(channel: Channel, clock) -> None:
     """Reactor.stop() must not leave a dose to resume."""
     disp = Dispenser(
