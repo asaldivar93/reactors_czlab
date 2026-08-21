@@ -58,6 +58,7 @@ class ActuatorOpc:
         self.id = actuator.id
         self.run = CalibrationRun(actuator)
         self._config_lock = asyncio.Lock()
+        self._total_volume_lock = asyncio.Lock()
         self.on_control_config_changed: Callable[[str], None] | None = None
         self.on_state_changed: Callable[[], None] | None = None
 
@@ -78,10 +79,11 @@ class ActuatorOpc:
         if await self._publish_if_changed(self.curr_value, current):
             _logger.debug("Updated %s with value %s", self.id, current)
 
-        await self._publish_if_changed(
-            self.total_volume,
-            self.actuator.dispenser.total_volume,
-        )
+        async with self._total_volume_lock:
+            await self._publish_if_changed(
+                self.total_volume,
+                self.actuator.dispenser.total_volume,
+            )
         cal = self.actuator.channel.calibration
         if cal is not None:
             await self._publish_if_changed(self.cal_a, cal.a)
@@ -119,11 +121,16 @@ class ActuatorOpc:
             message = f"{self.id}: cannot reset delivered volume while calibration or autotune owns the pump"
             _logger.warning(message)
             return (False, message)
-        actuator.dispenser.reset_total_volume()
-        await self._publish_if_changed(
-            self.total_volume,
-            actuator.dispenser.total_volume,
-        )
+        async with self._total_volume_lock:
+            banked_total = actuator.dispenser.reset_total_volume()
+            await self._publish_if_changed(
+                self.total_volume,
+                banked_total,
+            )
+            await self._publish_if_changed(
+                self.total_volume,
+                actuator.dispenser.total_volume,
+            )
         message = f"{self.id}: delivered volume reset to zero"
         _logger.info(message)
         return (True, message)

@@ -286,8 +286,9 @@ def test_reset_total_volume_banks_then_zeroes_without_stopping_delivery(
     disp.duty(1.0)  # start a 3 s dose at 2000 counts -> 20 mL/min
     clock.advance(1.5)  # 1.5 s at 20 mL/min = 0.5 mL delivered so far
 
-    disp.reset_total_volume()
+    banked_total = disp.reset_total_volume()
 
+    assert banked_total == pytest.approx(0.5)
     assert disp.total_volume == 0.0
     # The dose is untouched: a tick mid-dose changes nothing and keeps running.
     clock.advance(1.0)

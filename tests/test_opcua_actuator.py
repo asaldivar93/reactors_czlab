@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 from asyncua import ua
@@ -11,6 +12,7 @@ from reactors_czlab.core.control import (
     _TimerControl,
 )
 from reactors_czlab.core.data import ControlConfig, ControlMethod, OutputUnit
+from reactors_czlab.core.dispenser import Dispenser
 from reactors_czlab.opcua.actuator import ActuatorOpc, output_unit_map
 
 
@@ -29,6 +31,24 @@ class _StubVariable:
         """Store and record a written value."""
         self.value = value
         self.writes.append(value)
+
+
+class _BlockingReadVariable(_StubVariable):
+    """An OPC variable whose first read is controlled by the test."""
+
+    def __init__(self, value: object) -> None:
+        super().__init__(value)
+        self.read_started = asyncio.Event()
+        self.release_read = asyncio.Event()
+        self._blocked = False
+
+    async def get_value(self) -> object:
+        """Pause the first read so another publisher can try to race it."""
+        if not self._blocked:
+            self._blocked = True
+            self.read_started.set()
+            await self.release_read.wait()
+        return self.value
 
 
 def _attach_readback(node: ActuatorOpc) -> None:
@@ -352,10 +372,19 @@ async def test_update_value_publishes_the_pump_totals(
 
 async def test_reset_total_volume_zeroes_and_publishes_without_checkpoint(
     make_calibrated_actuator,
+    clock,
 ) -> None:
-    """The reset banks and zeroes, publishes at once, and never checkpoints."""
+    """The reset archives newly banked volume, zeroes, and never checkpoints."""
     actuator = make_calibrated_actuator()
+    actuator.dispenser = Dispenser(
+        OutputUnit.duty,
+        actuator.channel,
+        actuator.dispenser.control_period,
+        clock=clock,
+    )
     actuator.dispenser.total_volume = 4.5
+    actuator.dispenser.duty(2000.0)
+    clock.advance(1.5)
     node = ActuatorOpc(actuator)
     node.total_volume = _StubVariable(4.5)
     checkpoints: list[str] = []
@@ -366,7 +395,41 @@ async def test_reset_total_volume_zeroes_and_publishes_without_checkpoint(
     assert accepted is True
     assert actuator.dispenser.total_volume == 0.0
     assert node.total_volume.value == 0.0
+    assert node.total_volume.writes == [5.0, 0.0]
     assert checkpoints == []
+
+
+async def test_reset_total_volume_serializes_with_periodic_publication(
+    make_calibrated_actuator,
+) -> None:
+    """A stale periodic snapshot cannot overwrite a completed reset.
+
+    Regression: ``update_value()`` could capture the old total, pause in its
+    OPC read, and write that stale value after reset had published zero.
+    """
+    actuator = make_calibrated_actuator()
+    actuator.dispenser.total_volume = 4.5
+    node = ActuatorOpc(actuator)
+    node.curr_value = _StubVariable(0.0)
+    node.total_volume = _BlockingReadVariable(4.5)
+    node.cal_a = _StubVariable(0.01)
+    node.cal_b = _StubVariable(0.0)
+    node.cal_r2 = _StubVariable(1.0)
+
+    update_task = asyncio.create_task(node.update_value())
+    await node.total_volume.read_started.wait()
+    reset_task = asyncio.create_task(node.reset_total_volume())
+    await asyncio.sleep(0)
+    reset_waited_for_update = not reset_task.done()
+
+    node.total_volume.release_read.set()
+    await asyncio.gather(update_task, reset_task)
+
+    assert reset_waited_for_update is True
+    assert reset_task.result()[0] is True
+    assert actuator.dispenser.total_volume == 0.0
+    assert node.total_volume.value == 0.0
+    assert node.total_volume.writes[-1] == 0.0
 
 
 async def test_reset_total_volume_refuses_a_calibration_owned_pump(
